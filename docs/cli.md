@@ -1,12 +1,12 @@
 # kite command line
 
 `kite` connects this computer to a Kite relay and shares the phone's connection with it. Today the
-relay is the `relay-dev` example (see the README); the phone app and USB transports come later, so
-`--tcp` is the only transport.
+relay is the `relay-dev` example (see the README) and the phone app does not exist yet, so only
+`relay-dev` can be reached; `--tcp` reaches it over the network and `--usb` is ready for the phone app.
 
 ```
-kite connect --tcp HOST:PORT [--listen ADDR]
-kite connect --tcp HOST:PORT --tun
+kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) [--listen ADDR]
+kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) --tun
 kite status
 kite restore
 kite --version | -V
@@ -19,7 +19,9 @@ Opens one tunnel to the relay and keeps running until it is stopped or the tunne
 
 | Option | Meaning | Default |
 |--------|---------|---------|
-| `--tcp HOST:PORT` | Relay to connect to. A name is resolved once; every address is tried for up to 10 s in total. Required. | none |
+| `--tcp HOST:PORT` | Relay to connect to over the network. A name is resolved once; every address is tried for up to 10 s in total. One of `--tcp` and `--usb` is required. | none |
+| `--usb` | Reach the relay on a phone connected by USB, through a running adb server. | off |
+| `--serial SERIAL` | With `--usb`: the phone to use when several are connected. | the only phone |
 | `--listen ADDR` | Proxy mode only. `IP:PORT` of the local SOCKS5 proxy. It must be a loopback address. | `127.0.0.1:1080` |
 | `--tun` | TUN mode (Linux only): send all traffic and DNS of this computer through the relay. Cannot be combined with `--listen`. | off |
 
@@ -36,6 +38,25 @@ closes the tunnel past 256); further connections wait. A client that sends nothi
 
 Stop kite with Ctrl+C or SIGTERM. It closes local connections, closes the tunnel and exits with 0.
 If the relay closes the tunnel or it fails, kite prints the error and exits with 1.
+
+### USB
+
+`--usb` asks the adb server on 127.0.0.1:5037 for the connected phones, picks one, and opens the
+abstract socket `kite` on it; that stream carries the same tunnel as `--tcp`, so proxy and TUN mode
+work the same. It needs `adb` installed with its server running (`adb start-server`), USB debugging
+turned on, and the Kite app listening on the phone. Only phones connected by USB count; adb over WiFi
+is ignored. Kite explains what is missing:
+
+- no phone found, or the adb server is not running;
+- several phones connected: choose one with `--serial` (the serial is the first column of `adb devices`);
+- the phone is `unauthorized`: accept the USB debugging prompt on the phone and run kite again;
+- the phone is `offline`: unplug and replug it;
+- the Kite app is not listening: open it on the phone and start sharing.
+
+Unplugging the phone, or stopping the adb server, closes the tunnel: kite prints the error and exits
+with 1, and in TUN mode removes its rules as usual. The link is not authenticated yet (see the
+[threat model](threat-model.md)), so kite prints a warning; any local user can run a program that
+pretends to be the adb server when none is running. Without `--tun` nothing needs special privileges.
 
 ### TUN mode
 
@@ -71,7 +92,7 @@ are dropped, so clients use IPv4.
 
 How it is undone:
 
-- Normal stop (signal, relay loss, error): kite deletes the rules, and the kernel removes `kite0`,
+- Normal stop (signal, relay or phone lost, error): kite deletes the rules, and the kernel removes `kite0`,
   its routes and resolved's settings for that link.
 - Kite killed or crashed: the kernel still removes `kite0`, its routes and resolved's settings. The
   four rules stay but point at an empty table, so traffic falls through to your normal routes and the
