@@ -54,7 +54,9 @@ fits the largest IPv4 datagram (65507 bytes).
 
 `kite connect --tun` creates the TUN device `kite0` and runs tun2proxy on it as a library. tun2proxy
 turns each TCP connection into a SOCKS5 connection to kite's own proxy on 127.0.0.1, sends DNS over
-TCP, and carries other UDP through the relay's gateway. Routing follows wg-quick:
+TCP, and carries other UDP through the relay's gateway. It drops AAAA answers: its TCP stack accepts
+every handshake before the relay connects, so an IPv6 target the phone cannot reach would look
+connected and then fail instead of falling back to IPv4. Routing follows wg-quick:
 
 ```
 pref 5300  ipproto udp dport 53 -> table 5300   every DNS query, even to a LAN resolver
