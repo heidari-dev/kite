@@ -4,6 +4,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 pub mod socks5;
+pub mod udpgw;
 
 /// Limits shared by every session.
 #[derive(Debug, Clone)]

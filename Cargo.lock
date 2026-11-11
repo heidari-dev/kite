@@ -20,6 +20,7 @@ version = "0.0.0"
 name = "kite-relay"
 version = "0.0.0"
 dependencies = [
+ "socket2",
  "tokio",
 ]
 
