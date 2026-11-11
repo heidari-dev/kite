@@ -22,8 +22,8 @@ pub fn udpgw_frames(mut data: &[u8]) {
     });
 }
 
-/// Feeds `data` to a responder as handshake messages, then to an established session as
-/// transport frames.
+/// Feeds `data` to a responder as handshake messages, to an established session as raw transport
+/// frames, and through a session as plaintext that must come out unchanged.
 pub fn noise_frames(data: &[u8]) {
     block_on(async {
         if let Ok(key) = noise::StaticKey::generate() {
@@ -38,6 +38,18 @@ pub fn noise_frames(data: &[u8]) {
             let _ = client.raw().shutdown().await;
         };
         let _ = tokio::join!(write, server.read_to_end(&mut out));
+
+        let Ok((mut client, mut server)) = noise::pair().await else {
+            return;
+        };
+        let mut out = Vec::new();
+        let write = async {
+            client.write_all(data).await.expect("write");
+            client.shutdown().await.expect("shutdown");
+        };
+        let (_, read) = tokio::join!(write, server.read_to_end(&mut out));
+        read.expect("read");
+        assert!(out == data, "plaintext changed in transit");
     });
 }
 

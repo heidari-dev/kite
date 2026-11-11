@@ -144,7 +144,7 @@ where
             write_frame(&mut io, &msg[..len]).await?;
         } else {
             let len = read_frame(&mut io, &mut msg).await?;
-            // Payloads are empty; anything else fails here or is ignored.
+            // Our payloads are empty; a peer's goes into the bounded buffer and is dropped.
             hs.read_message(&msg[..len], &mut payload)
                 .map_err(noise_err)?;
             if let Some(verify) = verify.take() {
