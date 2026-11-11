@@ -977,6 +977,7 @@ dependencies = [
 name = "kite-cli"
 version = "0.0.0"
 dependencies = [
+ "kite-link",
  "kite-relay",
  "netlink-packet-route",
  "rtnetlink",
@@ -991,6 +992,9 @@ dependencies = [
 [[package]]
 name = "kite-link"
 version = "0.0.0"
+dependencies = [
+ "tokio",
+]
 
 [[package]]
 name = "kite-relay"
