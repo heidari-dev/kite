@@ -1,6 +1,6 @@
 //! SOCKS5 (RFC 1928) CONNECT without authentication; the tunnel carrying it is authenticated.
 
-use crate::Config;
+use crate::{udpgw, Config};
 use std::future::Future;
 use std::io::{self, ErrorKind};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -31,7 +31,7 @@ const REP_CMD_UNSUPPORTED: u8 = 7;
 const REP_ATYP_UNSUPPORTED: u8 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Target {
+pub(crate) enum Target {
     Ip(SocketAddr),
     Domain(String, u16),
 }
@@ -44,6 +44,10 @@ where
 {
     let deadline = Instant::now() + cfg.connect_timeout;
     let target = timeout_at(deadline, handshake(&mut client)).await??;
+    if target == Target::Ip(udpgw::ADDR) {
+        timeout(cfg.connect_timeout, reply(&mut client, REP_OK, None)).await??;
+        return udpgw::serve(client, cfg).await;
+    }
     let (rep, outbound) = match timeout_at(deadline, connect(&target, cfg)).await {
         Ok(Ok(s)) => (REP_OK, Ok(s)),
         Ok(Err(e)) => (rep_code(&e), Err(e)),
@@ -85,34 +89,11 @@ where
     if req[0] != VER {
         return Err(invalid("bad request version"));
     }
-    let target = match req[3] {
-        ATYP_V4 => {
-            let mut ip = [0u8; 4];
-            s.read_exact(&mut ip).await?;
-            Target::Ip(SocketAddr::new(
-                Ipv4Addr::from(ip).into(),
-                s.read_u16().await?,
-            ))
-        }
-        ATYP_V6 => {
-            let mut ip = [0u8; 16];
-            s.read_exact(&mut ip).await?;
-            Target::Ip(SocketAddr::new(
-                Ipv6Addr::from(ip).into(),
-                s.read_u16().await?,
-            ))
-        }
-        ATYP_DOMAIN => {
-            let mut name = vec![0u8; s.read_u8().await? as usize];
-            s.read_exact(&mut name).await?;
-            let name = String::from_utf8(name).map_err(|_| invalid("domain is not UTF-8"))?;
-            Target::Domain(name, s.read_u16().await?)
-        }
-        _ => {
-            reply(s, REP_ATYP_UNSUPPORTED, None).await?;
-            return Err(invalid("unsupported address type"));
-        }
-    };
+    if !matches!(req[3], ATYP_V4 | ATYP_V6 | ATYP_DOMAIN) {
+        reply(s, REP_ATYP_UNSUPPORTED, None).await?;
+        return Err(invalid("unsupported address type"));
+    }
+    let target = read_address(s, req[3]).await?;
     if req[1] != CMD_CONNECT {
         reply(s, REP_CMD_UNSUPPORTED, None).await?;
         return Err(invalid("unsupported command"));
@@ -120,17 +101,46 @@ where
     Ok(target)
 }
 
-/// Resolves on the phone, drops refused addresses and tries the rest in order.
-async fn connect(target: &Target, cfg: &Config) -> io::Result<TcpStream> {
-    let addrs: Vec<SocketAddr> = match target {
-        Target::Ip(addr) => vec![*addr],
-        Target::Domain(host, port) => tokio::net::lookup_host((host.as_str(), *port))
+/// Reads a SOCKS5 address of type `atyp`: IPv4, IPv6 or domain name, then the port.
+pub(crate) async fn read_address<R: AsyncRead + Unpin>(r: &mut R, atyp: u8) -> io::Result<Target> {
+    match atyp {
+        ATYP_V4 => {
+            let mut ip = [0u8; 4];
+            r.read_exact(&mut ip).await?;
+            let ip = Ipv4Addr::from(ip).into();
+            Ok(Target::Ip(SocketAddr::new(ip, r.read_u16().await?)))
+        }
+        ATYP_V6 => {
+            let mut ip = [0u8; 16];
+            r.read_exact(&mut ip).await?;
+            let ip = Ipv6Addr::from(ip).into();
+            Ok(Target::Ip(SocketAddr::new(ip, r.read_u16().await?)))
+        }
+        ATYP_DOMAIN => {
+            let mut name = vec![0u8; r.read_u8().await? as usize];
+            r.read_exact(&mut name).await?;
+            let name = String::from_utf8(name).map_err(|_| invalid("domain is not UTF-8"))?;
+            Ok(Target::Domain(name, r.read_u16().await?))
+        }
+        _ => Err(invalid("unsupported address type")),
+    }
+}
+
+/// Resolves domain names on the phone. Callers apply the target policy.
+pub(crate) async fn resolve(target: &Target) -> io::Result<Vec<SocketAddr>> {
+    match target {
+        Target::Ip(addr) => Ok(vec![*addr]),
+        Target::Domain(host, port) => Ok(tokio::net::lookup_host((host.as_str(), *port))
             .await
             .map_err(|e| io::Error::new(ErrorKind::NotFound, e))?
-            .collect(),
-    };
+            .collect()),
+    }
+}
+
+/// Drops refused addresses and tries the rest in order.
+async fn connect(target: &Target, cfg: &Config) -> io::Result<TcpStream> {
     let mut last = None;
-    for addr in addrs {
+    for addr in resolve(target).await? {
         let attempt = if cfg.allows(addr.ip()) {
             TcpStream::connect(addr).await
         } else {
@@ -164,7 +174,14 @@ async fn reply<S: AsyncWrite + Unpin>(
     let bound = bound.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
     let mut buf = Vec::with_capacity(22);
     buf.extend_from_slice(&[VER, rep, 0]);
-    match bound.ip() {
+    put_address(&mut buf, bound);
+    s.write_all(&buf).await?;
+    s.flush().await
+}
+
+/// Appends `addr` in SOCKS5 form: ATYP, address, port.
+pub(crate) fn put_address(buf: &mut Vec<u8>, addr: SocketAddr) {
+    match addr.ip() {
         IpAddr::V4(ip) => {
             buf.push(ATYP_V4);
             buf.extend_from_slice(&ip.octets());
@@ -174,9 +191,7 @@ async fn reply<S: AsyncWrite + Unpin>(
             buf.extend_from_slice(&ip.octets());
         }
     }
-    buf.extend_from_slice(&bound.port().to_be_bytes());
-    s.write_all(&buf).await?;
-    s.flush().await
+    buf.extend_from_slice(&addr.port().to_be_bytes());
 }
 
 fn invalid(msg: &'static str) -> io::Error {
@@ -398,6 +413,16 @@ mod tests {
         drop(listener);
         let (mut client, _task) = start(loopback_cfg());
         assert_eq!(request(&mut client, &ip_request(closed)).await, REP_REFUSED);
+    }
+
+    #[tokio::test]
+    async fn serves_udpgw_on_its_reserved_address() {
+        let (mut client, _task) = start(Config::default());
+        assert_eq!(request(&mut client, &ip_request(udpgw::ADDR)).await, REP_OK);
+        client.write_all(&[0, 3, 0x01, 0, 5]).await.unwrap();
+        let mut keepalive = [0u8; 5];
+        client.read_exact(&mut keepalive).await.unwrap();
+        assert_eq!(keepalive, [0, 3, 0x01, 0, 5]);
     }
 
     #[tokio::test]
