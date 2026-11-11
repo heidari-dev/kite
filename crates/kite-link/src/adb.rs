@@ -53,7 +53,7 @@ where
         }
     };
     let mut list = dial().await?;
-    let devices = parse_devices(&exchange(&mut list, "host:devices", true).await?);
+    let devices = parse_devices(&exchange(&mut list, "host:devices-l", true).await?);
     drop(list);
     let target = select(&devices, serial)?;
 
@@ -88,7 +88,7 @@ where
                 let msg = body(s).await?;
                 Err(io::Error::other(
                     msg.chars()
-                        .filter(|c| !c.is_control())
+                        .filter(|c| !c.is_control() && !is_bidi(*c))
                         .take(200)
                         .collect::<String>(),
                 ))
@@ -108,6 +108,11 @@ where
     })
 }
 
+/// Zero-width and bidirectional formatting characters, which could disguise an error line.
+fn is_bidi(c: char) -> bool {
+    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
 /// Reads a 4-digit hex length and that many bytes.
 async fn body<S: AsyncRead + Unpin>(s: &mut S) -> io::Result<String> {
     let mut len = [0u8; 4];
@@ -124,18 +129,20 @@ async fn body<S: AsyncRead + Unpin>(s: &mut S) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// One line per device: `serial<TAB>state`. Lines that do not fit are ignored, and so are serials
-/// with characters outside what adb itself uses, since the serial goes back into a request.
+/// One line per device: `serial state key:value...`, padded with spaces. Only phones on USB (they
+/// have a `usb:` field) count; adb can also list WiFi devices, which this transport must not use.
+/// Lines that do not fit are ignored, and so are serials with characters outside what adb itself
+/// uses, since the serial goes back into a request.
 fn parse_devices(text: &str) -> Vec<(String, String)> {
     text.lines()
         .filter_map(|line| {
-            let (serial, state) = line.split_once('\t')?;
-            let ok = !serial.is_empty()
-                && serial.len() <= 64
+            let mut words = line.split_whitespace();
+            let (serial, state) = (words.next()?, words.next()?);
+            let ok = serial.len() <= 64
                 && serial
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || "._:-".contains(c));
-            ok.then(|| (serial.to_string(), state.trim().to_string()))
+            (ok && words.any(|w| w.starts_with("usb:"))).then(|| (serial.into(), state.into()))
         })
         .collect()
 }
@@ -146,7 +153,7 @@ fn select(devices: &[(String, String)], serial: Option<&str>) -> io::Result<Stri
         (Some(want), _) => devices.iter().find(|(s, _)| s == want).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("no phone with serial {want} is connected"),
+                format!("no phone with serial {want} is connected by USB"),
             )
         })?,
         (None, []) => {
@@ -206,7 +213,7 @@ mod tests {
             s.read_exact(&mut req).await.unwrap();
             let req = String::from_utf8(req).unwrap();
             let reply = match req.as_str() {
-                "host:devices" => format!("OKAY{:04x}{}", fake.devices.len(), fake.devices),
+                "host:devices-l" => format!("OKAY{:04x}{}", fake.devices.len(), fake.devices),
                 r if r.starts_with("host:transport:") => "OKAY".into(),
                 "localabstract:kite" if fake.app_up => "OKAY".into(),
                 "localabstract:kite" => "FAIL0006closed".into(),
@@ -248,7 +255,9 @@ mod tests {
 
     #[tokio::test]
     async fn opens_the_stream_on_the_only_phone() {
-        let mut s = run("R5CT1234\tdevice\n", true, None).await.unwrap();
+        let mut s = run("R5CT1234 device usb:1-2 product:p model:m\n", true, None)
+            .await
+            .unwrap();
         s.write_all(b"hello").await.unwrap();
         let mut back = [0u8; 5];
         s.read_exact(&mut back).await.unwrap();
@@ -257,22 +266,24 @@ mod tests {
 
     #[tokio::test]
     async fn picks_the_serial_among_several() {
-        assert!(run("A1\tdevice\nB2\tdevice\n", true, Some("B2"))
-            .await
-            .is_ok());
-        let e = err(run("A1\tdevice\nB2\tdevice\n", true, None).await);
+        assert!(
+            run("A1 device usb:1-1\nB2 device usb:1-2\n", true, Some("B2"))
+                .await
+                .is_ok()
+        );
+        let e = err(run("A1 device usb:1-1\nB2 device usb:1-2\n", true, None).await);
         assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
         assert!(e.to_string().contains("--serial") && e.to_string().contains("A1"));
-        let e = err(run("A1\tdevice\n", true, Some("C3")).await);
+        let e = err(run("A1 device usb:1-1\n", true, Some("C3")).await);
         assert_eq!(e.kind(), io::ErrorKind::NotFound);
     }
 
     #[tokio::test]
     async fn explains_phones_that_are_not_ready() {
-        let e = err(run("A1\tunauthorized\n", true, None).await);
+        let e = err(run("A1 unauthorized usb:1-1\n", true, None).await);
         assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
         assert!(e.to_string().contains("prompt on the phone"));
-        assert!(err(run("A1\toffline\n", true, None).await)
+        assert!(err(run("A1 offline usb:1-1\n", true, None).await)
             .to_string()
             .contains("offline"));
         let e = err(run("", true, None).await);
@@ -282,7 +293,7 @@ mod tests {
 
     #[tokio::test]
     async fn says_when_the_app_is_not_listening() {
-        let e = err(run("A1\tdevice\n", false, None).await);
+        let e = err(run("A1 device usb:1-1\n", false, None).await);
         assert_eq!(e.kind(), io::ErrorKind::NotFound);
         assert!(e.to_string().contains("Kite app"));
     }
@@ -300,18 +311,41 @@ mod tests {
     #[test]
     fn ignores_malformed_device_lines() {
         let list = parse_devices(
-            "ok-1.2:5555\tdevice\nbad serial\tdevice\nno tab here\n\tdevice\nx;y\tdevice\n",
+            "ok-1.2 device usb:1-3 model:m\nx;y device usb:1-4\nlonely\n\n192.168.1.9:5555 device product:p\n",
         );
-        assert_eq!(list, [("ok-1.2:5555".to_string(), "device".to_string())]);
+        assert_eq!(list, [("ok-1.2".to_string(), "device".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn ignores_phones_that_are_not_on_usb() {
+        let wifi = "192.168.1.9:5555 device product:p\n";
+        let e = err(run(wifi, true, None).await);
+        assert_eq!(e.kind(), io::ErrorKind::NotFound);
+        let e = err(run(wifi, true, Some("192.168.1.9:5555")).await);
+        assert!(e.to_string().contains("by USB"));
+    }
+
+    #[tokio::test]
+    async fn cleans_failure_messages_from_the_server() {
+        let (mut client, mut server) = duplex(1024);
+        let msg = "bad\x1b[31m\u{202e}news";
+        server
+            .write_all(format!("FAIL{:04x}{msg}", msg.len()).as_bytes())
+            .await
+            .unwrap();
+        let e = exchange(&mut client, "host:devices-l", true)
+            .await
+            .unwrap_err();
+        assert_eq!(e.to_string(), "bad[31mnews");
     }
 
     #[tokio::test]
     async fn rejects_bad_replies() {
         // Oversized length, non-hex length, unknown status.
-        for reply in [&b"OKAYffff"[..], b"OKAYzzzz", b"WHAT"] {
+        for reply in [&b"OKAYffff"[..], b"OKAYzzzz", b"WHAT", b"FAILffff"] {
             let (mut client, mut server) = duplex(64);
             server.write_all(reply).await.unwrap();
-            let e = exchange(&mut client, "host:devices", true)
+            let e = exchange(&mut client, "host:devices-l", true)
                 .await
                 .unwrap_err();
             assert_eq!(e.kind(), io::ErrorKind::InvalidData, "{reply:?}");
@@ -321,7 +355,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn gives_up_on_a_silent_server() {
         let (mut client, _server) = duplex(64);
-        let e = exchange(&mut client, "host:devices", true)
+        let e = exchange(&mut client, "host:devices-l", true)
             .await
             .unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::TimedOut);

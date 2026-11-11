@@ -186,19 +186,29 @@ async fn connect(c: Connect) -> io::Result<()> {
     proxy::run(tunnel, listener, active, shutdown_signal()).await
 }
 
-/// Connects to the relay. Keepalive notices a peer that vanished without closing.
+/// Connects to the relay. Over TCP, keepalive notices a peer that vanished without closing.
 async fn dial(transport: &Transport, tun: bool) -> io::Result<TcpStream> {
     let s = match transport {
-        Transport::Tcp(relay) => dial_tcp(relay, tun).await?,
+        Transport::Tcp(relay) => {
+            let s = dial_tcp(relay, tun).await?;
+            let keepalive = socket2::TcpKeepalive::new()
+                .with_time(Duration::from_secs(30))
+                .with_interval(Duration::from_secs(10));
+            socket2::SockRef::from(&s).set_tcp_keepalive(&keepalive)?;
+            s
+        }
         // The adb server on loopback carries the USB link, so this socket needs no mark: loopback
-        // never enters the TUN routes. There is no IP path to the phone to bypass at all.
-        Transport::Usb(serial) => kite_link::adb::open(serial.as_deref()).await?,
+        // is answered by the local routing table before any TUN rule, and there is no IP path to a
+        // USB phone to keep out of the tunnel. Keepalive would only be answered by the local
+        // kernel, so it is skipped; an unplug or an adb crash closes the socket.
+        Transport::Usb(serial) => {
+            eprintln!(
+                "kite: the USB link is not authenticated yet; only use it on a computer you trust"
+            );
+            kite_link::adb::open(serial.as_deref()).await?
+        }
     };
     s.set_nodelay(true)?;
-    let keepalive = socket2::TcpKeepalive::new()
-        .with_time(Duration::from_secs(30))
-        .with_interval(Duration::from_secs(10));
-    socket2::SockRef::from(&s).set_tcp_keepalive(&keepalive)?;
     Ok(s)
 }
 
