@@ -84,7 +84,7 @@ exists yet.
 |---|--------|------------|-------|--------|
 | S | Forged DNS answers send traffic to the wrong host. | Names resolve on the phone, so queries leave through the phone's VPN or network, not the computer's. | `kite-relay` | done |
 | T | Someone alters traffic past the phone. | Out of our hands: Kite does not touch application TLS. | none | n/a |
-| I | Traffic or DNS leaves the computer outside the tunnel, or outside the phone's VPN. | The relay opens a real socket on the phone for every connection, so the phone's VPN applies. The computer side sends DNS through the tunnel and must not fall back to the local network if the tunnel drops. | `kite-relay` done, `kite-cli` planned | partly done |
+| I | Traffic or DNS leaves the computer outside the tunnel, or outside the phone's VPN. | The relay opens a real socket on the phone for every connection, so the phone's VPN applies. In TUN mode policy rules send every packet to port 53 and everything not marked as the relay transport into the tunnel, and tun2proxy carries DNS over TCP through it; with systemd-resolved the tunnel link gets the `~.` routing domain. CI checks with packet counters that nothing else leaves. | `kite-relay`, `kite-cli` | done |
 | D | A remote server holds connections open or sends data without end. | Idle timeouts, the stream cap above, bounded copy buffers. | `kite-relay` | done |
 | E | The relay is turned into a way to reach the phone's own network (see B1, elevation). | Same deny-list. By design other hosts on the phone's networks, such as other hotspot clients on private addresses, stay reachable, because the user's traffic needs them. The phone's public address as seen by its carrier is not an interface address and cannot be detected. | `kite-relay` | done |
 
@@ -112,6 +112,13 @@ pairing, is a planned part of B1.
 
 - No encryption or authentication on the transport until the Noise work lands.
 - No quota per paired computer: a paired computer can use all of the phone's data.
+- No kill switch: when the tunnel drops, kite exits and the computer's own routes take over again.
+- Proxy mode and TUN mode listen on 127.0.0.1, so any local user can send traffic through the phone
+  while kite runs.
+- In TUN mode, names under a search domain that a LAN link supplies to systemd-resolved still go to
+  that link's resolver, and so do link-local IPv6 resolvers.
+- In TUN mode, DNS over TCP to a resolver on the computer's LAN enters the tunnel and fails there,
+  because the phone cannot reach that resolver. Only UDP queries to private resolvers are redirected.
 - Timing and volume of traffic are visible to anyone who can watch the link.
 
 ## Keeping this current

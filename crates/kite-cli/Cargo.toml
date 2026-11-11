@@ -12,10 +12,17 @@ name = "kite"
 path = "src/main.rs"
 
 [dependencies]
-socket2 = "0.6"
+socket2 = { version = "0.6", features = ["all"] }
 tokio = { version = "1.53", features = ["io-util", "macros", "net", "rt", "signal", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 yamux = "0.14"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+netlink-packet-route = "0.33"
+rtnetlink = "0.23"
+tokio = { version = "1.53", features = ["fs", "process", "rt-multi-thread"] }
+tun = { version = "0.8.14", features = ["async"] }
+tun2proxy = { version = "0.8.7", default-features = false, features = ["udpgw"] }
 
 [dev-dependencies]
 kite-relay = { path = "../kite-relay" }

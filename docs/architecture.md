@@ -50,6 +50,46 @@ so replies come back as DATA frames with the same CONN_ID. A frame body is at mo
 fits the largest IPv4 datagram (65507 bytes).
 - A proxy-only mode stops at the local SOCKS5 listener and needs no administrator rights.
 
+## TUN mode on Linux
+
+`kite connect --tun` creates the TUN device `kite0` and runs tun2proxy on it as a library. tun2proxy
+turns each TCP connection into a SOCKS5 connection to kite's own proxy on 127.0.0.1, sends DNS over
+TCP, and carries other UDP through the relay's gateway. It drops AAAA answers: its TCP stack accepts
+every handshake before the relay connects, so an IPv6 target the phone cannot reach would look
+connected and then fail instead of falling back to IPv4. Routing follows wg-quick:
+
+```
+pref 5300  ipproto udp dport 53 -> table 5300   every DNS query, even to a LAN resolver
+pref 5301  ipproto tcp dport 53 -> table 5300
+pref 5302  table main, suppress_prefixlength 0  LAN and other specific routes stay as they are
+pref 5303  not fwmark 5300 -> table 5300         everything else except the relay transport
+```
+
+Table 5300 holds only default routes through `kite0`, and the socket to the relay carries firewall
+mark 5300 so it never enters the tunnel it carries. `/etc/resolv.conf` is left alone. With
+systemd-resolved, which sends each query out of the link its server belongs to, `kite0` gets its own
+DNS server and the `~.` routing domain.
+
+Nothing here depends on kite exiting cleanly. The device is not persistent, so when the process ends
+in any way the kernel removes it together with its routes and resolved forgets its DNS settings. The
+rules left behind point at an empty table and fall through to the main table, so the network keeps
+working. kite deletes them at the next start, on a clean exit, and with `kite restore`.
+
+Routes, rules and the device need only `CAP_NET_ADMIN`. systemd-resolved does not accept that
+capability for link settings and asks polkit instead, so on a host that resolves through it a
+non-root kite needs a rule such as this one for the user it runs as:
+
+```js
+// /etc/polkit-1/rules.d/50-kite.rules
+polkit.addRule(function (action, subject) {
+  if (action.id.indexOf("org.freedesktop.resolve1.set-") == 0 && subject.user == "kite") {
+    return polkit.Result.YES;
+  }
+});
+```
+
+Without it TUN mode stops with an error instead of running with DNS that could leak.
+
 ## Crates
 
 | Crate | Role |
