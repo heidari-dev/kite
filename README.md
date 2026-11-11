@@ -5,7 +5,7 @@ proxy exit IP while doing it.
 
 Normal USB tethering is routed by the kernel and skips the phone's VPN. Kite instead opens a real
 socket on the phone for every connection the computer makes, so traffic leaves through whatever the
-phone itself is using: a VPN, a proxy, or the plain mobile network. It works on Linux, Windows, macOS,
+phone itself is using: a VPN, a proxy, or the plain mobile network. It is being built for Linux, Windows, macOS,
 Android and iPhone.
 
 ## Status
