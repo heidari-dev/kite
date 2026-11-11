@@ -5,7 +5,6 @@ use crate::{proxy, route};
 use std::future::Future;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
@@ -71,8 +70,12 @@ async fn serve(
     active: Arc<AtomicUsize>,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
-    route::setup(link).await?;
-    resolved(NAME).await?;
+    // Polled from the start, so a signal during setup still ends in a clean restore.
+    tokio::pin!(shutdown);
+    tokio::select! {
+        r = async { route::setup(link).await?; resolved(NAME).await } => r?,
+        () = &mut shutdown => return Ok(()),
+    }
 
     let proxy_url = format!("socks5://{}", listener.local_addr()?);
     let mut args = Args::default();
@@ -105,11 +108,18 @@ async fn serve(
 }
 
 /// systemd-resolved sends each query out of the link that supplied the server (IP_UNICAST_IF), which
-/// routing rules cannot redirect. When it runs, give the tunnel link a server and the "~." routing
-/// domain so resolved sends every query there. It drops these settings with the link.
+/// routing rules cannot redirect. When this host resolves through it, give the tunnel link a server
+/// and the "~." routing domain so resolved sends every query there. It drops these settings with
+/// the link. Without root, resolved asks polkit (see docs/architecture.md).
 async fn resolved(link: &str) -> io::Result<()> {
-    // Present while resolved runs, whatever /etc/resolv.conf points at (apps may use nss-resolve).
-    if !Path::new("/run/systemd/resolve/io.systemd.Resolve").exists() {
+    let resolv_conf = match tokio::fs::read_to_string("/etc/resolv.conf").await {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        r => r?,
+    };
+    let nsswitch = tokio::fs::read_to_string("/etc/nsswitch.conf")
+        .await
+        .unwrap_or_default();
+    if !uses_resolved(&resolv_conf, &nsswitch) {
         return Ok(());
     }
     let dns = DNS.to_string();
@@ -129,11 +139,46 @@ async fn resolved(link: &str) -> io::Result<()> {
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "resolvectl did not answer"))??;
         if !out.status.success() {
             return Err(io::Error::other(format!(
-                "resolvectl {}: {}",
-                args.join(" "),
+                "systemd-resolved refused DNS settings for {link} (run as root or add the polkit \
+                 rule from docs/architecture.md): {}",
                 String::from_utf8_lossy(&out.stderr).trim()
             )));
         }
     }
     Ok(())
+}
+
+/// Whether name lookups go through systemd-resolved: its stub is the nameserver, or nss-resolve
+/// is in the hosts line. Both describe this network namespace, unlike resolved's socket in /run.
+fn uses_resolved(resolv_conf: &str, nsswitch: &str) -> bool {
+    let stub = resolv_conf.lines().any(|line| {
+        let mut words = line.split_whitespace();
+        words.next() == Some("nameserver")
+            && matches!(words.next(), Some("127.0.0.53" | "127.0.0.54"))
+    });
+    let nss = nsswitch.lines().any(|line| {
+        let mut words = line.split_whitespace();
+        words.next() == Some("hosts:") && words.any(|w| w == "resolve")
+    });
+    stub || nss
+}
+
+#[cfg(test)]
+mod tests {
+    use super::uses_resolved;
+
+    #[test]
+    fn detects_systemd_resolved() {
+        let stub = "# stub\nnameserver 127.0.0.53\noptions edns0 trust-ad\nsearch lan\n";
+        let lan = "nameserver 192.168.1.1\n";
+        let nss = "passwd: files\nhosts: files mymachines resolve [!UNAVAIL=return] dns\n";
+        assert!(uses_resolved(stub, ""));
+        assert!(uses_resolved(lan, nss));
+        assert!(!uses_resolved(lan, "hosts: files dns\n"));
+        assert!(!uses_resolved(
+            "# nameserver 127.0.0.53\n",
+            "# hosts: resolve\n"
+        ));
+        assert!(!uses_resolved("", ""));
+    }
 }

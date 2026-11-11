@@ -71,8 +71,22 @@ DNS server and the `~.` routing domain.
 Nothing here depends on kite exiting cleanly. The device is not persistent, so when the process ends
 in any way the kernel removes it together with its routes and resolved forgets its DNS settings. The
 rules left behind point at an empty table and fall through to the main table, so the network keeps
-working. kite deletes them at the next start, on a clean exit, and with `kite restore`. Only
-`CAP_NET_ADMIN` is needed.
+working. kite deletes them at the next start, on a clean exit, and with `kite restore`.
+
+Routes, rules and the device need only `CAP_NET_ADMIN`. systemd-resolved does not accept that
+capability for link settings and asks polkit instead, so on a host that resolves through it a
+non-root kite needs a rule such as this one for the user it runs as:
+
+```js
+// /etc/polkit-1/rules.d/50-kite.rules
+polkit.addRule(function (action, subject) {
+  if (action.id.indexOf("org.freedesktop.resolve1.set-") == 0 && subject.user == "kite") {
+    return polkit.Result.YES;
+  }
+});
+```
+
+Without it TUN mode stops with an error instead of running with DNS that could leak.
 
 ## Crates
 
