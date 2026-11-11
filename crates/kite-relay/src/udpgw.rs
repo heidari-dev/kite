@@ -29,7 +29,7 @@ const ERR: u8 = 0x20;
 /// Largest frame: the length field plus a body of up to `u16::MAX` bytes.
 const MAX_FRAME: usize = 2 + u16::MAX as usize;
 /// UDP sockets per gateway stream. tun2proxy uses one stream per flow, so this is generous.
-const MAX_SESSIONS: usize = 64;
+const MAX_SESSIONS: usize = 16;
 /// A UDP socket with no traffic for this long is closed.
 const UDP_IDLE: Duration = Duration::from_secs(60);
 
@@ -41,7 +41,8 @@ struct Session {
     last: Instant,
 }
 
-/// Serves udpgw frames on `stream` until it closes or sends a malformed frame.
+/// Serves udpgw frames on `stream` until it closes, sends a malformed frame, stops reading or
+/// stays silent for the idle timeout. tun2proxy's keepalives count as traffic.
 pub async fn serve<S>(mut stream: S, cfg: &Config) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -51,17 +52,19 @@ where
     // Zeroed, so pages are only touched by datagrams that need them.
     let mut out = vec![0u8; MAX_FRAME];
     let mut sweep = tokio::time::interval(UDP_IDLE);
+    let mut active = Instant::now();
     loop {
         tokio::select! {
             n = read_more(&mut stream, &mut inbuf) => {
                 if n? == 0 {
                     return Ok(());
                 }
+                active = Instant::now();
                 while let Some(len) = frame_len(&inbuf)? {
                     let control = handle(&inbuf[2..len], &mut sessions, cfg).await;
                     inbuf.drain(..len);
                     if let Some(frame) = control {
-                        stream.write_all(&frame).await?;
+                        timeout(cfg.idle_timeout, stream.write_all(&frame)).await??;
                     }
                 }
             }
@@ -80,9 +83,13 @@ where
                         &out[..5]
                     }
                 };
-                stream.write_all(frame).await?;
+                timeout(cfg.idle_timeout, stream.write_all(frame)).await??;
+                active = Instant::now();
             }
             _ = sweep.tick() => sessions.retain(|_, s| s.last.elapsed() < UDP_IDLE),
+            _ = tokio::time::sleep_until(active + cfg.idle_timeout) => {
+                return Err(io::Error::new(ErrorKind::TimedOut, "idle timeout"));
+            }
         }
     }
 }
@@ -319,6 +326,20 @@ mod tests {
         let body = read_frame(&mut client).await;
         assert_eq!(&body[..3], &[DATA, 0, 2]);
         assert_eq!(body.last(), Some(&b'b'));
+    }
+
+    #[tokio::test]
+    async fn closes_a_silent_stream() {
+        let cfg = Config {
+            idle_timeout: Duration::from_millis(100),
+            ..loopback_cfg()
+        };
+        let mut client = start(cfg);
+        client.write_all(&control(KEEPALIVE, 1)).await.unwrap();
+        assert_eq!(read_frame(&mut client).await, [KEEPALIVE, 0, 1]);
+        let mut rest = Vec::new();
+        client.read_to_end(&mut rest).await.unwrap();
+        assert!(rest.is_empty());
     }
 
     #[test]
