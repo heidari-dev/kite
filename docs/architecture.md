@@ -22,8 +22,8 @@ address. Plain USB tethering is forwarded in the kernel and skips the VPN, which
 - The computer side never parses SOCKS itself; it pipes local connections into new yamux streams.
 - DNS goes over the tunnel (DNS over TCP or virtual DNS), so queries leave through the phone.
 - UDP is carried by a UDP gateway protocol (udpgw) served by the phone relay. See below.
-- The phone refuses targets on its own loopback and link-local ranges by default, plus unspecified,
-  broadcast and multicast addresses. Names resolve on the phone and are checked after resolution.
+- The phone refuses targets on its own loopback, any address assigned to one of its interfaces and
+  link-local ranges by default, plus unspecified, broadcast and multicast addresses. Names resolve on the phone and are checked after resolution.
 
 ## UDP
 
