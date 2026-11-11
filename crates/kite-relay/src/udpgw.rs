@@ -67,6 +67,10 @@ where
                         timeout(cfg.idle_timeout, stream.write_all(&frame)).await??;
                     }
                 }
+                // tun2proxy keeps idle gateway streams pooled; don't let one keep a big frame's buffer.
+                if inbuf.is_empty() && inbuf.capacity() > 8192 {
+                    inbuf = Vec::new();
+                }
             }
             (id, got) = poll_fn(|cx| poll_recv_any(&sessions, &mut out, cx)) => {
                 let frame = match (got, sessions.get_mut(&id)) {
