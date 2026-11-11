@@ -1,6 +1,6 @@
 //! Phone-side relay: encrypted multiplexed sessions that open real sockets on the phone.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 pub mod socks5;
@@ -40,7 +40,18 @@ impl Config {
         match ip {
             // 0.0.0.0/8 means "this host" on most stacks.
             IpAddr::V4(v4) => !(v4.is_link_local() || v4.is_broadcast() || v4.octets()[0] == 0),
-            IpAddr::V6(v6) => v6.segments()[0] & 0xffc0 != 0xfe80,
+            IpAddr::V6(v6) => {
+                let s = v6.segments();
+                // IPv4-compatible (::/96) and NAT64 (64:ff9b::/96) forms carry an IPv4 target.
+                if let Some(v4) = v6.to_ipv4() {
+                    return self.allows(v4.into());
+                }
+                if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                    let v4 = Ipv4Addr::from((u32::from(s[6]) << 16) | u32::from(s[7]));
+                    return self.allows(v4.into());
+                }
+                s[0] & 0xffc0 != 0xfe80
+            }
         }
     }
 }
@@ -52,7 +63,13 @@ mod tests {
     #[test]
     fn allows_public_and_private_addresses() {
         let cfg = Config::default();
-        for ip in ["1.1.1.1", "192.168.1.10", "10.0.0.1", "2606:4700::1111"] {
+        for ip in [
+            "1.1.1.1",
+            "192.168.1.10",
+            "10.0.0.1",
+            "2606:4700::1111",
+            "64:ff9b::101:101",
+        ] {
             assert!(cfg.allows(ip.parse().unwrap()), "{ip}");
         }
     }
@@ -75,6 +92,10 @@ mod tests {
             "224.0.0.1",
             "ff02::1",
             "::ffff:169.254.1.1",
+            "::7f00:1",
+            "::a9fe:101",
+            "64:ff9b::7f00:1",
+            "64:ff9b::a9fe:101",
         ] {
             assert!(!cfg.allows(ip.parse().unwrap()), "{ip}");
         }
