@@ -4,13 +4,15 @@
 
 use std::future::poll_fn;
 use std::io;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::task::JoinSet;
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
+// Entry points for the cargo-fuzz targets. Compiled only when fuzzing, never in a release build.
+#[cfg(any(test, fuzzing))]
 #[doc(hidden)]
 pub mod fuzz;
 pub mod socks5;
@@ -79,14 +81,14 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Whether the relay may open a socket to `ip`. The phone's own loopback, link-local,
-    /// unspecified, broadcast and multicast addresses are refused.
+    /// Whether the relay may open a socket to `ip`. The phone's own loopback and interface
+    /// addresses, link-local, unspecified, broadcast and multicast addresses are refused.
     pub fn allows(&self, ip: IpAddr) -> bool {
         let ip = ip.to_canonical();
         if ip.is_loopback() {
             return self.allow_loopback;
         }
-        if ip.is_unspecified() || ip.is_multicast() {
+        if ip.is_unspecified() || ip.is_multicast() || is_local(ip) {
             return false;
         }
         match ip {
@@ -108,6 +110,29 @@ impl Config {
     }
 }
 
+/// Whether `ip` is assigned to one of this host's interfaces (WiFi, hotspot gateway, WiFi Direct,
+/// cellular, VPN tun). A paired computer must not reach services the phone exposes on 0.0.0.0.
+/// The OS only lets us bind an address it owns, so a bind probe reads the live interface table at
+/// connect time. Any error other than "address not available" counts as local, so it fails closed.
+fn is_local(ip: IpAddr) -> bool {
+    match UdpSocket::bind((ip, 0)) {
+        Ok(_) => true,
+        Err(e) => e.kind() != io::ErrorKind::AddrNotAvailable,
+    }
+}
+
+/// A non-loopback address of this machine, for tests. The OS picks the source address for a UDP
+/// socket "connected" to a TEST-NET address, so nothing is bound or sent and no firewall prompt
+/// appears.
+#[cfg(test)]
+pub(crate) fn own_address() -> Option<IpAddr> {
+    let sock = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).ok()?;
+    sock.connect(&std::net::SocketAddr::from(([192, 0, 2, 1], 9)).into())
+        .ok()?;
+    let ip = sock.local_addr().ok()?.as_socket()?.ip();
+    (!ip.is_loopback()).then_some(ip)
+}
+
 #[cfg(test)]
 mod tests {
     use super::Config;
@@ -117,8 +142,8 @@ mod tests {
         let cfg = Config::default();
         for ip in [
             "1.1.1.1",
-            "192.168.1.10",
-            "10.0.0.1",
+            "192.168.254.253",
+            "10.254.253.252",
             "2606:4700::1111",
             "64:ff9b::101:101",
         ] {
@@ -150,6 +175,22 @@ mod tests {
             "64:ff9b::a9fe:101",
         ] {
             assert!(!cfg.allows(ip.parse().unwrap()), "{ip}");
+        }
+    }
+
+    #[test]
+    fn refuses_own_interface_addresses() {
+        let Some(own) = super::own_address() else {
+            return; // no non-loopback interface on this machine
+        };
+        for cfg in [
+            Config::default(),
+            Config {
+                allow_loopback: true,
+                ..Config::default()
+            },
+        ] {
+            assert!(!cfg.allows(own), "{own}");
         }
     }
 

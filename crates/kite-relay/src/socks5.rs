@@ -400,6 +400,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refuses_own_interface_address() {
+        let Some(own) = crate::own_address() else {
+            return; // no non-loopback interface on this machine
+        };
+        // Nothing listens: the request is refused before any connect.
+        let (mut client, _task) = start(loopback_cfg());
+        let req = ip_request(SocketAddr::new(own, 80));
+        assert_eq!(request(&mut client, &req).await, REP_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
     async fn refuses_link_local_without_connecting() {
         let (mut client, _task) = start(Config::default());
         let req = ip_request("169.254.1.1:80".parse().unwrap());

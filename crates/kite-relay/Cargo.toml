@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
 [dependencies]
 socket2 = "0.6"
 tokio = { version = "1.53", features = ["io-util", "macros", "net", "rt", "time"] }
