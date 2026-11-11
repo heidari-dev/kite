@@ -70,6 +70,10 @@ and frees the GUI's memory. Installers set up the app, CLI, daemon service and a
 one administrator prompt: `.deb` and AppImage for Linux first, then an MSI for Windows and a `.dmg` for
 macOS.
 
+## Security
+
+See the [threat model](threat-model.md) for assets, trust boundaries and which mitigations exist today.
+
 ## Prior art
 
 PdaNet+ pioneered sharing a phone connection while keeping the phone's VPN. Kite is an independent,
