@@ -5,8 +5,11 @@ use crate::{proxy, route};
 use std::future::Future;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::Path;
+use std::process::Stdio;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tun::AbstractDevice;
 use tun2proxy::{ArgDns, Args, CancellationToken, ProxyParameters};
@@ -30,19 +33,34 @@ pub async fn run(
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()> {
     let mut cfg = tun::Configuration::default();
-    cfg.tun_name(NAME)
-        .address(ADDR)
+    cfg.address(ADDR)
         .netmask(Ipv4Addr::new(255, 255, 255, 252))
         .mtu(MTU)
         .up();
-    // Not persistent: the kernel removes the device and its routes when this process ends. Creating
-    // it first also fails while another kite owns it, before its rules could be touched.
-    let device = tun::create_as_async(&cfg).map_err(io::Error::other)?;
+    let device = claim(cfg)?;
     let link = device.tun_index().map_err(io::Error::other)?;
     let link = u32::try_from(link).map_err(io::Error::other)?;
     route::restore().await?;
     let result = serve(device, link, tunnel, listener, active, shutdown).await;
     result.and(route::restore().await)
+}
+
+/// Creates the TUN device. It is not persistent, so the kernel removes it and its routes when this
+/// process ends. Creating it fails while another kite holds it, so holding it is also the lock that
+/// keeps one kite from touching another one's rules.
+fn claim(mut cfg: tun::Configuration) -> io::Result<tun::AsyncDevice> {
+    cfg.tun_name(NAME);
+    tun::create_as_async(&cfg).map_err(|e| io::Error::other(format!("creating {NAME}: {e}")))
+}
+
+/// Deletes rules left behind by a TUN mode run that was killed.
+pub async fn restore() -> io::Result<()> {
+    let mut cfg = tun::Configuration::default();
+    cfg.platform_config(|p| {
+        p.ensure_root_privileges(false); // no addresses: the device only serves as the lock
+    });
+    let _lock = claim(cfg)?;
+    route::restore().await
 }
 
 async fn serve(
@@ -87,13 +105,11 @@ async fn serve(
 }
 
 /// systemd-resolved sends each query out of the link that supplied the server (IP_UNICAST_IF), which
-/// routing rules cannot redirect. When it is in use, give the tunnel link a server and the "~."
-/// routing domain so resolved sends every query there. It drops these settings with the link.
+/// routing rules cannot redirect. When it runs, give the tunnel link a server and the "~." routing
+/// domain so resolved sends every query there. It drops these settings with the link.
 async fn resolved(link: &str) -> io::Result<()> {
-    let conf = tokio::fs::read_to_string("/etc/resolv.conf")
-        .await
-        .unwrap_or_default();
-    if !uses_resolved_stub(&conf) {
+    // Present while resolved runs, whatever /etc/resolv.conf points at (apps may use nss-resolve).
+    if !Path::new("/run/systemd/resolve/io.systemd.Resolve").exists() {
         return Ok(());
     }
     let dns = DNS.to_string();
@@ -102,10 +118,15 @@ async fn resolved(link: &str) -> io::Result<()> {
         ["domain", link, "~."],
         ["default-route", link, "true"],
     ] {
-        let out = tokio::process::Command::new("/usr/bin/resolvectl")
+        let run = tokio::process::Command::new("/usr/bin/resolvectl")
             .args(args)
-            .output()
-            .await?;
+            .env_clear()
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output();
+        let out = tokio::time::timeout(Duration::from_secs(5), run)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "resolvectl did not answer"))??;
         if !out.status.success() {
             return Err(io::Error::other(format!(
                 "resolvectl {}: {}",
@@ -115,27 +136,4 @@ async fn resolved(link: &str) -> io::Result<()> {
         }
     }
     Ok(())
-}
-
-fn uses_resolved_stub(resolv_conf: &str) -> bool {
-    resolv_conf.lines().any(|line| {
-        let mut words = line.split_whitespace();
-        words.next() == Some("nameserver")
-            && matches!(words.next(), Some("127.0.0.53" | "127.0.0.54"))
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::uses_resolved_stub;
-
-    #[test]
-    fn detects_the_systemd_resolved_stub() {
-        assert!(uses_resolved_stub(
-            "# stub\nnameserver 127.0.0.53\noptions edns0 trust-ad\nsearch lan\n"
-        ));
-        assert!(!uses_resolved_stub("nameserver 192.168.1.1\n"));
-        assert!(!uses_resolved_stub("# nameserver 127.0.0.53\n"));
-        assert!(!uses_resolved_stub(""));
-    }
 }

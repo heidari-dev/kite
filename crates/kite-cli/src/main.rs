@@ -165,6 +165,10 @@ async fn dial(relay: &str, tun: bool) -> io::Result<TcpStream> {
             };
             #[cfg(target_os = "linux")]
             if tun {
+                // The DNS rules come before the mark check and would loop this socket.
+                if addr.port() == 53 {
+                    return Err(io::Error::other("TUN mode cannot reach a relay on port 53"));
+                }
                 socket2::SockRef::from(&sock).set_mark(route::TABLE)?;
             }
             match sock.connect(addr).await {
@@ -200,14 +204,7 @@ async fn shutdown_signal() {
 
 #[cfg(target_os = "linux")]
 async fn restore() -> io::Result<()> {
-    // While a TUN mode kite runs, its rules are live; removing them would leak its traffic.
-    if std::path::Path::new("/sys/class/net")
-        .join(tun::NAME)
-        .exists()
-    {
-        return Err(io::Error::other("kite is running in TUN mode"));
-    }
-    route::restore().await
+    tun::restore().await
 }
 
 #[cfg(not(target_os = "linux"))]

@@ -57,14 +57,14 @@ turns each TCP connection into a SOCKS5 connection to kite's own proxy on 127.0.
 TCP, and carries other UDP through the relay's gateway. Routing follows wg-quick:
 
 ```
-pref 5270  ipproto udp dport 53 -> table 5270   every DNS query, even to a LAN resolver
-pref 5271  ipproto tcp dport 53 -> table 5270
-pref 5272  table main, suppress_prefixlength 0  LAN and other specific routes stay as they are
-pref 5273  not fwmark 5270 -> table 5270         everything else except the relay transport
+pref 5300  ipproto udp dport 53 -> table 5300   every DNS query, even to a LAN resolver
+pref 5301  ipproto tcp dport 53 -> table 5300
+pref 5302  table main, suppress_prefixlength 0  LAN and other specific routes stay as they are
+pref 5303  not fwmark 5300 -> table 5300         everything else except the relay transport
 ```
 
-Table 5270 holds only default routes through `kite0`, and the socket to the relay carries firewall
-mark 5270 so it never enters the tunnel it carries. `/etc/resolv.conf` is left alone. With
+Table 5300 holds only default routes through `kite0`, and the socket to the relay carries firewall
+mark 5300 so it never enters the tunnel it carries. `/etc/resolv.conf` is left alone. With
 systemd-resolved, which sends each query out of the link its server belongs to, `kite0` gets its own
 DNS server and the `~.` routing domain.
 

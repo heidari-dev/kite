@@ -16,6 +16,7 @@ install -m 755 "$1" "$BIN/kite"
 install -m 755 "$2" "$BIN/relay-dev"
 relay_pid=
 kite_pid=
+forward=$(sysctl -n net.ipv4.ip_forward)
 
 cleanup() {
   set +e
@@ -25,6 +26,7 @@ cleanup() {
   iptables -t nat -D POSTROUTING -s 10.200.0.0/24 -j MASQUERADE 2>/dev/null
   iptables -D FORWARD -s 10.200.0.0/24 -j ACCEPT 2>/dev/null
   iptables -D FORWARD -d 10.200.0.0/24 -j ACCEPT 2>/dev/null
+  sysctl -qw net.ipv4.ip_forward="$forward"
   rm -rf "/etc/netns/$NS" "$BIN"
   true
 }
@@ -73,6 +75,10 @@ leaks() {
   echo $((v4 + v6))
 }
 
+# Another program's rule at kite's priority (Tailscale-style) must survive every kite exit path.
+in_ns ip rule add pref 5300 lookup 52
+foreign_rule() { in_ns ip rule | grep -q "^5300:.*lookup 52"; }
+
 "$BIN/relay-dev" "$RELAY" > "$BIN/relay.log" 2>&1 &
 relay_pid=$!
 
@@ -80,7 +86,11 @@ start_kite() {
   "${as_nobody[@]}" -c "exec $BIN/kite connect --tcp $RELAY --tun" > "$BIN/kite.log" 2>&1 &
   kite_pid=$!
   for _ in $(seq 50); do
-    if in_ns ip rule | grep -q "lookup 5270"; then return; fi
+    # IPv6 rules are added last.
+    if in_ns ip -6 rule | grep -q "lookup 5300"; then
+      sleep 1
+      return
+    fi
     kill -0 "$kite_pid" 2>/dev/null || fail "kite exited"
     sleep 0.2
   done
@@ -88,8 +98,12 @@ start_kite() {
 }
 
 start_kite
-[ "$(stat -c %u "/proc/$kite_pid")" = 65534 ] || fail "kite is not running as nobody"
-grep -q "CapEff:.*0000000000001000" "/proc/$kite_pid/status" || fail "kite has more than CAP_NET_ADMIN"
+[ "$(stat -c %u "/proc/$kite_pid")" = "$(id -u nobody)" ] || fail "kite is not running as nobody"
+for set in CapPrm CapEff CapAmb; do
+  grep -q "^$set:\s*0000000000001000$" "/proc/$kite_pid/status" || fail "$set is not CAP_NET_ADMIN only"
+done
+"${as_nobody[@]}" -c "exec $BIN/kite restore" 2>/dev/null && fail "kite restore ran while kite was up"
+in_ns ip rule | grep -q "not from all fwmark" || fail "kite restore removed live rules"
 echo "kite idle RSS: $(rss "$kite_pid")"
 
 echo "== traffic goes through the tunnel"
@@ -121,9 +135,10 @@ kill -TERM "$kite_pid"
 wait "$kite_pid" || fail "kite exited with an error on SIGTERM"
 kite_pid=
 if in_ns ip link show kite0 2>/dev/null; then fail "kite0 still exists"; fi
-if in_ns ip rule | grep -q 5270; then fail "rules left after SIGTERM"; fi
-if in_ns ip -6 rule | grep -q 5270; then fail "IPv6 rules left after SIGTERM"; fi
+if in_ns ip rule | grep -q "lookup 5300"; then fail "rules left after SIGTERM"; fi
+if in_ns ip -6 rule | grep -q "lookup 5300"; then fail "IPv6 rules left after SIGTERM"; fi
 in_ns curl -sS --max-time 15 -o /dev/null https://1.1.1.1/ || fail "direct path broken after SIGTERM"
+foreign_rule || fail "SIGTERM removed another program's rule"
 
 echo "== SIGKILL leaves the network working, kite restore cleans up"
 start_kite
@@ -131,10 +146,11 @@ kill -9 "$kite_pid"
 wait "$kite_pid" 2>/dev/null || true
 kite_pid=
 if in_ns ip link show kite0 2>/dev/null; then fail "kite0 survived SIGKILL"; fi
-in_ns ip rule | grep -q "lookup 5270" || fail "expected leftover rules after SIGKILL"
+in_ns ip rule | grep -q "lookup 5300" || fail "expected leftover rules after SIGKILL"
 in_ns curl -sS --max-time 15 -o /dev/null https://1.1.1.1/ || fail "direct path broken after SIGKILL"
 in_ns dig +short +time=5 +tries=1 @1.1.1.1 example.com A > /dev/null || fail "DNS broken after SIGKILL"
 "${as_nobody[@]}" -c "exec $BIN/kite restore" || fail "kite restore"
-if in_ns ip rule | grep -q 5270; then fail "rules left after kite restore"; fi
+if in_ns ip rule | grep -q "lookup 5300"; then fail "rules left after kite restore"; fi
+foreign_rule || fail "kite restore removed another program's rule"
 
 echo "all TUN mode checks passed"

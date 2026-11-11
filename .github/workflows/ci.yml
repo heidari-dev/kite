@@ -88,7 +88,7 @@ jobs:
       - run: cargo build --release -p kite-relay --example relay-dev
       - run: ls -l target/release/kite
       - name: TUN mode end to end
-        run: sudo scripts/tun-e2e.sh target/release/kite target/release/examples/relay-dev
+        run: sudo bash scripts/tun-e2e.sh target/release/kite target/release/examples/relay-dev
 
   measure:
     runs-on: ubuntu-latest

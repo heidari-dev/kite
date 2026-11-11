@@ -1,13 +1,13 @@
 //! Policy routing for TUN mode, in the style of wg-quick:
 //!
 //! ```text
-//! pref 5270  ipproto udp dport 53 -> table 5270   every DNS query, even to a LAN resolver
-//! pref 5271  ipproto tcp dport 53 -> table 5270
-//! pref 5272  table main, suppress_prefixlength 0  LAN and other specific routes stay as they are
-//! pref 5273  not fwmark 5270 -> table 5270         everything else except the relay transport
+//! pref 5300  ipproto udp dport 53 -> table 5300   every DNS query, even to a LAN resolver
+//! pref 5301  ipproto tcp dport 53 -> table 5300
+//! pref 5302  table main, suppress_prefixlength 0  LAN and other specific routes stay as they are
+//! pref 5303  not fwmark 5300 -> table 5300         everything else except the relay transport
 //! ```
 //!
-//! Table 5270 only holds default routes through the TUN device, and the kernel deletes those with
+//! Table 5300 only holds default routes through the TUN device, and the kernel deletes those with
 //! the device when kite exits in any way, a crash or SIGKILL included. The rules left behind then
 //! point at an empty table and fall through to the main table, so the network keeps working until
 //! `restore` deletes them.
@@ -20,8 +20,9 @@ use rtnetlink::{Handle, RouteMessageBuilder};
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-/// Routing table of the tunnel, also the firewall mark of the relay transport socket.
-pub const TABLE: u32 = 5270;
+/// Routing table of the tunnel, also the firewall mark of the relay transport socket. The rules use
+/// priorities 5300 to 5303, after Tailscale's (5210 to 5270).
+pub const TABLE: u32 = 5300;
 const MAIN: u32 = 254;
 const FAMILIES: [AddressFamily; 2] = [AddressFamily::Inet, AddressFamily::Inet6];
 
@@ -38,21 +39,29 @@ fn nl(e: rtnetlink::Error) -> io::Error {
     }
 }
 
+/// A kernel without IPv6 refuses IPv6 routes and rules; there is no IPv6 traffic to catch then.
+fn no_ipv6(family: AddressFamily, e: &io::Error) -> bool {
+    family == AddressFamily::Inet6 && e.raw_os_error() == Some(97) // EAFNOSUPPORT
+}
+
 /// Sends all traffic except the relay transport into the device with index `link`.
 pub async fn setup(link: u32) -> io::Result<()> {
     let h = handle()?;
-    let v4 = RouteMessageBuilder::<Ipv4Addr>::new()
-        .output_interface(link)
-        .table_id(TABLE)
-        .build();
-    let v6 = RouteMessageBuilder::<Ipv6Addr>::new()
-        .output_interface(link)
-        .table_id(TABLE)
-        .build();
-    for route in [v4, v6] {
-        h.route().add(route).execute().await.map_err(nl)?;
-    }
     for family in FAMILIES {
+        let route = match family {
+            AddressFamily::Inet => RouteMessageBuilder::<Ipv4Addr>::new()
+                .output_interface(link)
+                .table_id(TABLE)
+                .build(),
+            _ => RouteMessageBuilder::<Ipv6Addr>::new()
+                .output_interface(link)
+                .table_id(TABLE)
+                .build(),
+        };
+        match h.route().add(route).execute().await.map_err(nl) {
+            Err(e) if no_ipv6(family, &e) => continue,
+            r => r?,
+        }
         for rule in rules(family) {
             let mut req = h.rule().add();
             *req.message_mut() = rule;
@@ -62,19 +71,17 @@ pub async fn setup(link: u32) -> io::Result<()> {
     Ok(())
 }
 
-/// Deletes the rules `setup` added, including ones left by a run that did not exit cleanly.
+/// Deletes the rules `setup` added, including ones left by a run that did not exit cleanly. Each
+/// is matched in full, so rules of other software at the same priorities stay.
 pub async fn restore() -> io::Result<()> {
     let h = handle()?;
     for family in FAMILIES {
-        for pref in TABLE..TABLE + 4 {
-            // A rule is deleted by its priority alone. One copy is expected; the bound is a guard.
+        for rule in rules(family) {
+            // One copy is expected; the bound is a guard.
             for _ in 0..8 {
-                let mut rule = RuleMessage::default();
-                rule.header.family = family;
-                rule.attributes.push(RuleAttribute::Priority(pref));
-                match h.rule().del(rule).execute().await.map_err(nl) {
+                match h.rule().del(rule.clone()).execute().await.map_err(nl) {
                     Ok(()) => {}
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => break,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound || no_ipv6(family, &e) => break,
                     Err(e) => return Err(e),
                 }
             }
