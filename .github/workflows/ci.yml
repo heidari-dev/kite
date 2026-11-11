@@ -90,3 +90,29 @@ jobs:
       - name: TUN mode end to end
         run: sudo scripts/tun-e2e.sh target/release/kite target/release/examples/relay-dev
 
+  measure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - run: |
+          git worktree add /tmp/base origin/main
+          (cd /tmp/base && cargo build -q --release -p kite-cli)
+          cargo build -q --release -p kite-cli
+          cargo build -q --release -p kite-relay --example relay-dev
+          ls -l /tmp/base/target/release/kite target/release/kite
+          target/release/examples/relay-dev 127.0.0.1:7000 &
+          sleep 1
+          for k in /tmp/base/target/release/kite target/release/kite; do
+            $k connect --tcp 127.0.0.1:7000 --listen 127.0.0.1:1080 & pid=$!
+            sleep 1
+            echo "$k idle: $(grep VmRSS /proc/$pid/status)"
+            for i in $(seq 20); do curl -s --max-time 30 --socks5-hostname 127.0.0.1:1080 -o /dev/null "https://speed.cloudflare.com/__down?bytes=2000000" & done
+            sleep 2
+            echo "$k 20 downloads: $(grep VmRSS /proc/$pid/status)"
+            sleep 20
+            echo "$k after: $(grep VmRSS /proc/$pid/status)"
+            kill $pid; sleep 1
+          done
