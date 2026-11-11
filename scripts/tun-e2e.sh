@@ -35,6 +35,7 @@ trap cleanup EXIT
 fail() {
   echo "FAIL: $*" >&2
   if [ -f "$BIN/kite.log" ]; then cat "$BIN/kite.log" >&2; fi
+  dmesg | grep kite-leak | tail -20 >&2
   exit 1
 }
 in_ns() { ip netns exec "$NS" "$@"; }
@@ -63,11 +64,13 @@ echo "nameserver $HOST_IP" > "/etc/netns/$NS/resolv.conf"
 
 in_ns curl -sS --max-time 15 -o /dev/null https://1.1.1.1/ || fail "no direct path out of the namespace"
 
-# Everything that leaves the namespace other than the relay connection counts as a leak.
+# Everything that leaves the namespace other than the relay connection counts as a leak, and is
+# logged to the kernel log.
+sysctl -qw net.netfilter.nf_log_all_netns=1
 in_ns iptables -A OUTPUT -o veth-kite -p tcp -d "$HOST_IP" --dport 7000 -j ACCEPT
-in_ns iptables -A OUTPUT -o veth-kite -j ACCEPT
+in_ns iptables -A OUTPUT -o veth-kite -j LOG --log-prefix "kite-leak: "
 in_ns ip6tables -A OUTPUT -o veth-kite -p ipv6-icmp -j ACCEPT
-in_ns ip6tables -A OUTPUT -o veth-kite -j ACCEPT
+in_ns ip6tables -A OUTPUT -o veth-kite -j LOG --log-prefix "kite-leak: "
 leaks() {
   local v4 v6
   v4=$(in_ns iptables -L OUTPUT -v -n -x | awk 'NR == 4 {print $1}')
@@ -98,6 +101,9 @@ start_kite() {
 }
 
 start_kite
+# Counting starts with the tunnel up; late replies to the direct check above are not leaks.
+in_ns iptables -Z OUTPUT
+in_ns ip6tables -Z OUTPUT
 [ "$(stat -c %u "/proc/$kite_pid")" = "$(id -u nobody)" ] || fail "kite is not running as nobody"
 for set in CapPrm CapEff CapAmb; do
   grep -q "^$set:\s*0000000000001000$" "/proc/$kite_pid/status" || fail "$set is not CAP_NET_ADMIN only"
