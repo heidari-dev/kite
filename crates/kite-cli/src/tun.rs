@@ -83,7 +83,10 @@ async fn serve(
         .dns(ArgDns::OverTcp)
         .dns_addr(DNS)
         .udpgw_server(UDPGW)
-        .ipv6_enabled(true);
+        // Drops AAAA answers. The TCP stack accepts every handshake before the relay connects, so an
+        // IPv6 target the phone cannot reach would look connected and then fail, with no fallback.
+        // IPv6 still enters the tunnel; it just does not leak.
+        .ipv6_enabled(false);
 
     let token = CancellationToken::new();
     let (proxied, tunneled, ()) = tokio::join!(
