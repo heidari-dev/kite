@@ -1,5 +1,7 @@
 # Kite
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/heidari-dev/kite/badge)](https://scorecard.dev/viewer/?uri=github.com/heidari-dev/kite)
+
 Share your phone's internet connection with a computer over USB or WiFi, and keep the phone's VPN or
 proxy exit IP while doing it.
 
