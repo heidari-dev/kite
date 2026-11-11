@@ -400,15 +400,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refuses_own_interface_address_even_with_a_listener_on_all_addresses() {
-        let probe = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
-        if probe.connect("192.0.2.1:9").is_err() || probe.local_addr().unwrap().ip().is_loopback() {
-            return; // no non-loopback interface to test with
-        }
-        let own = probe.local_addr().unwrap().ip();
-        let echo = echo_server("0.0.0.0:0").await;
+    async fn refuses_own_interface_address() {
+        let Some(own) = crate::own_address() else {
+            return; // no non-loopback interface on this machine
+        };
+        // Nothing listens: the request is refused before any connect.
         let (mut client, _task) = start(loopback_cfg());
-        let req = ip_request(SocketAddr::new(own, echo.port()));
+        let req = ip_request(SocketAddr::new(own, 80));
         assert_eq!(request(&mut client, &req).await, REP_NOT_ALLOWED);
     }
 

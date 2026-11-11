@@ -121,6 +121,18 @@ fn is_local(ip: IpAddr) -> bool {
     }
 }
 
+/// A non-loopback address of this machine, for tests. The OS picks the source address for a UDP
+/// socket "connected" to a TEST-NET address, so nothing is bound or sent and no firewall prompt
+/// appears.
+#[cfg(test)]
+pub(crate) fn own_address() -> Option<IpAddr> {
+    let sock = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).ok()?;
+    sock.connect(&std::net::SocketAddr::from(([192, 0, 2, 1], 9)).into())
+        .ok()?;
+    let ip = sock.local_addr().ok()?.as_socket()?.ip();
+    (!ip.is_loopback()).then_some(ip)
+}
+
 #[cfg(test)]
 mod tests {
     use super::Config;
@@ -168,15 +180,9 @@ mod tests {
 
     #[test]
     fn refuses_own_interface_addresses() {
-        // The address the OS would use to reach the Internet; no packet is sent.
-        let probe = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
-        if probe.connect("192.0.2.1:9").is_err() {
-            return; // no route, nothing to test on this machine
-        }
-        let own = probe.local_addr().unwrap().ip();
-        if own.is_loopback() {
-            return;
-        }
+        let Some(own) = super::own_address() else {
+            return; // no non-loopback interface on this machine
+        };
         for cfg in [
             Config::default(),
             Config {
