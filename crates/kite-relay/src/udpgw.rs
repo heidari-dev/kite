@@ -22,7 +22,7 @@ use tokio::time::{timeout, Instant};
 pub const ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 7300);
 
 const KEEPALIVE: u8 = 0x01;
-const DATA: u8 = 0x02;
+pub(crate) const DATA: u8 = 0x02;
 const CLOSE: u8 = 0x04;
 const ERR: u8 = 0x20;
 
@@ -105,7 +105,7 @@ async fn read_more<R: AsyncRead + Unpin>(r: &mut R, buf: &mut Vec<u8>) -> io::Re
 }
 
 /// Length of the first complete frame in `buf`, if there is one.
-fn frame_len(buf: &[u8]) -> io::Result<Option<usize>> {
+pub(crate) fn frame_len(buf: &[u8]) -> io::Result<Option<usize>> {
     let [hi, lo, ..] = *buf else { return Ok(None) };
     let body = u16::from_be_bytes([hi, lo]) as usize;
     if body < 3 {
@@ -128,14 +128,18 @@ async fn handle(
     sessions: &mut HashMap<u16, Session>,
     cfg: &Config,
 ) -> Option<[u8; 5]> {
-    let id = u16::from_be_bytes([body[1], body[2]]);
-    match body[0] {
+    // frame_len guarantees FLAGS and CONN_ID.
+    let [flags, hi, lo, rest @ ..] = body else {
+        return None;
+    };
+    let id = u16::from_be_bytes([*hi, *lo]);
+    match *flags {
         KEEPALIVE => Some(control(KEEPALIVE, id)),
         CLOSE => {
             sessions.remove(&id);
             None
         }
-        DATA => match send(id, &body[3..], sessions, cfg).await {
+        DATA => match send(id, rest, sessions, cfg).await {
             Ok(()) => None,
             Err(_) => {
                 sessions.remove(&id);
@@ -148,12 +152,11 @@ async fn handle(
 
 async fn send(
     id: u16,
-    mut rest: &[u8],
+    rest: &[u8],
     sessions: &mut HashMap<u16, Session>,
     cfg: &Config,
 ) -> io::Result<()> {
-    let atyp = rest.read_u8().await?;
-    let target = read_address(&mut rest, atyp).await?;
+    let (target, payload) = parse_data(rest).await?;
     let full = sessions.len() >= MAX_SESSIONS;
     let session = match sessions.entry(id) {
         Entry::Occupied(e) if e.get().target == target => e.into_mut(),
@@ -165,8 +168,15 @@ async fn send(
         Entry::Vacant(e) => e.insert(open(id, target, cfg).await?),
     };
     session.last = Instant::now();
-    session.sock.send(rest).await?;
+    session.sock.send(payload).await?;
     Ok(())
+}
+
+/// Splits what follows CONN_ID in a DATA frame into the target and the payload.
+pub(crate) async fn parse_data(mut rest: &[u8]) -> io::Result<(Target, &[u8])> {
+    let atyp = rest.read_u8().await?;
+    let target = read_address(&mut rest, atyp).await?;
+    Ok((target, rest))
 }
 
 async fn open(id: u16, target: Target, cfg: &Config) -> io::Result<Session> {

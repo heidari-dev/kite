@@ -11,6 +11,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::task::JoinSet;
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
+#[doc(hidden)]
+pub mod fuzz;
 pub mod socks5;
 pub mod udpgw;
 
