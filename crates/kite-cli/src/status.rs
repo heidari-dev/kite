@@ -3,7 +3,6 @@
 
 use std::fs::Permissions;
 use std::io;
-use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,7 +17,7 @@ use crate::proxy::MAX_STREAMS;
 /// What `kite status` prints about a running tunnel.
 pub struct Info {
     pub relay: String,
-    pub proxy: SocketAddr,
+    pub mode: String,
     pub active: Arc<AtomicUsize>,
     pub started: Instant,
 }
@@ -26,9 +25,9 @@ pub struct Info {
 impl Info {
     fn text(&self) -> String {
         format!(
-            "relay: {}\nproxy: socks5://{}\nstreams: {} of {}\nuptime: {}s\n",
+            "relay: {}\nmode: {}\nstreams: {} of {}\nuptime: {}s\n",
             self.relay,
-            self.proxy,
+            self.mode,
             self.active.load(Ordering::Relaxed),
             MAX_STREAMS,
             self.started.elapsed().as_secs(),
@@ -123,7 +122,7 @@ mod tests {
     fn info() -> Info {
         Info {
             relay: "127.0.0.1:7000".into(),
-            proxy: "127.0.0.1:1080".parse().unwrap(),
+            mode: "SOCKS5 proxy on 127.0.0.1:1080".into(),
             active: Arc::new(AtomicUsize::new(3)),
             started: Instant::now(),
         }
@@ -149,7 +148,10 @@ mod tests {
         let mut s = UnixStream::connect(&sock).await.unwrap();
         s.read_to_string(&mut text).await.unwrap();
         assert!(text.contains("streams: 3 of 224"), "{text}");
-        assert!(text.contains("socks5://127.0.0.1:1080"), "{text}");
+        assert!(
+            text.contains("mode: SOCKS5 proxy on 127.0.0.1:1080"),
+            "{text}"
+        );
 
         let err = serve(info()).err().unwrap();
         assert!(err.to_string().contains("already running"), "{err}");

@@ -23,6 +23,8 @@ allow = [
   "Zlib",
   "CC0-1.0",
 ]
+# The TUN device crate used by tun2proxy. WTFPL is a GPL-compatible permissive license (FSF).
+exceptions = [{ allow = ["WTFPL"], crate = "tun" }]
 
 [bans]
 multiple-versions = "warn"
