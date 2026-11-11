@@ -12,7 +12,43 @@ Android and iPhone.
 
 ## Status
 
-Early development. Nothing is usable yet. See the open issues and milestones for the roadmap.
+Early development. On Linux the `kite` command works in proxy mode and in TUN mode against the
+development relay (`relay-dev`), which stands in for a phone. There is no phone app yet, no USB or
+WiFi transport, and the link is not encrypted, so do not use it on a network you do not trust. See
+the open issues and milestones for the roadmap.
+
+## Try it from source
+
+You need a Rust toolchain (see `rust-toolchain.toml`). On one machine, in two terminals:
+
+```
+cargo run --release -p kite-relay --example relay-dev -- 127.0.0.1:7000 --allow-loopback
+cargo run --release -p kite-cli -- connect --tcp 127.0.0.1:7000
+```
+
+`--allow-loopback` lets the relay reach servers on its own machine; leave it off to behave like a
+phone. Kite then serves a SOCKS5 proxy on 127.0.0.1:1080:
+
+```
+curl --proxy socks5h://127.0.0.1:1080 https://ifconfig.me
+```
+
+On Linux, TUN mode sends everything through the relay. It needs `CAP_NET_ADMIN`, not full root:
+
+```
+sudo setcap cap_net_admin+ep target/release/kite
+target/release/kite connect --tcp RELAY_HOST:7000 --tun
+```
+
+After a crash, `kite restore` removes leftover routing rules. See [docs/cli.md](docs/cli.md) for
+every command and option, and [docs/architecture.md](docs/architecture.md) for how it works.
+
+## Feedback and contributing
+
+- Bugs and ideas: [issues](https://github.com/heidari-dev/kite/issues)
+- Questions and discussion: [Discussions](https://github.com/heidari-dev/kite/discussions)
+- Code and docs: see [CONTRIBUTING.md](CONTRIBUTING.md)
+- Security problems: see [SECURITY.md](SECURITY.md), not a public issue
 
 ## Planned platforms
 
