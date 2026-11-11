@@ -7,8 +7,17 @@ Kite is in early development and has no supported releases yet.
 Please do not open a public issue. Use GitHub's private reporting:
 https://github.com/heidari-dev/kite/security/advisories/new
 
-Include what you found, how to reproduce it, and the affected version or commit. You should get a first
-reply within a week. Once a fix is released we will credit you unless you prefer otherwise.
+Include what you found, how to reproduce it, and the affected version or commit.
+
+## Disclosure timeline
+
+- Within 7 days: we confirm we got the report and tell you whether we can reproduce it.
+- Within 90 days of the report: a fixed release is out. If a fix needs longer, we agree on a new date
+  with you before the 90 days run out.
+- When the fix ships: we publish a GitHub security advisory (with a CVE where one applies) describing
+  the vulnerability, the affected versions and how to upgrade.
+- We credit you in the advisory unless you prefer otherwise. Please keep the details private until
+  the advisory is out.
 
 ## Scope
 
