@@ -15,6 +15,7 @@ use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 #[cfg(any(test, fuzzing))]
 #[doc(hidden)]
 pub mod fuzz;
+pub mod noise;
 pub mod socks5;
 pub mod udpgw;
 
