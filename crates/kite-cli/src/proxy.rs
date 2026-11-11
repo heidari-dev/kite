@@ -130,7 +130,8 @@ where
     })
     .await?;
     // shortcut: a relay that hangs but keeps TCP open is not noticed (yamux 0.14 has no keepalive
-    // ping); add a liveness check with the encrypted session layer (#9).
+    // ping), and over USB the adb server keeps its socket open while the phone app is wedged; add
+    // a liveness check with the encrypted session layer (#9).
     poll_fn(|cx| conn.poll_close(cx))
         .await
         .map_err(io::Error::other)

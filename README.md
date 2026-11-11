@@ -14,8 +14,8 @@ Android and iPhone.
 ## Status
 
 Early development. On Linux the `kite` command works in proxy mode and in TUN mode against the
-development relay (`relay-dev`), which stands in for a phone. There is no phone app yet, no USB or
-WiFi transport, and the link is not encrypted, so do not use it on a network you do not trust. See
+development relay (`relay-dev`), which stands in for a phone. There is no phone app yet, WiFi is not
+supported, USB (`--usb`, through adb) is only tested against a fake adb server, and the link is not encrypted, so do not use it on a network you do not trust. See
 the open issues and milestones for the roadmap.
 
 ## Try it from source

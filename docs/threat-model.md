@@ -60,6 +60,7 @@ stream, session and queue has a cap, every wait for a peer has a timeout, and pe
 | D | A peer opens endless streams or buffers to exhaust the phone's RAM. | At most 256 yamux streams per tunnel, fixed 256 KiB window per stream, receive window for the whole tunnel capped (64 MiB worst case), at most 16 UDP sessions per gateway. | `kite-relay` | done |
 | D | A peer stalls a handshake or sits idle on a connection. | Timeouts on the SOCKS5 handshake, name resolution and connect; idle timeout on relayed connections and UDP sessions; an idle tunnel is closed. | `kite-relay` | done |
 | E | A paired (or compromised) computer reaches services the phone exposes to its own networks. | The relay refuses the phone's loopback, any address assigned to a local interface, link-local, unspecified, broadcast and multicast addresses. The check runs on resolved addresses, after DNS, with IPv4-mapped, IPv4-compatible and NAT64 forms normalised, so DNS rebinding does not help. | `kite-relay` | done |
+| S | Another local user binds the loopback port of the adb server (5037) when none runs, or a rogue app binds the abstract socket `kite` on the phone, and acts as the relay. It sees every destination and any unencrypted payload and can alter it; in TUN mode that is all traffic. | Not mitigated: USB is not a trusted link. Noise with a pinned phone key must cover USB too. `kite` prints a warning in USB mode. | `kite-link`, `kite-cli` | planned |
 
 Until Noise is in, the relay trusts whatever is on the other end of the byte stream. Do not point
 it at a network listener yet.

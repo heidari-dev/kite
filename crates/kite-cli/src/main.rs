@@ -19,10 +19,11 @@ mod status;
 mod tun;
 
 const USAGE: &str = "usage:
-  kite connect --tcp HOST:PORT [--listen ADDR]
-      Tunnel through the relay at HOST:PORT and serve a SOCKS5 proxy on ADDR
+  kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) [--listen ADDR]
+      Tunnel through the relay at HOST:PORT, or through a phone connected by USB
+      (needs a running adb server), and serve a SOCKS5 proxy on ADDR
       (a loopback address, default 127.0.0.1:1080).
-  kite connect --tcp HOST:PORT --tun
+  kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) --tun
       Send all traffic and DNS of this computer through the relay (Linux, needs
       CAP_NET_ADMIN).
   kite status
@@ -78,15 +79,34 @@ fn usage(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg.into())
 }
 
+/// How to reach the relay.
+#[derive(Debug, PartialEq)]
+enum Transport {
+    Tcp(String),
+    /// A phone connected by USB, found through the adb server; the serial picks one of several.
+    Usb(Option<String>),
+}
+
+impl std::fmt::Display for Transport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Transport::Tcp(addr) => f.write_str(addr),
+            Transport::Usb(_) => f.write_str("usb"),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Connect {
-    relay: String,
+    transport: Transport,
     listen: SocketAddr,
     tun: bool,
 }
 
 fn parse_connect(args: &[String]) -> io::Result<Connect> {
     let mut relay = None;
+    let mut usb = false;
+    let mut serial = None;
     let mut listen = SocketAddr::from(([127, 0, 0, 1], 1080));
     let mut tun = false;
     let mut it = args.iter();
@@ -98,11 +118,16 @@ fn parse_connect(args: &[String]) -> io::Result<Connect> {
             tun = true;
             continue;
         }
+        if flag == "--usb" {
+            usb = true;
+            continue;
+        }
         let value = it
             .next()
             .ok_or_else(|| usage(format!("{flag} needs a value")))?;
         match flag.as_str() {
             "--tcp" => relay = Some(value.clone()),
+            "--serial" => serial = Some(value.clone()),
             "--listen" => {
                 listen = value.parse().map_err(|_| usage("--listen takes IP:PORT"))?;
             }
@@ -113,11 +138,21 @@ fn parse_connect(args: &[String]) -> io::Result<Connect> {
     if !listen.ip().is_loopback() {
         return Err(usage("--listen must be a loopback address"));
     }
-    let relay = relay.ok_or_else(|| usage("connect needs --tcp HOST:PORT"))?;
+    let transport = match (relay, usb) {
+        (Some(addr), false) if serial.is_none() => Transport::Tcp(addr),
+        (None, true) => Transport::Usb(serial),
+        (None, false) => return Err(usage("connect needs --tcp HOST:PORT or --usb")),
+        (Some(_), true) => return Err(usage("use either --tcp or --usb")),
+        (Some(_), false) => return Err(usage("--serial only applies to --usb")),
+    };
     if tun && listen != SocketAddr::from(([127, 0, 0, 1], 1080)) {
         return Err(usage("--listen does not apply to --tun"));
     }
-    Ok(Connect { relay, listen, tun })
+    Ok(Connect {
+        transport,
+        listen,
+        tun,
+    })
 }
 
 async fn connect(c: Connect) -> io::Result<()> {
@@ -128,7 +163,7 @@ async fn connect(c: Connect) -> io::Result<()> {
         c.listen
     };
     let listener = TcpListener::bind(listen).await?;
-    let tunnel = dial(&c.relay, c.tun).await?;
+    let tunnel = dial(&c.transport, c.tun).await?;
     let active = Arc::new(AtomicUsize::new(0));
     let mode = if c.tun {
         "all traffic through the tunnel".to_string()
@@ -137,13 +172,13 @@ async fn connect(c: Connect) -> io::Result<()> {
     };
     #[cfg(unix)]
     let _status = status::serve(status::Info {
-        relay: c.relay.clone(),
+        relay: c.transport.to_string(),
         mode: mode.clone(),
         active: active.clone(),
         started: std::time::Instant::now(),
     })
     .map_err(|e| eprintln!("kite: status unavailable: {e}"));
-    println!("connected to {}, {mode}", c.relay);
+    println!("connected to {}, {mode}", c.transport);
     #[cfg(target_os = "linux")]
     if c.tun {
         return tun::run(tunnel, listener, active, shutdown_signal()).await;
@@ -151,10 +186,35 @@ async fn connect(c: Connect) -> io::Result<()> {
     proxy::run(tunnel, listener, active, shutdown_signal()).await
 }
 
-/// Connects to the relay. Keepalive notices a peer that vanished without closing. In TUN mode the
-/// socket carries the routing mark that keeps it out of the tunnel it carries.
+/// Connects to the relay. Over TCP, keepalive notices a peer that vanished without closing.
+async fn dial(transport: &Transport, tun: bool) -> io::Result<TcpStream> {
+    let s = match transport {
+        Transport::Tcp(relay) => {
+            let s = dial_tcp(relay, tun).await?;
+            let keepalive = socket2::TcpKeepalive::new()
+                .with_time(Duration::from_secs(30))
+                .with_interval(Duration::from_secs(10));
+            socket2::SockRef::from(&s).set_tcp_keepalive(&keepalive)?;
+            s
+        }
+        // The adb server on loopback carries the USB link, so this socket needs no mark: loopback
+        // is answered by the local routing table before any TUN rule, and there is no IP path to a
+        // USB phone to keep out of the tunnel. Keepalive would only be answered by the local
+        // kernel, so it is skipped; an unplug or an adb crash closes the socket.
+        Transport::Usb(serial) => {
+            eprintln!(
+                "kite: the USB link is not authenticated yet; only use it on a computer you trust"
+            );
+            kite_link::adb::open(serial.as_deref()).await?
+        }
+    };
+    s.set_nodelay(true)?;
+    Ok(s)
+}
+
+/// In TUN mode the socket carries the routing mark that keeps it out of the tunnel it carries.
 #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
-async fn dial(relay: &str, tun: bool) -> io::Result<TcpStream> {
+async fn dial_tcp(relay: &str, tun: bool) -> io::Result<TcpStream> {
     let connect = async {
         let mut last = io::Error::new(io::ErrorKind::NotFound, "relay name did not resolve");
         for addr in tokio::net::lookup_host(relay).await? {
@@ -178,15 +238,9 @@ async fn dial(relay: &str, tun: bool) -> io::Result<TcpStream> {
         }
         Err(last)
     };
-    let s = tokio::time::timeout(Duration::from_secs(10), connect)
+    tokio::time::timeout(Duration::from_secs(10), connect)
         .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "relay did not answer"))??;
-    s.set_nodelay(true)?;
-    let keepalive = socket2::TcpKeepalive::new()
-        .with_time(Duration::from_secs(30))
-        .with_interval(Duration::from_secs(10));
-    socket2::SockRef::from(&s).set_tcp_keepalive(&keepalive)?;
-    Ok(s)
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "relay did not answer"))?
 }
 
 async fn shutdown_signal() {
@@ -227,7 +281,7 @@ async fn status() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_connect;
+    use super::{parse_connect, Transport};
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
@@ -236,13 +290,21 @@ mod tests {
     #[test]
     fn parses_connect() {
         let c = parse_connect(&args("--tcp relay.local:7000")).unwrap();
-        assert_eq!(c.relay, "relay.local:7000");
+        assert_eq!(c.transport, Transport::Tcp("relay.local:7000".into()));
         assert_eq!(c.listen, "127.0.0.1:1080".parse().unwrap());
         let c = parse_connect(&args("--listen [::1]:9050 --tcp 10.0.0.2:7000")).unwrap();
         assert_eq!(c.listen, "[::1]:9050".parse().unwrap());
         assert!(!c.tun);
         let c = parse_connect(&args("--tun --tcp 10.0.0.2:7000"));
         assert_eq!(c.is_ok_and(|c| c.tun), cfg!(target_os = "linux"));
+    }
+
+    #[test]
+    fn parses_usb() {
+        let c = parse_connect(&args("--usb")).unwrap();
+        assert_eq!(c.transport, Transport::Usb(None));
+        let c = parse_connect(&args("--usb --serial R5CT1234")).unwrap();
+        assert_eq!(c.transport, Transport::Usb(Some("R5CT1234".into())));
     }
 
     #[test]
@@ -255,6 +317,10 @@ mod tests {
             "--tcp a:1 --listen localhost:1080",
             "--tcp a:1 --udp b:2",
             "--tcp a:1 --tun --listen 127.0.0.1:9050",
+            "--tcp a:1 --usb",
+            "--tcp a:1 --serial X",
+            "--usb --serial",
+            "--serial X",
         ] {
             assert!(parse_connect(&args(bad)).is_err(), "{bad}");
         }
