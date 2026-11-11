@@ -1,10 +1,54 @@
 //! Phone-side relay: encrypted multiplexed sessions that open real sockets on the phone.
 
+#![forbid(unsafe_code)]
+
+use std::future::poll_fn;
+use std::io;
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::task::JoinSet;
+use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
 pub mod socks5;
 pub mod udpgw;
+
+/// Most concurrent streams (TCP connections plus UDP gateways) per tunnel. Yamux closes the
+/// whole tunnel when the peer opens more, so the desktop side must stay below this. Each stream
+/// may buffer up to 256 KiB, so a tunnel holds at most 64 MiB in flight.
+pub const MAX_STREAMS: usize = 256;
+
+/// Serves one tunnel: a yamux server on `tunnel` where every inbound stream is a SOCKS5 session.
+/// Returns when the tunnel closes or fails; its sessions are dropped with it.
+pub async fn serve<T>(tunnel: T, cfg: Config) -> io::Result<()>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut mux = yamux::Config::default();
+    mux.set_max_num_streams(MAX_STREAMS);
+    // Streams start at yamux's fixed 256 KiB window. Capping the tunnel at exactly that per
+    // stream leaves no budget for auto-tuning, so windows never grow.
+    mux.set_max_connection_receive_window(Some(MAX_STREAMS * yamux::DEFAULT_CREDIT as usize));
+    let mut conn = yamux::Connection::new(tunnel.compat(), mux, yamux::Mode::Server);
+    let cfg = Arc::new(cfg);
+    let mut sessions = JoinSet::new();
+    loop {
+        tokio::select! {
+            next = poll_fn(|cx| conn.poll_next_inbound(cx)) => match next {
+                Some(Ok(stream)) => {
+                    let cfg = cfg.clone();
+                    sessions.spawn(async move {
+                        let _ = socks5::serve(stream.compat(), &cfg).await;
+                    });
+                }
+                Some(Err(e)) => return Err(io::Error::other(e)),
+                None => return Ok(()),
+            },
+            Some(_) = sessions.join_next() => {}
+        }
+    }
+}
 
 /// Limits shared by every session.
 #[derive(Debug, Clone)]
