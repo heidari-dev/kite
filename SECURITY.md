@@ -14,3 +14,5 @@ reply within a week. Once a fix is released we will credit you unless you prefer
 
 Of most interest: the encrypted session and pairing, the phone-side relay (which opens sockets on
 behalf of the computer), and anything that could leak traffic or DNS outside the phone's VPN.
+
+The [threat model](docs/threat-model.md) lists what we protect and what is still planned.
