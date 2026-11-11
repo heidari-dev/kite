@@ -111,11 +111,14 @@ in_ns curl -sS --max-time 20 https://1.1.1.1/cdn-cgi/trace | grep -q '^ip=' || f
 in_ns curl -sS --max-time 20 -o /dev/null https://example.com/ || fail "curl by name through the tunnel"
 
 echo "== DNS goes through the tunnel"
-for q in "example.com" "+tcp example.com" "@9.9.9.9 example.com" "@9.9.9.9 +tcp example.com"; do
+for q in "example.com" "@9.9.9.9 example.com" "@9.9.9.9 +tcp example.com"; do
   # shellcheck disable=SC2086
   out=$(in_ns dig +short +time=10 +tries=1 $q A) || fail "dig $q"
   [ -n "$out" ] || fail "dig $q returned nothing"
 done
+# DNS over TCP to a LAN resolver enters the tunnel but the phone cannot reach that resolver. It may
+# fail; it must not leak.
+in_ns dig +short +time=5 +tries=1 +tcp example.com A > /dev/null || true
 [ "$(leaks)" = 0 ] || fail "$(leaks) packets left outside the tunnel"
 
 echo "== load"

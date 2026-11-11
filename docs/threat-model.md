@@ -117,6 +117,8 @@ pairing, is a planned part of B1.
   while kite runs.
 - In TUN mode, names under a search domain that a LAN link supplies to systemd-resolved still go to
   that link's resolver, and so do link-local IPv6 resolvers.
+- In TUN mode, DNS over TCP to a resolver on the computer's LAN enters the tunnel and fails there,
+  because the phone cannot reach that resolver. Only UDP queries to private resolvers are redirected.
 - Timing and volume of traffic are visible to anyone who can watch the link.
 
 ## Keeping this current
