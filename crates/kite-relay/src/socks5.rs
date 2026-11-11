@@ -66,7 +66,7 @@ where
     Ok(())
 }
 
-async fn handshake<S>(s: &mut S) -> io::Result<Target>
+pub(crate) async fn handshake<S>(s: &mut S) -> io::Result<Target>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {

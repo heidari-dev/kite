@@ -1,0 +1,30 @@
+[package]
+name = "kite-relay-fuzz"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+kite-relay = { path = ".." }
+libfuzzer-sys = "0.4"
+
+# Not a member of the main workspace: it needs nightly and libFuzzer.
+[workspace]
+
+[[bin]]
+name = "socks5_request"
+path = "fuzz_targets/socks5_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "udpgw_frames"
+path = "fuzz_targets/udpgw_frames.rs"
+test = false
+doc = false
+bench = false

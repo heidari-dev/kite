@@ -50,3 +50,16 @@ jobs:
       - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install nightly --profile minimal
+      - run: cargo install cargo-fuzz --locked
+      - name: Fuzz each parser for 30 seconds
+        working-directory: crates/kite-relay
+        run: |
+          for target in socks5_request udpgw_frames; do
+            cargo +nightly fuzz run "$target" -- -max_total_time=30
+          done
