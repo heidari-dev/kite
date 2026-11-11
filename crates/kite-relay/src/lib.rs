@@ -20,7 +20,8 @@ pub mod udpgw;
 pub const MAX_STREAMS: usize = 256;
 
 /// Serves one tunnel: a yamux server on `tunnel` where every inbound stream is a SOCKS5 session.
-/// Returns when the tunnel closes or fails; its sessions are dropped with it.
+/// Returns when the tunnel closes, fails or carries no session for the idle timeout; its sessions
+/// are dropped with it.
 pub async fn serve<T>(tunnel: T, cfg: Config) -> io::Result<()>
 where
     T: AsyncRead + AsyncWrite + Unpin,
@@ -46,6 +47,10 @@ where
                 None => return Ok(()),
             },
             Some(_) = sessions.join_next() => {}
+            // Yamux answers pings internally, so they don't keep an empty tunnel alive.
+            _ = tokio::time::sleep(cfg.idle_timeout), if sessions.is_empty() => {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "idle tunnel"));
+            }
         }
     }
 }

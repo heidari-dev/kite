@@ -102,3 +102,14 @@ async fn serves_udpgw_through_yamux() {
     s.read_exact(&mut keepalive).await.unwrap();
     assert_eq!(keepalive, [0, 3, 0x01, 0, 42]);
 }
+
+#[tokio::test]
+async fn closes_a_tunnel_without_sessions() {
+    let (_client, server) = duplex(1024);
+    let cfg = Config {
+        idle_timeout: std::time::Duration::from_millis(100),
+        ..Config::default()
+    };
+    let err = serve(server, cfg).await.unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+}
