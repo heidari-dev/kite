@@ -204,11 +204,11 @@ async fn accept(
 
 /// Root, shell (adbd runs as shell on release builds) and this process's own user.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn allowed_uids() -> [u32; 3] {
+fn allowed_uids() -> Vec<u32> {
     use std::os::unix::fs::MetadataExt;
     // /proc/self belongs to the process's user; this avoids an unsafe getuid() call.
-    let own = std::fs::metadata("/proc/self").map_or(0, |m| m.uid());
-    [0, 2000, own]
+    let own = std::fs::metadata("/proc/self").map(|m| m.uid());
+    [0, 2000].into_iter().chain(own.ok()).collect()
 }
 
 /// Counts the bytes that pass through a tunnel.

@@ -6,7 +6,8 @@ The phone side of Kite: a small app that runs the relay (`crates/kite-relay`, th
 
 ## Build
 
-You need a JDK 17 or newer, the Android SDK with an NDK, Gradle 9.9, Rust with the Android
+You need a JDK 17 or newer, the Android SDK with NDK r28 or newer (for 16 KB page alignment),
+Gradle 9.9, Rust with the Android
 targets, and cargo-ndk:
 
 ```
