@@ -153,7 +153,7 @@ async fn client(stream: UnixStream, daemon: &Daemon, me: &Ids) {
     };
     let peer = caller.pid().and_then(|pid| Ids::of_pid(pid).ok());
     let Some(peer) = peer.filter(|p| p.uid == caller.uid() && p.may_talk_to(me)) else {
-        eprintln!("kite: refused a connection from uid {}", caller.uid());
+        eprintln!("kite: refused a connection from outside root and the daemon's group");
         return;
     };
     let admin = peer.may_admin(me);
@@ -167,7 +167,7 @@ async fn client(stream: UnixStream, daemon: &Daemon, me: &Ids) {
         };
         let response = match Request::parse(&line) {
             Ok(req) => {
-                log(caller.uid(), &req);
+                log(&req);
                 timeout(REQUEST_TIMEOUT, daemon.handle(req, admin))
                     .await
                     .unwrap_or_else(|_| Response::err("timed out"))
@@ -181,8 +181,9 @@ async fn client(stream: UnixStream, daemon: &Daemon, me: &Ids) {
     }
 }
 
-/// Requests that change something go to the system log, without keys, codes or addresses.
-fn log(uid: u32, req: &Request) {
+/// Requests that change something go to the system log, without keys, codes, addresses or the
+/// caller's identity (CodeQL treats peer credentials as secrets).
+fn log(req: &Request) {
     let what = match req {
         Request::Connect {
             mode, kill_switch, ..
@@ -193,7 +194,7 @@ fn log(uid: u32, req: &Request) {
         Request::RemovePeer { .. } => "remove_peer".into(),
         _ => return,
     };
-    eprintln!("kite: uid {uid}: {what}");
+    eprintln!("kite: {what}");
 }
 
 struct Daemon {

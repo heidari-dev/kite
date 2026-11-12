@@ -44,8 +44,8 @@ The protocol is one JSON object per line (`crates/kite-ipc`): `status`, `devices
 `disconnect`, `stats`, `pair_start`, `pair`, `peers` and `remove_peer`. Requests over 4 KiB, with
 unknown commands or unknown fields, or that take over 10 s to arrive, are refused; at most 8 clients
 are served at once. `connect` returns when the tunnel is starting, and `status` tells how it went.
-State-changing requests are written to the system log with the caller's uid, never with keys, codes
-or addresses. The unit file that starts the daemon at boot comes with the Linux packages.
+State-changing requests are written to the system log, never with keys, codes, addresses or the
+caller's identity. The unit file that starts the daemon at boot comes with the Linux packages.
 
 ```
 sudo -u kite kite daemon     # what the unit does; add --socket and --state-dir to try it by hand
