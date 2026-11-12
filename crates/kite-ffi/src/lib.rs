@@ -54,14 +54,15 @@ pub struct Stats {
 }
 
 #[derive(uniffi::Error, Debug)]
+/// `reason`, not `message`: Kotlin exceptions already have a `message`.
 pub enum RelayError {
-    Io { message: String },
+    Io { reason: String },
 }
 
 impl std::fmt::Display for RelayError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RelayError::Io { message } => f.write_str(message),
+            RelayError::Io { reason } => f.write_str(reason),
         }
     }
 }
@@ -69,7 +70,7 @@ impl std::fmt::Display for RelayError {
 impl From<io::Error> for RelayError {
     fn from(e: io::Error) -> Self {
         RelayError::Io {
-            message: e.to_string(),
+            reason: e.to_string(),
         }
     }
 }
