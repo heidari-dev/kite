@@ -93,3 +93,28 @@ jobs:
       - name: TUN mode end to end
         run: sudo bash scripts/tun-e2e.sh target/release/kite target/release/examples/relay-dev
 
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+      - run: cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Build the Rust library and its Kotlin bindings
+        run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" apps/android/build-rust.sh
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          gradle-version: "9.9.1"
+      - name: Build the debug APK
+        working-directory: apps/android
+        run: gradle --no-daemon assembleDebug
+      - name: Sizes
+        run: ls -l apps/android/app/src/main/jniLibs/*/libkite_ffi.so apps/android/app/build/outputs/apk/debug/*.apk
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kite-debug-apk
+          path: apps/android/app/build/outputs/apk/debug/*.apk
+          retention-days: 14

@@ -32,3 +32,7 @@ Thumbs.db
 *.mobileprovision
 .env
 .env.*
+
+# Built by apps/android/build-rust.sh
+apps/android/app/src/main/jniLibs/
+apps/android/app/src/main/java/io/github/heidaridev/kite/ffi/
