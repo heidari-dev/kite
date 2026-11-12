@@ -301,7 +301,7 @@ echo "== the systemd unit"
 RELAY3=10.200.0.1:7002
 phone "$BIN/relay-dev" "$RELAY3" > "$BIN/relay3.log" 2>&1 &
 pids+=($!)
-install -m 755 "$BIN/kite" /usr/local/bin/kite
+install -m 755 "$BIN/kite" /usr/bin/kite
 systemd-sysusers "$ROOT/packaging/linux/kite.sysusers"
 install -m 644 "$ROOT/packaging/linux/kite.service" /etc/systemd/system/kite.service
 install -d /etc/systemd/system/kite.service.d
@@ -310,7 +310,7 @@ cat > /etc/systemd/system/kite.service.d/e2e.conf <<EOF
 NetworkNamespacePath=/run/netns/$PC
 BindReadOnlyPaths=/etc/netns/$PC/resolv.conf:/etc/resolv.conf
 EOF
-unit_cleanup() { systemctl stop kite 2>/dev/null; rm -rf /etc/systemd/system/kite.service /etc/systemd/system/kite.service.d /usr/local/bin/kite; systemctl daemon-reload; }
+unit_cleanup() { systemctl stop kite 2>/dev/null; rm -rf /etc/systemd/system/kite.service /etc/systemd/system/kite.service.d /usr/bin/kite; systemctl daemon-reload; }
 trap 'unit_cleanup; cleanup' EXIT
 systemctl daemon-reload
 systemctl start kite || { journalctl -u kite --no-pager | tail -30 >&2; fail "the unit did not start"; }
@@ -331,16 +331,16 @@ for _ in $(seq 50); do
   c=$(sed -n 's/^pairing code \([0-9]\{6\}\)$/\1/p' "$BIN/relay3.log" | tail -1)
   if [ -n "$c" ]; then echo "$c"; break; fi
   sleep 0.2
-done | /usr/local/bin/kite pair --tcp "$RELAY3" > "$BIN/pair3.log" 2>&1 || { cat "$BIN/pair3.log" >&2; unit_fail "kite pair through the unit"; }
+done | /usr/bin/kite pair --tcp "$RELAY3" > "$BIN/pair3.log" 2>&1 || { cat "$BIN/pair3.log" >&2; unit_fail "kite pair through the unit"; }
 pc iptables -Z OUTPUT
 pc ip6tables -Z OUTPUT
 phone iptables -Z
-/usr/local/bin/kite connect --tcp "$RELAY3" --tun || unit_fail "kite connect through the unit"
+/usr/bin/kite connect --tcp "$RELAY3" --tun || unit_fail "kite connect through the unit"
 pc curl -sS --max-time 20 https://1.1.1.1/cdn-cgi/trace | grep -q '^ip=' || unit_fail "curl through the unit"
 pc dig +short +time=10 +tries=1 example.com A | grep -q . || unit_fail "DNS through the unit"
 check_leaks unit
 echo "unit RSS with the tunnel up: $(rss "$unit_pid")"
-/usr/local/bin/kite disconnect || unit_fail "kite disconnect through the unit"
+/usr/bin/kite disconnect || unit_fail "kite disconnect through the unit"
 systemctl stop kite || unit_fail "the unit did not stop cleanly"
 if pc ip link show kite0 2>/dev/null; then fail "kite0 still exists after the unit stopped"; fi
 if pc ip rule | grep -q "lookup 5300"; then fail "rules left after the unit stopped"; fi
