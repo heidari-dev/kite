@@ -89,6 +89,7 @@ equivalents do not yet.
 | S | Forged DNS answers send traffic to the wrong host. | Names resolve on the phone, so queries leave through the phone's VPN or network, not the computer's. | `kite-relay` | done |
 | T | Someone alters traffic past the phone. | Out of our hands: Kite does not touch application TLS. | none | n/a |
 | I | Traffic or DNS leaves the computer outside the tunnel, or outside the phone's VPN. | The relay opens a real socket on the phone for every connection, so the phone's VPN applies. In TUN mode policy rules send every packet to port 53 and everything not marked as the relay transport into the tunnel, and tun2proxy carries DNS over TCP through it; with systemd-resolved the tunnel link gets the `~.` routing domain. CI checks with packet counters that nothing else leaves. | `kite-relay`, `kite-cli` | done |
+| I | The link to the phone drops and traffic falls back to the computer's own network, with its real address and DNS. | With the kill switch (`--kill-switch`, default in the desktop app) the TUN device, its rules and DNS settings stay while the link is down, local connections are refused, and the relay is redialled with backoff; a blackhole route in the tunnel table keeps traffic blocked if kite itself dies, until `kite restore`. The netns CI test cuts the link mid-download and counts zero packets outside the tunnel, then checks that traffic resumes. Without the kill switch a dropped link restores normal routing. | `kite-cli` | done |
 | D | A remote server holds connections open or sends data without end. | Idle timeouts, the stream cap above, bounded copy buffers. | `kite-relay` | done |
 | E | The relay is turned into a way to reach the phone's own network (see B1, elevation). | Same deny-list. By design other hosts on the phone's networks, such as other hotspot clients on private addresses, stay reachable, because the user's traffic needs them. The phone's public address as seen by its carrier is not an interface address and cannot be detected. | `kite-relay` | done |
 
@@ -128,7 +129,6 @@ pairing, is a planned part of B1.
 
 - While pairing is open on the phone, another device on the link can pair first (see B1).
 - No quota per paired computer: a paired computer can use all of the phone's data.
-- No kill switch: when the tunnel drops, kite exits and the computer's own routes take over again.
 - Proxy mode and TUN mode listen on 127.0.0.1, so any local user can send traffic through the phone
   while kite runs.
 - In TUN mode, names under a search domain that a LAN link supplies to systemd-resolved still go to

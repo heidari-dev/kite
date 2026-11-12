@@ -349,9 +349,6 @@ impl Daemon {
         kill_switch: bool,
         listen: Option<SocketAddr>,
     ) -> Response {
-        if kill_switch {
-            return Response::err("the kill switch is not available yet");
-        }
         let mut inner = self.inner();
         if inner.closing {
             return Response::err("the daemon is shutting down");
@@ -368,6 +365,7 @@ impl Daemon {
             transport: transport.into(),
             tun: mode == Mode::Tun,
             listen: listen.unwrap_or(SocketAddr::from(([127, 0, 0, 1], 1080))),
+            kill_switch,
         };
         let shown = params.transport.to_string();
         let tun = params.tun;

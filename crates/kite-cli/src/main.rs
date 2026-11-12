@@ -36,9 +36,10 @@ const USAGE: &str = "usage:
       Tunnel through the relay at HOST:PORT, or through a phone connected by USB
       (needs a running adb server), and serve a SOCKS5 proxy on ADDR
       (a loopback address, default 127.0.0.1:1080).
-  kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) --tun
+  kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) --tun [--kill-switch]
       Send all traffic and DNS of this computer through the relay (Linux, needs
-      CAP_NET_ADMIN).
+      CAP_NET_ADMIN). With --kill-switch, block everything while the link is down
+      and reconnect when the phone is back, until kite disconnect.
   kite disconnect
       Close the tunnel and lift the kill switch.
   kite devices
@@ -107,7 +108,7 @@ fn run(args: &[String], socket: &Path, foreground: bool) -> io::Result<()> {
             block_on(connect(c), tun)
         }),
         Some("pair") => parse_connect(&args[1..]).and_then(|c| {
-            if c.tun || c.listen != DEFAULT_LISTEN {
+            if c.tun || c.kill_switch || c.listen != DEFAULT_LISTEN {
                 return Err(usage("pair takes only --tcp, --usb and --serial"));
             }
             #[cfg(unix)]
@@ -226,6 +227,7 @@ struct Connect {
     transport: Transport,
     listen: SocketAddr,
     tun: bool,
+    kill_switch: bool,
 }
 
 fn parse_connect(args: &[String]) -> io::Result<Connect> {
@@ -234,8 +236,13 @@ fn parse_connect(args: &[String]) -> io::Result<Connect> {
     let mut serial = None;
     let mut listen = DEFAULT_LISTEN;
     let mut tun = false;
+    let mut kill_switch = false;
     let mut it = args.iter();
     while let Some(flag) = it.next() {
+        if flag == "--kill-switch" {
+            kill_switch = true;
+            continue;
+        }
         if flag == "--tun" {
             if !cfg!(target_os = "linux") {
                 return Err(usage("--tun is only available on Linux"));
@@ -273,10 +280,14 @@ fn parse_connect(args: &[String]) -> io::Result<Connect> {
     if tun && listen != DEFAULT_LISTEN {
         return Err(usage("--listen does not apply to --tun"));
     }
+    if kill_switch && !tun {
+        return Err(usage("--kill-switch needs --tun"));
+    }
     Ok(Connect {
         transport,
         listen,
         tun,
+        kill_switch,
     })
 }
 
@@ -289,6 +300,7 @@ async fn connect(c: Connect) -> io::Result<()> {
         transport: c.transport,
         tun: c.tun,
         listen: c.listen,
+        kill_switch: c.kill_switch,
     };
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
@@ -472,7 +484,12 @@ mod tests {
         assert_eq!(c.listen, "[::1]:9050".parse().unwrap());
         assert!(!c.tun);
         let c = parse_connect(&args("--tun --tcp 10.0.0.2:7000"));
-        assert_eq!(c.is_ok_and(|c| c.tun), cfg!(target_os = "linux"));
+        assert_eq!(
+            c.is_ok_and(|c| c.tun && !c.kill_switch),
+            cfg!(target_os = "linux")
+        );
+        let c = parse_connect(&args("--tun --kill-switch --usb"));
+        assert_eq!(c.is_ok_and(|c| c.kill_switch), cfg!(target_os = "linux"));
     }
 
     #[test]
@@ -510,6 +527,7 @@ mod tests {
             "--tcp a:1 --usb",
             "--tcp a:1 --serial X",
             "--usb --serial",
+            "--tcp a:1 --kill-switch",
             "--serial X",
         ] {
             assert!(parse_connect(&args(bad)).is_err(), "{bad}");

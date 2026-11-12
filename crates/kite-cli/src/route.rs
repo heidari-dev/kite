@@ -11,7 +11,12 @@
 //! the device when kite exits in any way, a crash or SIGKILL included. The rules left behind then
 //! point at an empty table and fall through to the main table, so the network keeps working until
 //! `restore` deletes them.
+//!
+//! With the kill switch the table also holds a blackhole default route with a worse metric. It
+//! outlives the device, so after a crash everything but the relay transport and the local network
+//! stays blocked until `restore` (or the next run) deletes it.
 
+use netlink_packet_route::route::{RouteMessage, RouteType};
 use netlink_packet_route::rule::{
     RuleAction, RuleAttribute, RuleFlags, RuleMessage, RulePortRange,
 };
@@ -44,8 +49,27 @@ fn no_ipv6(family: AddressFamily, e: &io::Error) -> bool {
     family == AddressFamily::Inet6 && e.raw_os_error() == Some(97) // EAFNOSUPPORT
 }
 
-/// Sends all traffic except the relay transport into the device with index `link`.
-pub async fn setup(link: u32) -> io::Result<()> {
+/// Metric of the blackhole route: the device's routes (metric 0) win while the device exists.
+const BLACKHOLE_METRIC: u32 = 1;
+
+fn blackhole(family: AddressFamily) -> RouteMessage {
+    match family {
+        AddressFamily::Inet => RouteMessageBuilder::<Ipv4Addr>::new()
+            .table_id(TABLE)
+            .priority(BLACKHOLE_METRIC)
+            .kind(RouteType::BlackHole)
+            .build(),
+        _ => RouteMessageBuilder::<Ipv6Addr>::new()
+            .table_id(TABLE)
+            .priority(BLACKHOLE_METRIC)
+            .kind(RouteType::BlackHole)
+            .build(),
+    }
+}
+
+/// Sends all traffic except the relay transport into the device with index `link`. With
+/// `kill_switch` it also blocks that traffic once the device is gone.
+pub async fn setup(link: u32, kill_switch: bool) -> io::Result<()> {
     let h = handle()?;
     for family in FAMILIES {
         let route = match family {
@@ -62,6 +86,13 @@ pub async fn setup(link: u32) -> io::Result<()> {
             Err(e) if no_ipv6(family, &e) => continue,
             r => r?,
         }
+        if kill_switch {
+            h.route()
+                .add(blackhole(family))
+                .execute()
+                .await
+                .map_err(nl)?;
+        }
         for rule in rules(family) {
             let mut req = h.rule().add();
             *req.message_mut() = rule;
@@ -71,11 +102,16 @@ pub async fn setup(link: u32) -> io::Result<()> {
     Ok(())
 }
 
-/// Deletes the rules `setup` added, including ones left by a run that did not exit cleanly. Each
-/// is matched in full, so rules of other software at the same priorities stay.
+/// Deletes the rules and blackhole routes `setup` added, including ones left by a run that did not
+/// exit cleanly. Each is matched in full, so rules of other software at the same priorities stay.
 pub async fn restore() -> io::Result<()> {
     let h = handle()?;
     for family in FAMILIES {
+        match h.route().del(blackhole(family)).execute().await.map_err(nl) {
+            // The kernel answers ESRCH for a route that is not there.
+            Err(e) if e.raw_os_error() == Some(3) || no_ipv6(family, &e) => {}
+            r => r?,
+        }
         for rule in rules(family) {
             // One copy is expected; the bound is a guard.
             for _ in 0..8 {
@@ -121,6 +157,15 @@ fn rules(family: AddressFamily) -> [RuleMessage; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blackhole_is_a_default_route_behind_the_tunnel_device() {
+        for family in FAMILIES {
+            let r = blackhole(family);
+            assert_eq!(r.header.kind, RouteType::BlackHole);
+            assert_eq!(r.header.destination_prefix_length, 0);
+        }
+    }
 
     #[test]
     fn rules_send_dns_and_unmarked_traffic_to_the_tunnel_table() {
