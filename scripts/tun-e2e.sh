@@ -255,6 +255,8 @@ import http.server, sys, time
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        # With a length, a body cut short is an error for curl, not the end of the download.
+        self.send_header("Content-Length", str(600 * 100000))
         self.end_headers()
         try:
             for _ in range(600):
