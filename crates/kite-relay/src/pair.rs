@@ -571,7 +571,8 @@ mod tests {
             "+12345",
             "12 345",
             "abcdef",
-            "{661}23456",
+            // A non-ASCII digit that some parsers accept.
+            "\u{661}23456",
         ] {
             assert!(parse_code(bad).is_err(), "{bad}");
         }
