@@ -205,6 +205,9 @@ pub struct Response {
     /// Hex public keys: `Peers`, and the phone just paired by `Pair`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peers: Option<Vec<String>>,
+    /// This computer's key as the phone shows it, from `PairStart`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
 }
 
 impl Response {
