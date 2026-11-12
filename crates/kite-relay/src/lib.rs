@@ -16,6 +16,7 @@ use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 #[doc(hidden)]
 pub mod fuzz;
 pub mod noise;
+pub mod pair;
 pub mod socks5;
 pub mod udpgw;
 

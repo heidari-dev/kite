@@ -1109,6 +1109,7 @@ version = "0.0.0"
 dependencies = [
  "snow",
  "socket2",
+ "subtle",
  "tokio",
  "tokio-util",
  "yamux",
