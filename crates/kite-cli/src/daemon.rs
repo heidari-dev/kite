@@ -148,10 +148,12 @@ impl Ids {
 async fn client(stream: UnixStream, daemon: &Daemon, me: &Ids) {
     // A caller whose credentials cannot be read or whose group cannot be established is refused
     // (a /proc mounted with hidepid hides other users' processes, and so their groups).
-    let Ok(cred) = stream.peer_cred() else { return };
-    let peer = cred.pid().and_then(|pid| Ids::of_pid(pid).ok());
-    let Some(peer) = peer.filter(|p| p.uid == cred.uid() && p.may_talk_to(me)) else {
-        eprintln!("kite: refused a connection from uid {}", cred.uid());
+    let Ok(caller) = stream.peer_cred() else {
+        return;
+    };
+    let peer = caller.pid().and_then(|pid| Ids::of_pid(pid).ok());
+    let Some(peer) = peer.filter(|p| p.uid == caller.uid() && p.may_talk_to(me)) else {
+        eprintln!("kite: refused a connection from uid {}", caller.uid());
         return;
     };
     let admin = peer.may_admin(me);
@@ -165,7 +167,7 @@ async fn client(stream: UnixStream, daemon: &Daemon, me: &Ids) {
         };
         let response = match Request::parse(&line) {
             Ok(req) => {
-                log(cred.uid(), &req);
+                log(caller.uid(), &req);
                 timeout(REQUEST_TIMEOUT, daemon.handle(req, admin))
                     .await
                     .unwrap_or_else(|_| Response::err("timed out"))
