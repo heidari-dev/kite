@@ -79,6 +79,16 @@ jobs:
         working-directory: crates/kite-ipc
         run: cargo +nightly fuzz run ipc_request -- -max_total_time=10
 
+  systemd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Exposure 1.9 when this was written; the threshold leaves a little room for newer checks.
+      - run: systemd-analyze security --offline=true --threshold=25 packaging/linux/kite.service
+      - run: systemd-analyze security --offline=true packaging/linux/kite.service | tail -1
+
   tun:
     runs-on: ubuntu-latest
     timeout-minutes: 20
