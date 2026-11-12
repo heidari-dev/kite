@@ -4,7 +4,8 @@
 //! runs on its own thread with a single-threaded tokio runtime, and opens every outbound socket in
 //! the app's process, so the phone's VPN applies to them. No file descriptor crosses the FFI.
 
-#![deny(unsafe_code)] // uniffi's generated scaffolding needs `allow`, which `forbid` would refuse
+#![deny(unsafe_code)]
+// uniffi's generated scaffolding needs `allow`, which `forbid` would refuse
 // The relay itself only runs where abstract Unix sockets exist.
 #![cfg_attr(not(any(target_os = "linux", target_os = "android")), allow(dead_code))]
 

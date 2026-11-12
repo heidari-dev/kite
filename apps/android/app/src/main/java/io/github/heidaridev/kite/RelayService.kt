@@ -10,12 +10,11 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import io.github.heidaridev.kite.ffi.Relay
-import io.github.heidaridev.kite.ffi.RelayException
-import kotlin.concurrent.thread
+import java.util.concurrent.Executors
 
 /**
- * Keeps the relay running while the screen is off. The relay opens its sockets in this process,
- * so they go wherever the phone's own traffic goes, VPN included.
+ * Keeps the relay running in the background. The relay opens its sockets in this process, so they
+ * go wherever the phone's own traffic goes, VPN included.
  */
 class RelayService : Service() {
 
@@ -27,24 +26,32 @@ class RelayService : Service() {
             return START_NOT_STICKY
         }
         startInForeground()
-        if (relay == null) {
+        worker.execute {
+            if (relay != null) return@execute
             try {
                 relay = Relay.start(SOCKET_NAME)
                 error = null
-            } catch (e: RelayException) {
-                error = e.message
-                stopSelf()
+            } catch (e: Exception) {
+                fail(e)
+            } catch (e: LinkageError) {
+                fail(e) // libkite_ffi.so missing or built for another ABI
             }
         }
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
-        val running = relay
-        relay = null
-        // Stopping waits for the relay thread, so keep it off the main thread.
-        if (running != null) thread(name = "kite-stop") { running.close() }
+        worker.execute {
+            val running = relay
+            relay = null
+            running?.close()
+        }
         super.onDestroy()
+    }
+
+    private fun fail(e: Throwable) {
+        error = e.message ?: e.javaClass.simpleName
+        stopSelf()
     }
 
     private fun startInForeground() {
@@ -79,6 +86,12 @@ class RelayService : Service() {
         const val ACTION_STOP = "io.github.heidaridev.kite.STOP"
         private const val CHANNEL = "relay"
         private const val NOTIFICATION_ID = 1
+
+        /**
+         * Starts and stops run here one after another, off the main thread: stopping waits for the
+         * relay thread, and a start must not race the socket name a stopping relay still holds.
+         */
+        private val worker = Executors.newSingleThreadExecutor()
 
         @Volatile
         var relay: Relay? = null

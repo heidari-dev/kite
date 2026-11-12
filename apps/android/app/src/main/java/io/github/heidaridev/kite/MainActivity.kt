@@ -3,10 +3,12 @@ package io.github.heidaridev.kite
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.format.Formatter
 import android.widget.Button
 import android.widget.TextView
 
@@ -42,13 +44,15 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
-        handler.removeCallbacks(refresh)
+        handler.removeCallbacksAndMessages(null)
         super.onPause()
     }
 
     private fun start() {
-        // The relay runs without it; this only lets the ongoing notification show.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        // The relay runs without it; it only lets the notification, and its Stop button, show.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0)
         }
         startForegroundService(Intent(this, RelayService::class.java))
@@ -59,32 +63,34 @@ class MainActivity : Activity() {
     }
 
     private fun show() {
-        val relay = RelayService.relay
         val stats = try {
-            relay?.stats()
+            RelayService.relay?.stats()
         } catch (e: IllegalStateException) {
             null // stopped between the check and the call
         }
         if (stats == null) {
-            status.text = RelayService.error?.let { getString(R.string.status_error, it) }
-                ?: getString(R.string.status_stopped)
-            counters.text = ""
-            toggle.setText(R.string.start)
+            status.update(
+                RelayService.error?.let { getString(R.string.status_error, it) }
+                    ?: getString(R.string.status_stopped),
+            )
+            counters.update("")
+            toggle.update(getString(R.string.start))
         } else {
-            status.text = resources.getQuantityString(
-                R.plurals.status_running, stats.tunnels.toInt(), stats.tunnels.toInt(),
+            val computers = stats.tunnels.toInt()
+            status.update(resources.getQuantityString(R.plurals.status_running, computers, computers))
+            counters.update(
+                getString(
+                    R.string.counters,
+                    Formatter.formatFileSize(this, stats.bytesOut.toLong()),
+                    Formatter.formatFileSize(this, stats.bytesIn.toLong()),
+                ),
             )
-            counters.text = getString(
-                R.string.counters, size(stats.bytesOut.toLong()), size(stats.bytesIn.toLong()),
-            )
-            toggle.setText(R.string.stop)
+            toggle.update(getString(R.string.stop))
         }
     }
 
-    private fun size(bytes: Long): String = when {
-        bytes >= 1L shl 30 -> "%.1f GB".format(bytes / (1L shl 30).toDouble())
-        bytes >= 1L shl 20 -> "%.1f MB".format(bytes / (1L shl 20).toDouble())
-        bytes >= 1L shl 10 -> "%.1f KB".format(bytes / (1L shl 10).toDouble())
-        else -> "$bytes B"
+    /** Sets text only when it changed, so the live region is not announced every second. */
+    private fun TextView.update(value: String) {
+        if (text.toString() != value) text = value
     }
 }
