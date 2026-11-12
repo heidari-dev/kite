@@ -36,7 +36,7 @@ impl Info {
 }
 
 /// Removes the socket file when the tunnel ends.
-pub struct SocketFile(PathBuf);
+pub struct SocketFile(pub PathBuf);
 
 impl Drop for SocketFile {
     fn drop(&mut self) {
