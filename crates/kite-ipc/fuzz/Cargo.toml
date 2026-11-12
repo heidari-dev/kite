@@ -1,0 +1,23 @@
+[package]
+name = "kite-ipc-fuzz"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+kite-ipc = { path = ".." }
+libfuzzer-sys = "0.4"
+
+# Not a member of the main workspace: it needs nightly and libFuzzer.
+[workspace]
+
+[[bin]]
+name = "ipc_request"
+path = "fuzz_targets/ipc_request.rs"
+test = false
+doc = false
+bench = false
