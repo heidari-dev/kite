@@ -401,6 +401,16 @@ impl Daemon {
         if let Some(stop) = stop {
             let _ = stop.send(());
         }
+        // A tunnel that ended with the kill switch on left its block behind; this lifts it.
+        let leftover = match &mut self.inner().session {
+            Some(a) if a.kill_switch && a.idle() => std::mem::take(&mut a.kill_switch),
+            _ => false,
+        };
+        if leftover {
+            if let Err(e) = crate::tun::restore().await {
+                return Response::err(e.to_string());
+            }
+        }
         let down = async {
             while !self.inner().session.as_ref().is_none_or(Active::idle) {
                 tokio::time::sleep(Duration::from_millis(50)).await;

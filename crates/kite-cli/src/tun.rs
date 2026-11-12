@@ -46,7 +46,8 @@ where
     let link = device.tun_index().map_err(io::Error::other)?;
     let link = u32::try_from(link).map_err(io::Error::other)?;
     route::restore().await?;
-    let mut stopped = false;
+    // Until setup is done an error is a failed start, not a lost tunnel: it restores as usual.
+    let mut stopped = true;
     let result = serve(
         device,
         link,
@@ -106,6 +107,7 @@ where
         }
     }
 
+    *stopped = false;
     let proxy_url = format!("socks5://{proxy}");
     let mut args = Args::default();
     args.proxy(ProxyParameters::try_from(proxy_url.as_str()).map_err(io::Error::other)?)

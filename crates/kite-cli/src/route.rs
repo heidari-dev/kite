@@ -46,11 +46,12 @@ fn nl(e: rtnetlink::Error) -> io::Error {
 
 /// A kernel without IPv6 refuses IPv6 routes and rules; there is no IPv6 traffic to catch then.
 fn no_ipv6(family: AddressFamily, e: &io::Error) -> bool {
-    family == AddressFamily::Inet6 && e.raw_os_error() == Some(97) // EAFNOSUPPORT
+    family == AddressFamily::Inet6 && matches!(e.raw_os_error(), Some(97 | 95)) // EAFNOSUPPORT, EOPNOTSUPP
 }
 
 /// Metric of the blackhole route: the device's routes (metric 0) win while the device exists.
-const BLACKHOLE_METRIC: u32 = 1;
+// Above 1024: the kernel stores an IPv6 route's metric 0 as 1024.
+const BLACKHOLE_METRIC: u32 = 4096;
 
 fn blackhole(family: AddressFamily) -> RouteMessage {
     match family {

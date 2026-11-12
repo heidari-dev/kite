@@ -105,6 +105,13 @@ impl Request {
                 if *kill_switch && *mode != Mode::Tun {
                     return Err("kill_switch needs mode tun".into());
                 }
+                // A name would be looked up again at every redial, and with the link down that
+                // lookup goes into the block.
+                if let (true, Transport::Tcp { addr }) = (*kill_switch, transport) {
+                    if addr.parse::<SocketAddr>().is_err() {
+                        return Err("kill_switch needs an IP address as the relay".into());
+                    }
+                }
                 if let Some(listen) = listen {
                     if *mode != Mode::Proxy || !listen.ip().is_loopback() {
                         return bad("listen");
@@ -331,6 +338,13 @@ mod tests {
         assert!(connect(tcp, r#","listen":"127.0.0.1:9050""#).is_ok());
         assert!(connect(tcp, r#","listen":"0.0.0.0:1080""#).is_err());
         assert!(connect(tcp, r#","kill_switch":true"#).is_err());
+        let tun = |addr: &str| {
+            parse(&format!(
+                r#"{{"cmd":"connect","transport":{{"type":"tcp","addr":"{addr}"}},"mode":"tun","kill_switch":true}}"#
+            ))
+        };
+        assert!(tun("10.0.0.2:7000").is_ok());
+        assert!(tun("relay.local:7000").is_err());
         assert!(connect(r#"{"type":"tcp","addr":""}"#, "").is_err());
         assert!(connect(r#"{"type":"tcp","addr":"a\nb"}"#, "").is_err());
         assert!(connect(r#"{"type":"usb","serial":"a b"}"#, "").is_err());

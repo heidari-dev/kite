@@ -283,6 +283,11 @@ fn parse_connect(args: &[String]) -> io::Result<Connect> {
     if kill_switch && !tun {
         return Err(usage("--kill-switch needs --tun"));
     }
+    if kill_switch && matches!(&transport, Transport::Tcp(a) if a.parse::<SocketAddr>().is_err()) {
+        return Err(usage(
+            "--kill-switch needs an IP address, not a name, for --tcp",
+        ));
+    }
     Ok(Connect {
         transport,
         listen,

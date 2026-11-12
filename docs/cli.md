@@ -99,7 +99,7 @@ could not come up) and the tunnel lives on in the daemon until `kite disconnect`
 | `--serial SERIAL` | With `--usb`: the phone to use when several are connected. | the only phone |
 | `--listen ADDR` | Proxy mode only. `IP:PORT` of the local SOCKS5 proxy. It must be a loopback address. | `127.0.0.1:1080` |
 | `--tun` | TUN mode (Linux only): send all traffic and DNS of this computer through the relay. Cannot be combined with `--listen`. | off |
-| `--kill-switch` | With `--tun`: while the link to the phone is down, block all traffic and reconnect, until `kite disconnect`. See [Kill switch](#kill-switch). | off |
+| `--kill-switch` | With `--tun`: while the link to the phone is down, block all traffic and reconnect, until `kite disconnect`. With `--tcp` the relay must be an IP address: a name would be looked up again at every redial, into the block. See [Kill switch](#kill-switch). | off |
 
 Without `--tun` kite runs in proxy mode: it serves a SOCKS5 proxy on `--listen`, needs no special
 privileges, and only programs that use the proxy go through the phone. Use `socks5h://` (proxy
