@@ -9,7 +9,7 @@ kite daemon [--state-dir DIR]
 kite pair (--tcp HOST:PORT | --usb [--serial SERIAL])
 kite peers [remove KEY]
 kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) [--listen ADDR]
-kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) --tun
+kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) --tun [--kill-switch]
 kite disconnect
 kite devices
 kite status
@@ -99,6 +99,7 @@ could not come up) and the tunnel lives on in the daemon until `kite disconnect`
 | `--serial SERIAL` | With `--usb`: the phone to use when several are connected. | the only phone |
 | `--listen ADDR` | Proxy mode only. `IP:PORT` of the local SOCKS5 proxy. It must be a loopback address. | `127.0.0.1:1080` |
 | `--tun` | TUN mode (Linux only): send all traffic and DNS of this computer through the relay. Cannot be combined with `--listen`. | off |
+| `--kill-switch` | With `--tun`: while the link to the phone is down, block all traffic and reconnect, until `kite disconnect`. With `--tcp` the relay must be an IP address: a name would be looked up again at every redial, into the block. See [Kill switch](#kill-switch). | off |
 
 Without `--tun` kite runs in proxy mode: it serves a SOCKS5 proxy on `--listen`, needs no special
 privileges, and only programs that use the proxy go through the phone. Use `socks5h://` (proxy
@@ -176,7 +177,23 @@ How it is undone:
   four rules stay but point at an empty table, so traffic falls through to your normal routes and the
   network keeps working. They are removed the next time kite starts in TUN mode, or by `kite restore`.
 
-Kite does not block traffic if the tunnel drops; it exits and normal routing returns.
+Without `--kill-switch`, kite does not block traffic if the tunnel drops; it ends the tunnel and
+normal routing returns.
+
+### Kill switch
+
+With `--kill-switch` a lost link (phone unplugged, WiFi gone, the app stopped) does not end the
+tunnel. `kite0`, its rules and the DNS settings stay, so everything that is not loopback, the local
+network or the link to the phone keeps going into the tunnel and stops there: new connections are
+refused at once and nothing leaves the computer. kite dials the phone again after 1 s, then backs
+off to every 15 s, and traffic resumes as soon as the phone answers. `kite status` says
+`reconnecting` meanwhile, with the last error, and counts the reconnects. `kite disconnect` (or
+stopping a `--foreground` kite with Ctrl+C) is the only way out, and it restores normal routing.
+
+The kill switch also holds if kite itself dies: table 5300 then gets a blackhole default route that
+outlives the device, so traffic stays blocked after a crash or SIGKILL until `kite restore` or the
+next `kite connect`. The desktop app turns the kill switch on by default; on the command line it is
+off unless asked for.
 
 ## kite status
 

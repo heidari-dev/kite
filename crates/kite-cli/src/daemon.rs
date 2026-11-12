@@ -349,9 +349,6 @@ impl Daemon {
         kill_switch: bool,
         listen: Option<SocketAddr>,
     ) -> Response {
-        if kill_switch {
-            return Response::err("the kill switch is not available yet");
-        }
         let mut inner = self.inner();
         if inner.closing {
             return Response::err("the daemon is shutting down");
@@ -368,6 +365,7 @@ impl Daemon {
             transport: transport.into(),
             tun: mode == Mode::Tun,
             listen: listen.unwrap_or(SocketAddr::from(([127, 0, 0, 1], 1080))),
+            kill_switch,
         };
         let shown = params.transport.to_string();
         let tun = params.tun;
@@ -402,6 +400,16 @@ impl Daemon {
         let stop = self.inner().session.as_mut().and_then(|a| a.stop.take());
         if let Some(stop) = stop {
             let _ = stop.send(());
+        }
+        // A tunnel that ended with the kill switch on left its block behind; this lifts it.
+        let leftover = match &mut self.inner().session {
+            Some(a) if a.kill_switch && a.idle() => std::mem::take(&mut a.kill_switch),
+            _ => false,
+        };
+        if leftover {
+            if let Err(e) = crate::tun::restore().await {
+                return Response::err(e.to_string());
+            }
         }
         let down = async {
             while !self.inner().session.as_ref().is_none_or(Active::idle) {

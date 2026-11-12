@@ -75,6 +75,12 @@ in any way the kernel removes it together with its routes and resolved forgets i
 rules left behind point at an empty table and fall through to the main table, so the network keeps
 working. kite deletes them at the next start, on a clean exit, and with `kite restore`.
 
+With the kill switch the device and the rules also outlive a lost link, not only a clean exit: the
+proxy listener and tun2proxy keep running, the proxy refuses local connections while no tunnel is
+up, and kite dials the relay again with backoff (1 s up to 15 s). Everything that enters the device
+ends at a proxy with nothing behind it, so nothing leaves. A blackhole default route (metric 1) in
+table 5300 outlives the device and keeps traffic blocked if kite dies, until `kite restore`.
+
 Routes, rules and the device need only `CAP_NET_ADMIN`. systemd-resolved does not accept that
 capability for link settings and asks polkit instead, so on a host that resolves through it a
 non-root kite needs a polkit rule for the user it runs as. The Linux packages install

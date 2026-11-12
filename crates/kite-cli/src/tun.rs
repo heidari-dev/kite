@@ -23,8 +23,13 @@ const DNS: IpAddr = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
 /// Runs TUN mode until `shutdown` completes or tun2proxy fails. `serve_link` carries the traffic
 /// that reaches the proxy at `proxy` through a tunnel to the relay, until the token it is given is
 /// cancelled; that tunnel must bypass the routes set up here, see [`route::TABLE`].
+///
+/// The device and the rules live as long as this runs, whether or not a tunnel is up. Without the
+/// kill switch they go away when it ends. With it they stay when it ends for any reason but
+/// `shutdown`, so nothing leaks until the user runs `kite restore`.
 pub async fn run<F, Fut>(
     proxy: SocketAddr,
+    kill_switch: bool,
     serve_link: F,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()>
@@ -41,7 +46,23 @@ where
     let link = device.tun_index().map_err(io::Error::other)?;
     let link = u32::try_from(link).map_err(io::Error::other)?;
     route::restore().await?;
-    let result = serve(device, link, proxy, serve_link, shutdown).await;
+    // Until setup is done an error is a failed start, not a lost tunnel: it restores as usual.
+    let mut stopped = true;
+    let result = serve(
+        device,
+        link,
+        proxy,
+        kill_switch,
+        serve_link,
+        shutdown,
+        &mut stopped,
+    )
+    .await;
+    if kill_switch && !stopped {
+        return result.and(Err(io::Error::other(
+            "the tunnel ended; traffic stays blocked until `kite restore`",
+        )));
+    }
     result.and(route::restore().await)
 }
 
@@ -67,8 +88,10 @@ async fn serve<F, Fut>(
     device: tun::AsyncDevice,
     link: u32,
     proxy: SocketAddr,
+    kill_switch: bool,
     serve_link: F,
     shutdown: impl Future<Output = ()>,
+    stopped: &mut bool,
 ) -> io::Result<()>
 where
     F: FnOnce(CancellationToken) -> Fut,
@@ -77,10 +100,14 @@ where
     // Polled from the start, so a signal during setup still ends in a clean restore.
     tokio::pin!(shutdown);
     tokio::select! {
-        r = async { route::setup(link).await?; resolved(NAME).await } => r?,
-        () = &mut shutdown => return Ok(()),
+        r = async { route::setup(link, kill_switch).await?; resolved(NAME).await } => r?,
+        () = &mut shutdown => {
+            *stopped = true;
+            return Ok(());
+        }
     }
 
+    *stopped = false;
     let proxy_url = format!("socks5://{proxy}");
     let mut args = Args::default();
     args.proxy(ProxyParameters::try_from(proxy_url.as_str()).map_err(io::Error::other)?)
@@ -106,7 +133,10 @@ where
         },
         async {
             tokio::select! {
-                () = shutdown => token.cancel(),
+                () = shutdown => {
+                    *stopped = true;
+                    token.cancel();
+                }
                 () = token.cancelled() => {}
             }
         },

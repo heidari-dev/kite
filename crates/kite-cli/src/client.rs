@@ -81,7 +81,7 @@ pub async fn connect(socket: &Path, c: &Connect) -> io::Result<()> {
         &Request::Connect {
             transport: transport(&c.transport),
             mode,
-            kill_switch: false,
+            kill_switch: c.kill_switch,
             listen: (!c.tun && c.listen != crate::DEFAULT_LISTEN).then_some(c.listen),
         },
     )

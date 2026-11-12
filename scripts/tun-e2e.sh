@@ -156,7 +156,7 @@ done | "${as_nobody[@]}" -c "XDG_CONFIG_HOME=$CONF exec $BIN/kite pair --foregro
 [ "$(stat -c %a "$CONF/kite/key")" = 600 ] || fail "key file is not owner-only"
 
 start_kite() {
-  "${as_nobody[@]}" -c "XDG_CONFIG_HOME=$CONF exec $BIN/kite connect --foreground --tcp $RELAY --tun" > "$BIN/kite.log" 2>&1 &
+  "${as_nobody[@]}" -c "XDG_CONFIG_HOME=$CONF exec $BIN/kite connect --foreground --tcp $RELAY --tun $*" > "$BIN/kite.log" 2>&1 &
   kite_pid=$!
   for _ in $(seq 50); do
     # IPv6 rules are added last.
@@ -241,6 +241,68 @@ pc curl -sS --max-time 15 -o /dev/null https://1.1.1.1/ || fail "direct path bro
 pc dig +short +time=5 +tries=1 @1.1.1.1 example.com A > /dev/null || fail "DNS broken after SIGKILL"
 "${as_nobody[@]}" -c "exec $BIN/kite restore" || fail "kite restore"
 if pc ip rule | grep -q "lookup 5300"; then fail "rules left after kite restore"; fi
+foreign_rule || fail "kite restore removed another program's rule"
+
+echo "== kill switch: the link drops mid-download"
+start_kite --kill-switch
+pc iptables -Z OUTPUT
+pc ip6tables -Z OUTPUT
+phone iptables -Z
+# A slow endless download from the Internet side (about 1 MB/s), so it is still running when the
+# link is cut.
+python3 - "$HOST_IP" <<'PY' &
+import http.server, sys, time
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        # With a length, a body cut short is an error for curl, not the end of the download.
+        self.send_header("Content-Length", str(600 * 100000))
+        self.end_headers()
+        try:
+            for _ in range(600):
+                self.wfile.write(b"x" * 100000)
+                time.sleep(0.1)
+        except OSError:
+            pass
+    def log_message(self, *a):
+        pass
+http.server.ThreadingHTTPServer((sys.argv[1], 8000), H).serve_forever()
+PY
+pids+=($!)
+sleep 1
+pc curl -sS --max-time 60 -o /dev/null "http://$HOST_IP:8000/" 2>/dev/null &
+download=$!
+sleep 2
+kill -0 "$download" 2>/dev/null || fail "the download ended before the link was cut"
+# The phone goes away: every packet of the tunnel is answered with a reset, and so is every redial.
+cut=(INPUT -p tcp --dport 7000 -j REJECT --reject-with tcp-reset)
+phone iptables -I "${cut[@]}"
+wait "$download" && fail "the download survived a dead link"
+kill -0 "$kite_pid" 2>/dev/null || fail "kite exited when the link dropped"
+pc ip link show kite0 > /dev/null || fail "kite0 went away with the link"
+pc curl -sS --max-time 5 -o /dev/null https://1.1.1.1/ 2>/dev/null && fail "TCP got out while the link was down"
+pc dig +short +time=3 +tries=1 @9.9.9.9 example.com A > /dev/null && fail "DNS got out while the link was down"
+udp_echo && fail "UDP got out while the link was down"
+sleep 5
+check_leaks "kill switch, link down"
+phone iptables -D "${cut[@]}"
+for _ in $(seq 40); do
+  pc curl -sS --max-time 5 https://1.1.1.1/cdn-cgi/trace 2>/dev/null | grep -q '^ip=' && break
+  sleep 1
+done
+pc curl -sS --max-time 20 https://1.1.1.1/cdn-cgi/trace | grep -q '^ip=' || fail "traffic did not come back with the link"
+pc curl -sS --max-time 30 -o /dev/null https://example.com/ || fail "curl by name after reconnecting"
+check_leaks "kill switch, link back"
+
+echo "== kill switch: kite killed, traffic stays blocked until kite restore"
+kill -9 "$kite_pid"
+wait "$kite_pid" 2>/dev/null || true
+kite_pid=
+if pc ip link show kite0 2>/dev/null; then fail "kite0 survived SIGKILL"; fi
+pc curl -sS --max-time 5 -o /dev/null https://1.1.1.1/ 2>/dev/null && fail "traffic left after kite was killed with the kill switch on"
+check_leaks "kill switch, kite killed"
+"${as_nobody[@]}" -c "exec $BIN/kite restore" || fail "kite restore"
+pc curl -sS --max-time 15 -o /dev/null https://1.1.1.1/ || fail "direct path broken after kite restore"
 foreign_rule || fail "kite restore removed another program's rule"
 
 echo "== the daemon"
