@@ -5,6 +5,8 @@ relay is the `relay-dev` example (see the README) and the phone app does not exi
 `relay-dev` can be reached; `--tcp` reaches it over the network and `--usb` is ready for the phone app.
 
 ```
+kite pair (--tcp HOST:PORT | --usb [--serial SERIAL])
+kite peers [remove KEY]
 kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) [--listen ADDR]
 kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) --tun
 kite status
@@ -12,6 +14,33 @@ kite restore
 kite --version | -V
 kite --help | -h | help
 ```
+
+## kite pair
+
+Pairs this computer with a phone, once. The phone shows a 6-digit code; type it when kite asks.
+Both sides then remember each other's key, and `kite connect` only talks to a paired phone.
+
+```
+$ kite pair --usb
+Type the 6-digit code shown on the phone and press Enter:
+123456
+paired with phone 3f9a...
+```
+
+The code comes from the encrypted session itself, so it only matches when nothing sits between the
+two devices. A code that does not match stops pairing: if you typed it right, someone is
+intercepting the link. Codes expire after 2 minutes. The phone accepts a new computer only while it
+has none paired or pairing is open in its app, one at a time, and after 5 failed attempts it
+refuses pairing for 60 seconds.
+
+This computer's key and the paired phones live in `$XDG_CONFIG_HOME/kite` (`~/.config/kite`;
+`%APPDATA%\kite` on Windows): `key` and `phones`, readable only by you. kite refuses to use them
+if other users can read or write them.
+
+## kite peers
+
+Lists the paired phones by public key. `kite peers remove KEY` forgets the phone whose key starts
+with `KEY`; give enough of it to match one phone. Remove this computer on the phone too.
 
 ## kite connect
 
@@ -56,9 +85,9 @@ is ignored. Kite explains what is missing:
 Unplugging the phone, or stopping the adb server, closes the tunnel: kite prints the error and exits
 with 1, and in TUN mode removes its rules as usual.
 
-Every link, TCP or USB, is encrypted with Noise. Until pairing lands the phone's key is not checked
-(see the [threat model](threat-model.md)), so kite prints a warning: a program that pretends to be
-the relay, such as a fake adb server started by another local user, can still read the traffic.
+Every link, TCP or USB, is encrypted with Noise and kite checks the phone's key against the paired
+phones before sending its own, so a program that pretends to be the relay, such as a fake adb
+server started by another local user, gets nothing.
 Without `--tun` nothing needs special privileges.
 
 ### TUN mode
@@ -131,4 +160,4 @@ match the ones kite adds, so rules from other programs stay.
 | Code | Meaning |
 |------|---------|
 | 0 | Normal stop, or `--help` and `--version` |
-| 1 | Any error: bad arguments (usage is printed), relay unreachable, tunnel lost, status not available |
+| 1 | Any error: bad arguments (usage is printed), relay unreachable, phone not paired or code wrong, tunnel lost, status not available |

@@ -51,8 +51,9 @@ stream, session and queue has a cap, every wait for a peer has a timeout, and pe
 
 | | Threat | Mitigation | Owner | Status |
 |---|--------|------------|-------|--------|
-| S | A rogue device pretends to be the phone or the computer. | Noise XX handshake with both sides pinning the other's static key after pairing. | `kite-relay`, `kite-cli` | planned |
-| S | Someone guesses or intercepts the pairing code and pairs their own device. | Short-lived code, attempts rate-limited, constant-time comparison, code bound to the handshake. | `kite-relay`, `kite-cli` | planned |
+| S | A rogue device pretends to be the phone or the computer. | Noise XX handshake with both sides pinning the other's static key after pairing. The computer checks the phone's key before sending its own; the phone refuses unknown computers once one is paired. | `kite-relay`, `kite-cli` | done |
+| S | Someone in the middle of the first connection pairs in place of one side. | The 6-digit code is derived from the handshake hash and both sides' nonces, with the phone committing to its nonce first, so a man in the middle cannot grind two sessions to the same code: one guess in a million per attempt. The computer compares the typed code in constant time and stops on a mismatch; the phone compares it again. Codes expire after 2 minutes; 5 failed attempts lock pairing for 60 s; one pairing at a time. | `kite-relay`, `kite-cli` | done |
+| S | Another device on the link pairs with the phone while pairing is open, before the user's computer does. | Pairing is only open while the phone has no computer, or for 2 minutes after the user opens it in the app, and closes after one success. The app lists paired computers so a stranger can be removed. The peer can compute the code itself, so the phone cannot tell it apart; a confirm step in the app would close this. | `kite-relay`, app | partial |
 | T | Someone alters or replays bytes on the wire. | Noise XX (`snow`: 25519, ChaChaPoly, BLAKE2s) on every transport before yamux; no custom crypto. A bad, replayed or truncated frame ends the session; frame lengths are checked before reading and the handshake has a timeout. | `kite-relay`, `kite-cli` | done |
 | R | A user denies having connected, or we cannot tell which device did. | Not a goal. Logs never hold hostnames, keys, pairing codes or payloads by default; the relay logs nothing today. | `kite-relay` | done |
 | I | An eavesdropper reads traffic on WiFi. | Noise encrypts the whole stream. USB links are not exposed to the LAN but get the same encryption. | `kite-relay`, `kite-cli` | done |
@@ -60,11 +61,10 @@ stream, session and queue has a cap, every wait for a peer has a timeout, and pe
 | D | A peer opens endless streams or buffers to exhaust the phone's RAM. | At most 256 yamux streams per tunnel, fixed 256 KiB window per stream, receive window for the whole tunnel capped (64 MiB worst case), at most 16 UDP sessions per gateway. | `kite-relay` | done |
 | D | A peer stalls a handshake or sits idle on a connection. | Timeouts on the SOCKS5 handshake, name resolution and connect; idle timeout on relayed connections and UDP sessions; an idle tunnel is closed. | `kite-relay` | done |
 | E | A paired (or compromised) computer reaches services the phone exposes to its own networks. | The relay refuses the phone's loopback, any address assigned to a local interface, link-local, unspecified, broadcast and multicast addresses. The check runs on resolved addresses, after DNS, with IPv4-mapped, IPv4-compatible and NAT64 forms normalised, so DNS rebinding does not help. | `kite-relay` | done |
-| S | Another local user binds the loopback port of the adb server (5037) when none runs, or a rogue app binds the abstract socket `kite` on the phone, and acts as the relay. Until pairing it can complete the Noise handshake itself and see every destination and payload; in TUN mode that is all traffic. | Noise covers USB like TCP, so without the handshake it sees only ciphertext. Pinning the phone's key at pairing stops it posing as the relay. `kite` warns on every run until then. | `kite-link`, `kite-cli` | partial |
+| S | Another local user binds the loopback port of the adb server (5037) when none runs, or a rogue app binds the abstract socket `kite` on the phone, and acts as the relay. It would see every destination and payload; in TUN mode that is all traffic. | Noise covers USB like TCP, and `kite connect` aborts the handshake unless the phone's key is a paired one, before sending its own key. `kite pair` over a rogue server fails on the code. | `kite-link`, `kite-cli` | done |
 
-Until pairing lands, the relay accepts any computer key and `kite` any phone key: the link is
-encrypted against eavesdroppers, but an active attacker on it can pose as either side. Do not point
-the relay at a network listener yet.
+After pairing each side accepts only the other's key. The phone app and a WiFi listener do not
+exist yet; `relay-dev` keeps its key and pairings in memory and is for development only.
 
 ## B2: local IPC
 
@@ -95,9 +95,15 @@ pairing, is a planned part of B1.
 
 ## Keys and secrets
 
-- Phone: Android Keystore or iOS Keychain (`ThisDeviceOnly`). Computer: an owner-only file or the OS
-  keyring. Keys are zeroized after use and never logged. **Planned.**
-- Pairing codes expire and are compared in constant time. **Planned.**
+- Computer: `key` and `phones` in the user's config directory, mode 0600 in a 0700 directory;
+  kite refuses files other users can read or write. On Windows they rely on the profile's ACL.
+  **Done.**
+- Phone: the relay takes the key as bytes and wipes them; the app keeps it in Android Keystore or
+  iOS Keychain (`ThisDeviceOnly`). **Planned** (app).
+- Keys are zeroized after use and never logged. snow 0.10 keeps its own copies in the handshake
+  and cipher state without wiping them. **Done**, with that limit.
+- Pairing codes expire after 2 minutes, are compared in constant time and never logged by the
+  relay. **Done.**
 - The repository holds no secrets, signing keys or `.env` files. gitleaks runs on every pull request
   and GitHub secret scanning is on. **Done.**
 
@@ -112,8 +118,7 @@ pairing, is a planned part of B1.
 
 ## Known gaps
 
-- No authentication on the transport until pairing lands: the link is encrypted, but either side
-  accepts any key.
+- While pairing is open on the phone, another device on the link can pair first (see B1).
 - No quota per paired computer: a paired computer can use all of the phone's data.
 - No kill switch: when the tunnel drops, kite exits and the computer's own routes take over again.
 - Proxy mode and TUN mode listen on 127.0.0.1, so any local user can send traffic through the phone
