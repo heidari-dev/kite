@@ -248,7 +248,27 @@ start_kite --kill-switch
 pc iptables -Z OUTPUT
 pc ip6tables -Z OUTPUT
 phone iptables -Z
-pc curl -sS --max-time 60 -o /dev/null "https://speed.cloudflare.com/__down?bytes=200000000" 2>/dev/null &
+# A slow endless download from the Internet side (about 1 MB/s), so it is still running when the
+# link is cut.
+python3 - "$HOST_IP" <<'PY' &
+import http.server, sys, time
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        try:
+            for _ in range(600):
+                self.wfile.write(b"x" * 100000)
+                time.sleep(0.1)
+        except OSError:
+            pass
+    def log_message(self, *a):
+        pass
+http.server.ThreadingHTTPServer((sys.argv[1], 8000), H).serve_forever()
+PY
+pids+=($!)
+sleep 1
+pc curl -sS --max-time 60 -o /dev/null "http://$HOST_IP:8000/" 2>/dev/null &
 download=$!
 sleep 2
 kill -0 "$download" 2>/dev/null || fail "the download ended before the link was cut"
