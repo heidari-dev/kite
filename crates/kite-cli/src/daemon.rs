@@ -13,7 +13,7 @@ use crate::Transport;
 use kite_ipc::{read_line, Device, Mode, Request, Response, State, Stats, Status, MAX_REQUEST};
 use kite_relay::pair::{self, PairAttempt};
 use std::net::SocketAddr;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -32,6 +32,8 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// Longest time one request may take, pairing's dial and handshake included.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Dialling the phone and its side of the pairing handshake.
+const PAIR_START_TIMEOUT: Duration = Duration::from_secs(25);
 /// How long a disconnect waits for the tunnel to come down.
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -45,8 +47,7 @@ pub struct Options {
 pub async fn run(opts: Options, shutdown: impl Future<Output = ()>) -> io::Result<()> {
     let store = Store::at(opts.state)?;
     let me = Ids::of_pid("self")?;
-    let listener = bind(&opts.socket)?;
-    let _socket = crate::status::SocketFile(opts.socket);
+    let (listener, _socket) = bind(opts.socket).await?;
     let daemon = Arc::new(Daemon {
         store,
         inner: Mutex::new(Inner::default()),
@@ -70,27 +71,34 @@ pub async fn run(opts: Options, shutdown: impl Future<Output = ()>) -> io::Resul
             },
         }
     }
+    daemon.inner().closing = true;
     daemon.disconnect().await;
     Ok(())
 }
 
 /// Binds the socket owner and group only, replacing one left by a daemon that did not exit
-/// cleanly. A socket that answers belongs to a running daemon.
-fn bind(path: &std::path::Path) -> io::Result<UnixListener> {
-    let listener = match UnixListener::bind(path) {
+/// cleanly. A socket that answers belongs to a running daemon. The guard removes the file again.
+async fn bind(path: PathBuf) -> io::Result<(UnixListener, crate::status::SocketFile)> {
+    let listener = match UnixListener::bind(&path) {
         Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
-            if std::os::unix::net::UnixStream::connect(path).is_ok() {
+            let alive = timeout(Duration::from_secs(1), UnixStream::connect(&path)).await;
+            if !matches!(alive, Ok(Err(_))) {
                 return Err(io::Error::other("another kite daemon is already running"));
             }
-            std::fs::remove_file(path)?;
-            UnixListener::bind(path)?
+            // Only ever a stale socket, whatever `--socket` points at.
+            if !std::fs::symlink_metadata(&path)?.file_type().is_socket() {
+                return Err(io::Error::other("the socket path is not a socket"));
+            }
+            std::fs::remove_file(&path)?;
+            UnixListener::bind(&path)?
         }
         bound => bound?,
     };
+    let guard = crate::status::SocketFile(path);
     // Until this, the umask decides; a socket needs write permission to be connected to, and the
     // usual umask gives that to the owner only.
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))?;
-    Ok(listener)
+    std::fs::set_permissions(&guard.0, std::fs::Permissions::from_mode(0o660))?;
+    Ok((listener, guard))
 }
 
 /// User and groups of a process, from `/proc/PID/status`.
@@ -121,6 +129,12 @@ impl Ids {
         })
     }
 
+    /// Root or the daemon's own user. Pairing decides which phones the tunnel, and in TUN mode all
+    /// traffic of the computer, may go to, so the group does not get it.
+    fn may_admin(&self, daemon: &Self) -> bool {
+        self.uid == 0 || self.uid == daemon.uid
+    }
+
     /// Root, the daemon's own user, or a member of the daemon's group.
     fn may_talk_to(&self, daemon: &Self) -> bool {
         self.uid == 0
@@ -136,10 +150,11 @@ async fn client(stream: UnixStream, daemon: &Daemon, me: &Ids) {
     // (a /proc mounted with hidepid hides other users' processes, and so their groups).
     let Ok(cred) = stream.peer_cred() else { return };
     let peer = cred.pid().and_then(|pid| Ids::of_pid(pid).ok());
-    if !peer.is_some_and(|p| p.uid == cred.uid() && p.may_talk_to(me)) {
+    let Some(peer) = peer.filter(|p| p.uid == cred.uid() && p.may_talk_to(me)) else {
         eprintln!("kite: refused a connection from uid {}", cred.uid());
         return;
-    }
+    };
+    let admin = peer.may_admin(me);
     let (read, mut write) = stream.into_split();
     let mut read = BufReader::with_capacity(MAX_REQUEST, read);
     loop {
@@ -151,7 +166,7 @@ async fn client(stream: UnixStream, daemon: &Daemon, me: &Ids) {
         let response = match Request::parse(&line) {
             Ok(req) => {
                 log(cred.uid(), &req);
-                timeout(REQUEST_TIMEOUT, daemon.handle(req))
+                timeout(REQUEST_TIMEOUT, daemon.handle(req, admin))
                     .await
                     .unwrap_or_else(|_| Response::err("timed out"))
             }
@@ -188,6 +203,8 @@ struct Daemon {
 struct Inner {
     session: Option<Active>,
     pairing: Pairing,
+    /// The daemon is shutting down: nothing new starts.
+    closing: bool,
 }
 
 #[derive(Default)]
@@ -206,8 +223,15 @@ struct Active {
     mode: Mode,
     kill_switch: bool,
     stop: Option<oneshot::Sender<()>>,
-    done: Option<oneshot::Receiver<()>>,
     thread: Option<JoinHandle<()>>,
+}
+
+impl Active {
+    /// The tunnel has ended. A thread that died without saying so counts too.
+    fn idle(&self) -> bool {
+        self.shared.snapshot().state == State::Idle
+            || self.thread.as_ref().is_some_and(JoinHandle::is_finished)
+    }
 }
 
 impl Daemon {
@@ -215,7 +239,17 @@ impl Daemon {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    async fn handle(&self, req: Request) -> Response {
+    async fn handle(&self, req: Request, admin: bool) -> Response {
+        if !admin
+            && matches!(
+                req,
+                Request::PairStart { .. } | Request::Pair { .. } | Request::RemovePeer { .. }
+            )
+        {
+            return Response::err(
+                "changing the paired phones needs root or the daemon's user; try sudo",
+            );
+        }
         match req {
             Request::Status {} => self.status(),
             Request::Stats {} => self.stats(),
@@ -236,10 +270,7 @@ impl Daemon {
                 kill_switch,
                 listen,
             } => self.connect(transport, mode, kill_switch, listen),
-            Request::Disconnect {} => {
-                self.disconnect().await;
-                Response::ok()
-            }
+            Request::Disconnect {} => self.disconnect().await,
             Request::PairStart { transport } => self.pair_start(transport.into()).await,
             Request::Pair { code } => self.pair(&code).await,
             Request::Peers {} => match self.store.phones() {
@@ -255,7 +286,7 @@ impl Daemon {
 
     fn status(&self) -> Response {
         let inner = self.inner();
-        let pairing = matches!(inner.pairing, Pairing::Waiting(..));
+        let pairing = matches!(&inner.pairing, Pairing::Waiting(_, d) if Instant::now() < *d);
         let status = match &inner.session {
             None => Status {
                 state: State::Idle,
@@ -319,8 +350,11 @@ impl Daemon {
             return Response::err("the kill switch is not available yet");
         }
         let mut inner = self.inner();
+        if inner.closing {
+            return Response::err("the daemon is shutting down");
+        }
         if let Some(old) = &mut inner.session {
-            if old.shared.snapshot().state != State::Idle {
+            if !old.idle() {
                 return Response::err("already connected; disconnect first");
             }
             if let Some(thread) = old.thread.take() {
@@ -336,14 +370,12 @@ impl Daemon {
         let tun = params.tun;
         let shared = Arc::new(Shared::default());
         let (stop, stopped) = oneshot::channel();
-        let (done_tx, done) = oneshot::channel();
         let (store, theirs) = (self.store.clone(), shared.clone());
         let thread = std::thread::Builder::new()
             .name("kite-session".into())
             .spawn(move || {
                 let result = crate::block_on(session(params, store, theirs.clone(), stopped), tun);
                 theirs.finish(&result);
-                let _ = done_tx.send(());
             });
         match thread {
             Ok(thread) => {
@@ -353,7 +385,6 @@ impl Daemon {
                     mode,
                     kill_switch,
                     stop: Some(stop),
-                    done: Some(done),
                     thread: Some(thread),
                 });
                 Response::ok()
@@ -362,23 +393,30 @@ impl Daemon {
         }
     }
 
-    /// Takes the tunnel down, and with it the kill switch, and waits for that.
-    async fn disconnect(&self) {
-        let (stop, done) = match &mut self.inner().session {
-            Some(a) => (a.stop.take(), a.done.take()),
-            None => return,
-        };
+    /// Takes the tunnel down, and with it the routes it set up, and waits for that. Whoever asks
+    /// while another disconnect is still running waits for it too.
+    async fn disconnect(&self) -> Response {
+        let stop = self.inner().session.as_mut().and_then(|a| a.stop.take());
         if let Some(stop) = stop {
             let _ = stop.send(());
         }
-        if let Some(done) = done {
-            let _ = timeout(STOP_TIMEOUT, done).await;
+        let down = async {
+            while !self.inner().session.as_ref().is_none_or(Active::idle) {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
+        match timeout(STOP_TIMEOUT, down).await {
+            Ok(()) => Response::ok(),
+            Err(_) => Response::err("the tunnel did not stop in time"),
         }
     }
 
     async fn pair_start(&self, transport: Transport) -> Response {
         {
             let mut inner = self.inner();
+            if inner.closing {
+                return Response::err("the daemon is shutting down");
+            }
             match &inner.pairing {
                 Pairing::Starting => return Response::err("a pairing is already in progress"),
                 Pairing::Waiting(_, deadline) if Instant::now() < *deadline => {
@@ -387,11 +425,18 @@ impl Daemon {
                 _ => inner.pairing = Pairing::Starting,
             }
         }
-        let attempt = async {
+        // Inside the request timeout, so the marker is always reset.
+        let attempt = timeout(PAIR_START_TIMEOUT, async {
             let key = self.store.key()?;
             pair::start(crate::dial(&transport, false).await?, &key).await
-        }
-        .await;
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the phone did not answer",
+            ))
+        });
         let mut inner = self.inner();
         match attempt {
             Ok(attempt) => {
@@ -408,9 +453,15 @@ impl Daemon {
 
     /// One try per `pair_start`: the attempt is used up whatever the code.
     async fn pair(&self, code: &str) -> Response {
-        let attempt = match std::mem::take(&mut self.inner().pairing) {
-            Pairing::Waiting(attempt, deadline) if Instant::now() < deadline => attempt,
-            _ => return Response::err("no pairing is waiting for a code; start one first"),
+        let attempt = {
+            let mut inner = self.inner();
+            if !matches!(inner.pairing, Pairing::Waiting(..)) {
+                return Response::err("no pairing is waiting for a code; start one first");
+            }
+            match std::mem::take(&mut inner.pairing) {
+                Pairing::Waiting(attempt, deadline) if Instant::now() < deadline => attempt,
+                _ => return Response::err("the pairing expired; start a new one"),
+            }
         };
         match attempt.finish(code).await {
             Ok(phone) => match self.store.add_phone(phone) {
@@ -493,6 +544,10 @@ mod tests {
         assert!(who(1000, 901, &[]).may_talk_to(&me));
         assert!(who(1000, 1000, &[4, 901]).may_talk_to(&me));
         assert!(!who(1000, 1000, &[4, 27]).may_talk_to(&me));
+        // Changing the paired phones is for root and the daemon's user only.
+        assert!(who(0, 0, &[]).may_admin(&me));
+        assert!(who(900, 5, &[]).may_admin(&me));
+        assert!(!who(1000, 901, &[901]).may_admin(&me));
     }
 
     struct Running {
@@ -586,6 +641,16 @@ mod tests {
         assert!(error.unwrap().contains("not paired"));
         let r = ask(&d.socket, r#"{"cmd":"stats"}"#).await;
         assert_eq!(r.stats.unwrap().streams, 0);
+        assert!(ask(&d.socket, r#"{"cmd":"disconnect"}"#).await.ok);
+
+        // A code with no pairing started is refused, and a failed start leaves nothing behind.
+        let r = ask(&d.socket, r#"{"cmd":"pair","code":"123456"}"#).await;
+        assert!(r.error.unwrap().contains("no pairing"));
+        let start = r#"{"cmd":"pair_start","transport":{"type":"tcp","addr":"127.0.0.1:9"}}"#;
+        for _ in 0..2 {
+            let r = ask(&d.socket, start).await;
+            assert!(!r.ok && !r.error.unwrap().contains("already"));
+        }
         d.end().await;
     }
 

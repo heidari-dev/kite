@@ -34,8 +34,12 @@ terminal or the desktop app does not drop the connection, and it is the only par
 `/var/lib/kite`, mode 0700), separate from the ones of any user's `--foreground` runs.
 
 It listens on `/run/kite/kite.sock`, mode 0660, group `kite`. Each caller's credentials are checked
-as well: only root, the daemon's own user and members of the daemon's group get an answer. On a
-system that mounts `/proc` with `hidepid`, a caller whose groups the daemon cannot read is refused.
+as well: only root, the daemon's own user and members of the daemon's group get an answer; the
+socket's mode is what enforces this, the check is a second layer. On a system that mounts `/proc`
+with `hidepid`, a caller whose groups the daemon cannot read is refused. Members of the group can
+connect, disconnect and read status, but pairing and forgetting phones (`pair`, `peers remove`) are
+for root and the daemon's user only, because the phones decide where all of the computer's traffic
+can go: run them with `sudo`.
 The protocol is one JSON object per line (`crates/kite-ipc`): `status`, `devices`, `connect`,
 `disconnect`, `stats`, `pair_start`, `pair`, `peers` and `remove_peer`. Requests over 4 KiB, with
 unknown commands or unknown fields, or that take over 10 s to arrive, are refused; at most 8 clients

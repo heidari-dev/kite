@@ -79,6 +79,7 @@ macOS equivalents do not yet.
 | R | An unprivileged action changes the network setup and nobody can tell. | The daemon logs each state-changing request to the system log with the caller's uid, without keys, codes, payloads or hostnames. | `kite-cli` (daemon) | done |
 | I | Status output or logs leak keys, pairing codes or visited hosts. | Keys never travel over IPC. Status shows the transport, mode, counters and the last error. Logs follow the same rule. | `kite-cli` (daemon) | done |
 | D | A client floods the daemon with connections or requests. | At most 8 open IPC connections, a 10 s wait for each request and a 30 s limit for handling it, bounded line buffer. Pairing runs one at a time, one try per start. | `kite-cli` (daemon) | done |
+| E | A member of the `kite` group points the computer's traffic at a relay of their own. | Pairing decides which phones may be used, so `pair_start`, `pair` and `remove_peer` are refused for everyone but root and the daemon's user. The group can only use phones that are already paired. | `kite-cli` (daemon) | done |
 | E | A local user turns the daemon into a way to run commands or touch files as it. | A fixed set of commands with typed arguments, no paths or command lines taken from clients. The daemon's state directory is 0700 and its own. On Linux the daemon is meant to get `CAP_NET_ADMIN` from systemd instead of running as full root. | `kite-cli` (daemon) | partial: the unit is not shipped yet |
 
 ## B3: phone and Internet
@@ -118,6 +119,12 @@ pairing, is a planned part of B1.
 | A release is built or altered somewhere untrusted. | Releases are built only by CI from tags, with SHA-256 checksums, GitHub artifact attestations and a CycloneDX SBOM. OpenSSF Scorecard tracks the repository's practices. | planned (releases), done (Scorecard) |
 
 ## Known gaps
+
+- A member of the `kite` group can make the daemon dial any `host:port` and learn whether it
+  answered, so the daemon user works as a port scanner for them. The group is trusted with the
+  tunnel; keep it small.
+- One member of the `kite` group can hold all 8 IPC slots for a few seconds at a time and starve the
+  others; there is no per-user cap yet.
 
 - While pairing is open on the phone, another device on the link can pair first (see B1).
 - No quota per paired computer: a paired computer can use all of the phone's data.

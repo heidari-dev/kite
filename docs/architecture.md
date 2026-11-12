@@ -122,8 +122,9 @@ costs no connection and frees the GUI's memory.
   on it. Keys never travel over it.
 - The socket is 0660 and belongs to the daemon's group. The daemon also checks each caller's
   credentials (SO_PEERCRED, then `/proc/PID/status` for supplementary groups) and answers only
-  root, its own user and its group. At most 8 clients are served at once, each request has a
-  timeout, and no request carries a path or a command line.
+  root, its own user and its group; only root and its own user may change the paired phones. At
+  most 8 clients are served at once, each request has a timeout, and no request carries a path or a
+  command line.
 - The tunnel runs on its own thread with its own runtime, the same code that `kite connect
   --foreground` runs in the CLI process, so a slow request never stalls traffic. `connect` returns
   once the thread is started; `status` reports `connecting`, `connected` and, after the end, `idle`
