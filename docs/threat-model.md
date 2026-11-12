@@ -5,8 +5,8 @@ them. It uses STRIDE (spoofing, tampering, repudiation, information disclosure, 
 elevation of privilege) on each trust boundary. See [architecture.md](architecture.md) for the data
 path and [SECURITY.md](../SECURITY.md) for reporting a problem.
 
-Kite is early. Each mitigation below is marked **done** (in the repository today) or **planned**
-(designed, not written yet). Until the planned items for a boundary land, treat that boundary as
+Kite is early. Each mitigation below is marked **done** (in the repository today), **partial** (in,
+with the gap stated in the row) or **planned** (designed, not written yet). Until the planned items for a boundary land, treat that boundary as
 unprotected and do not rely on it.
 
 ## Assets
@@ -53,17 +53,18 @@ stream, session and queue has a cap, every wait for a peer has a timeout, and pe
 |---|--------|------------|-------|--------|
 | S | A rogue device pretends to be the phone or the computer. | Noise XX handshake with both sides pinning the other's static key after pairing. | `kite-relay`, `kite-cli` | planned |
 | S | Someone guesses or intercepts the pairing code and pairs their own device. | Short-lived code, attempts rate-limited, constant-time comparison, code bound to the handshake. | `kite-relay`, `kite-cli` | planned |
-| T | Someone alters or replays bytes on the wire. | Noise (`snow`: 25519, ChaChaPoly, BLAKE2s); no custom crypto. | `kite-relay`, `kite-link` | planned |
+| T | Someone alters or replays bytes on the wire. | Noise XX (`snow`: 25519, ChaChaPoly, BLAKE2s) on every transport before yamux; no custom crypto. A bad, replayed or truncated frame ends the session; frame lengths are checked before reading and the handshake has a timeout. | `kite-relay`, `kite-cli` | done |
 | R | A user denies having connected, or we cannot tell which device did. | Not a goal. Logs never hold hostnames, keys, pairing codes or payloads by default; the relay logs nothing today. | `kite-relay` | done |
-| I | An eavesdropper reads traffic on WiFi. | Noise encrypts the whole stream. USB links are not exposed to the LAN but get the same encryption. | `kite-link` | planned |
+| I | An eavesdropper reads traffic on WiFi. | Noise encrypts the whole stream. USB links are not exposed to the LAN but get the same encryption. | `kite-relay`, `kite-cli` | done |
 | I | Parsers leak memory or crash on hostile bytes. | SOCKS5 and udpgw parsers check lengths first and have cargo-fuzz targets; CI runs a short fuzz smoke. | `kite-relay` | done |
 | D | A peer opens endless streams or buffers to exhaust the phone's RAM. | At most 256 yamux streams per tunnel, fixed 256 KiB window per stream, receive window for the whole tunnel capped (64 MiB worst case), at most 16 UDP sessions per gateway. | `kite-relay` | done |
 | D | A peer stalls a handshake or sits idle on a connection. | Timeouts on the SOCKS5 handshake, name resolution and connect; idle timeout on relayed connections and UDP sessions; an idle tunnel is closed. | `kite-relay` | done |
 | E | A paired (or compromised) computer reaches services the phone exposes to its own networks. | The relay refuses the phone's loopback, any address assigned to a local interface, link-local, unspecified, broadcast and multicast addresses. The check runs on resolved addresses, after DNS, with IPv4-mapped, IPv4-compatible and NAT64 forms normalised, so DNS rebinding does not help. | `kite-relay` | done |
-| S | Another local user binds the loopback port of the adb server (5037) when none runs, or a rogue app binds the abstract socket `kite` on the phone, and acts as the relay. It sees every destination and any unencrypted payload and can alter it; in TUN mode that is all traffic. | Not mitigated: USB is not a trusted link. Noise with a pinned phone key must cover USB too. `kite` prints a warning in USB mode. | `kite-link`, `kite-cli` | planned |
+| S | Another local user binds the loopback port of the adb server (5037) when none runs, or a rogue app binds the abstract socket `kite` on the phone, and acts as the relay. Until pairing it can complete the Noise handshake itself and see every destination and payload; in TUN mode that is all traffic. | Noise covers USB like TCP, so without the handshake it sees only ciphertext. Pinning the phone's key at pairing stops it posing as the relay. `kite` warns on every run until then. | `kite-link`, `kite-cli` | partial |
 
-Until Noise is in, the relay trusts whatever is on the other end of the byte stream. Do not point
-it at a network listener yet.
+Until pairing lands, the relay accepts any computer key and `kite` any phone key: the link is
+encrypted against eavesdroppers, but an active attacker on it can pose as either side. Do not point
+the relay at a network listener yet.
 
 ## B2: local IPC
 
@@ -111,7 +112,8 @@ pairing, is a planned part of B1.
 
 ## Known gaps
 
-- No encryption or authentication on the transport until the Noise work lands.
+- No authentication on the transport until pairing lands: the link is encrypted, but either side
+  accepts any key.
 - No quota per paired computer: a paired computer can use all of the phone's data.
 - No kill switch: when the tunnel drops, kite exits and the computer's own routes take over again.
 - Proxy mode and TUN mode listen on 127.0.0.1, so any local user can send traffic through the phone
