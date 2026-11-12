@@ -37,6 +37,10 @@ fn main() -> std::io::Result<()> {
                 if shown.peers().is_empty() {
                     shown.open();
                 }
+                // No user to ask here: allow whoever pairs.
+                if let Some(key) = shown.request() {
+                    shown.answer(&key, true);
+                }
                 let code = shown.pairing_code();
                 if code.is_some() && code != last {
                     println!("pairing code {}", code.as_deref().unwrap_or_default());

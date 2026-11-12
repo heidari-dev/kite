@@ -439,7 +439,10 @@ impl Daemon {
         // Inside the request timeout, so the marker is always reset.
         let attempt = timeout(PAIR_START_TIMEOUT, async {
             let key = self.store.key()?;
-            pair::start(crate::dial(&transport, false).await?, &key).await
+            let name =
+                pair::fingerprint(&key.public()?).ok_or_else(|| io::Error::other("no BLAKE2s"))?;
+            let attempt = pair::start(crate::dial(&transport, false).await?, &key).await?;
+            Ok((attempt, name))
         })
         .await
         .unwrap_or_else(|_| {
@@ -450,10 +453,13 @@ impl Daemon {
         });
         let mut inner = self.inner();
         match attempt {
-            Ok(attempt) => {
+            Ok((attempt, name)) => {
                 inner.pairing =
                     Pairing::Waiting(Box::new(attempt), Instant::now() + pair::CODE_LIFETIME);
-                Response::ok()
+                Response {
+                    fingerprint: Some(name),
+                    ..Response::ok()
+                }
             }
             Err(e) => {
                 inner.pairing = Pairing::None;

@@ -355,7 +355,9 @@ async fn pair(transport: Transport) -> io::Result<()> {
     let store = store::Store::open()?;
     let key = store.key()?;
     let attempt = pair::start(dial(&transport, false).await?, &key).await?;
-    println!("Type the 6-digit code shown on the phone and press Enter:");
+    let name = pair::fingerprint(&key.public()?).ok_or_else(|| io::Error::other("no BLAKE2s"))?;
+    println!("This computer is {name}.");
+    println!("Allow it on the phone, then type the 6-digit code the phone shows and press Enter:");
     let phone = attempt.finish(&read_code().await?).await?;
     store.add_phone(phone)?;
     println!("paired with phone {}", store::hex(&phone));

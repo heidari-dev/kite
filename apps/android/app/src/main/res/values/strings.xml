@@ -11,10 +11,26 @@
     </plurals>
     <string name="counters">%1$s sent, %2$s received</string>
     <string name="pair">Pair a computer</string>
-    <string name="pairing_open">Pairing is open for two minutes. On the computer, run kite pair --usb.</string>
+    <string name="pairing_open">Pairing is open for two minutes. On the computer, run kite pair --usb, then allow it here.</string>
     <string name="pairing_code">Pairing code: %1$s</string>
     <string name="usb_hint">Connect the phone by USB with USB debugging on, then run kite connect --usb on the computer.</string>
     <string name="channel_name">Sharing</string>
     <string name="notification_title">Kite is sharing this phone\'s connection</string>
-    <string name="notification_text">Tap to see the computers and traffic</string>
+    <string name="notification_starting">Starting</string>
+    <string name="notification_waiting">Waiting for a computer</string>
+    <plurals name="notification_active">
+        <item quantity="one">%1$d computer, down %2$s, up %3$s</item>
+        <item quantity="other">%1$d computers, down %2$s, up %3$s</item>
+    </plurals>
+    <string name="speed">%1$s/s</string>
+    <string name="allow_title">Allow this computer?</string>
+    <string name="allow_message">Computer %1$s wants to use this phone\'s connection.\n\nAllow it only if you just ran kite pair and the computer printed the same fingerprint.</string>
+    <string name="allow">Allow</string>
+    <string name="deny">Don\'t allow</string>
+    <string name="not_now">Not now</string>
+    <string name="computers">Paired computers</string>
+    <string name="remove">Remove</string>
+    <string name="remove_computer">Remove computer %1$s</string>
+    <string name="battery_title">Keep sharing in the background</string>
+    <string name="battery_message">Android can stop an app that runs for a long time with the screen off, and that would cut the computer\'s connection. Let Kite run without battery limits?</string>
 </resources>

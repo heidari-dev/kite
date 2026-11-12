@@ -24,7 +24,9 @@ are build outputs and ignored by git. CI builds the same debug APK and attaches 
 ## Try it
 
 Install the APK, open Kite and tap Start sharing. The first time, tap Pair a computer and, on the
-computer with USB debugging allowed, run `kite pair --usb` and type the code the phone shows. Then:
+computer with USB debugging allowed, run `kite pair --usb`. The phone asks whether to allow the
+computer and shows its fingerprint, which `kite pair` printed too; tap Allow, then type the code
+the phone shows. Paired computers are listed on the screen and can be removed there. Then:
 
 ```
 kite connect --usb

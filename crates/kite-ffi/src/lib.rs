@@ -42,6 +42,15 @@ pub fn generate_key() -> Result<Vec<u8>, RelayError> {
     Ok(StaticKey::generate()?.as_bytes().to_vec())
 }
 
+/// A short name for a computer's key to show the user, the same one `kite pair` prints on the
+/// computer. None if `key` is not a key.
+#[uniffi::export]
+pub fn fingerprint(key: Vec<u8>) -> Option<String> {
+    <[u8; KEY_LEN]>::try_from(key)
+        .ok()
+        .and_then(|k| kite_relay::pair::fingerprint(&k))
+}
+
 /// Live counters of the tunnels' bytes, including framing.
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
 pub struct Stats {
@@ -140,6 +149,26 @@ impl Relay {
     /// Lets one more computer pair for two minutes. Call it only when the user asks to pair.
     pub fn open_pairing(&self) {
         self.pairing.open();
+    }
+
+    /// The computer asking to pair, as a fingerprint of its key, or None. Ask the user whether
+    /// to allow it and pass the answer to [`Relay::answer_pairing`]; the code appears after a yes.
+    pub fn pairing_request(&self) -> Option<String> {
+        self.pairing
+            .request()
+            .and_then(|key| kite_relay::pair::fingerprint(&key))
+    }
+
+    /// The user's answer to [`Relay::pairing_request`], with the fingerprint that was shown. It
+    /// does nothing if another computer is waiting by now.
+    pub fn answer_pairing(&self, fingerprint: String, allow: bool) {
+        if let Some(key) = self
+            .pairing
+            .request()
+            .filter(|k| kite_relay::pair::fingerprint(k).is_some_and(|f| f == fingerprint))
+        {
+            self.pairing.answer(&key, allow);
+        }
     }
 
     /// The 6-digit code to show while a computer is pairing, or None.
@@ -426,7 +455,25 @@ mod tests {
 
         relay.open_pairing();
         let attempt = pair::start(dial(&name).await, &computer).await.unwrap();
-        let code = relay.pairing_code().expect("code shown while pairing");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while relay.pairing_request().is_none() {
+            assert!(std::time::Instant::now() < deadline, "no request shown");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            relay.pairing_code(),
+            None,
+            "code hidden before the user allows"
+        );
+        let shown = relay.pairing_request().unwrap();
+        relay.answer_pairing(shown, true);
+        let code = loop {
+            if let Some(code) = relay.pairing_code() {
+                break code;
+            }
+            assert!(std::time::Instant::now() < deadline, "no code shown");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
         let pinned = attempt.finish(&code).await.unwrap();
 
         let mut phone = phone;

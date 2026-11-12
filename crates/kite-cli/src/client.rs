@@ -158,14 +158,17 @@ pub async fn status(socket: &Path) -> io::Result<()> {
 }
 
 pub async fn pair(socket: &Path, t: &Transport) -> io::Result<()> {
-    call(
+    let started = call(
         socket,
         &Request::PairStart {
             transport: transport(t),
         },
     )
     .await?;
-    println!("Type the 6-digit code shown on the phone and press Enter:");
+    if let Some(name) = started.fingerprint {
+        println!("This computer is {name}.");
+    }
+    println!("Allow it on the phone, then type the 6-digit code the phone shows and press Enter:");
     let code = read_code().await?;
     let r = call(
         socket,
