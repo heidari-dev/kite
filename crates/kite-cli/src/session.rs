@@ -158,6 +158,7 @@ impl Started {
     }
 
     /// Serves until `shutdown` completes (`Ok`) or the link is lost.
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
     pub async fn serve(
         self,
         shared: &Shared,
