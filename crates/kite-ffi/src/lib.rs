@@ -1,6 +1,6 @@
 //! Bindings of the phone relay for the mobile apps (uniffi; Kotlin today).
 //!
-//! The relay listens on the abstract Unix socket that `adb forward ... localabstract:kite` reaches,
+//! The relay listens on the abstract Unix socket that `kite connect --usb` opens through adb,
 //! runs on its own thread with a single-threaded tokio runtime, and opens every outbound socket in
 //! the app's process, so the phone's VPN applies to them. No file descriptor crosses the FFI.
 
