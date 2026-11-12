@@ -1,0 +1,28 @@
+[package]
+name = "kite-ffi"
+description = "Kite relay bindings for the mobile apps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+# Generates the Kotlin bindings from the built library; not part of the app.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli", "uniffi/cargo-metadata"]
+
+[dependencies]
+kite-relay = { path = "../kite-relay", version = "0.0.0" }
+tokio = { version = "1.53", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+uniffi = { version = "0.32.2", default-features = false }
+
+[dev-dependencies]
+tokio = { version = "1.53", features = ["macros", "rt"] }

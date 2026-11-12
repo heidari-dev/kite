@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Kite</string>
+    <string name="start">Start sharing</string>
+    <string name="stop">Stop</string>
+    <string name="status_stopped">Not sharing</string>
+    <string name="status_error">Could not start: %1$s</string>
+    <plurals name="status_running">
+        <item quantity="one">Sharing with %d computer</item>
+        <item quantity="other">Sharing with %d computers</item>
+    </plurals>
+    <string name="counters">%1$s sent, %2$s received</string>
+    <string name="pair">Pair a computer</string>
+    <string name="pairing_open">Pairing is open for two minutes. On the computer, run kite pair --usb.</string>
+    <string name="pairing_code">Pairing code: %1$s</string>
+    <string name="usb_hint">Connect the phone by USB with USB debugging on, then run kite connect --usb on the computer.</string>
+    <string name="channel_name">Sharing</string>
+    <string name="notification_title">Kite is sharing this phone\'s connection</string>
+    <string name="notification_text">Tap to see the computers and traffic</string>
+</resources>
