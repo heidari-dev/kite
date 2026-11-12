@@ -72,7 +72,7 @@ jobs:
       - name: Fuzz each parser for 10 seconds
         working-directory: crates/kite-relay
         run: |
-          for target in socks5_request udpgw_frames; do
+          for target in socks5_request udpgw_frames noise_frames; do
             cargo +nightly fuzz run "$target" -- -max_total_time=10
           done
 

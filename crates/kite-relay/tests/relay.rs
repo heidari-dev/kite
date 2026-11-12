@@ -1,6 +1,6 @@
-//! A yamux client talks to the relay over an in-memory tunnel, the way the desktop will.
+//! A yamux client talks to the relay over an in-memory Noise tunnel, the way the desktop will.
 
-use kite_relay::{serve, Config};
+use kite_relay::{noise, serve, Config};
 use std::future::poll_fn;
 use std::net::SocketAddr;
 use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
@@ -30,7 +30,13 @@ async fn open_streams(n: usize) -> Vec<Stream> {
         allow_loopback: true,
         ..Config::default()
     };
-    tokio::spawn(serve(server, cfg));
+    let phone = noise::StaticKey::generate().unwrap();
+    let computer = noise::StaticKey::generate().unwrap();
+    tokio::spawn(async move {
+        let (session, _) = noise::accept(server, &phone).await.unwrap();
+        serve(session, cfg).await
+    });
+    let (client, _) = noise::connect(client, &computer, |_| true).await.unwrap();
     let mut conn = yamux::Connection::new(
         client.compat(),
         yamux::Config::default(),

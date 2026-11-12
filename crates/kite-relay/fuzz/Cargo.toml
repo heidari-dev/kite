@@ -28,3 +28,10 @@ path = "fuzz_targets/udpgw_frames.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "noise_frames"
+path = "fuzz_targets/noise_frames.rs"
+test = false
+doc = false
+bench = false

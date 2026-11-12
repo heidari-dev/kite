@@ -2,8 +2,10 @@
 //!
 //! Usage: `cargo run --release -p kite-relay --example relay-dev -- [ADDR] [--allow-loopback]`
 //! ADDR defaults to 127.0.0.1:7000. `--allow-loopback` lets tests reach servers on this machine.
+//! Every connection must complete the Noise handshake; any computer key is accepted until pairing.
 
-use kite_relay::Config;
+use kite_relay::{noise, Config};
+use std::sync::Arc;
 
 fn main() -> std::io::Result<()> {
     let mut addr = "127.0.0.1:7000".to_string();
@@ -19,6 +21,7 @@ fn main() -> std::io::Result<()> {
         // Name lookups run on blocking threads; the default allows 512 of them.
         .max_blocking_threads(8)
         .build()?;
+    let key = Arc::new(noise::StaticKey::generate()?);
     rt.block_on(async {
         let listener = tokio::net::TcpListener::bind(&addr).await?;
         println!("relay-dev listening on {}", listener.local_addr()?);
@@ -31,8 +34,13 @@ fn main() -> std::io::Result<()> {
                 }
             };
             let cfg = cfg.clone();
+            let key = key.clone();
             tokio::spawn(async move {
-                if let Err(e) = kite_relay::serve(tunnel, cfg).await {
+                let served = async {
+                    let (session, _) = noise::accept(tunnel, &key).await?;
+                    kite_relay::serve(session, cfg).await
+                };
+                if let Err(e) = served.await {
                     eprintln!("{peer}: {e}");
                 }
             });

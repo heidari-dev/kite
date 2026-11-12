@@ -54,9 +54,12 @@ is ignored. Kite explains what is missing:
 - the Kite app is not listening: open it on the phone and start sharing.
 
 Unplugging the phone, or stopping the adb server, closes the tunnel: kite prints the error and exits
-with 1, and in TUN mode removes its rules as usual. The link is not authenticated yet (see the
-[threat model](threat-model.md)), so kite prints a warning; any local user can run a program that
-pretends to be the adb server when none is running. Without `--tun` nothing needs special privileges.
+with 1, and in TUN mode removes its rules as usual.
+
+Every link, TCP or USB, is encrypted with Noise. Until pairing lands the phone's key is not checked
+(see the [threat model](threat-model.md)), so kite prints a warning: a program that pretends to be
+the relay, such as a fake adb server started by another local user, can still read the traffic.
+Without `--tun` nothing needs special privileges.
 
 ### TUN mode
 
