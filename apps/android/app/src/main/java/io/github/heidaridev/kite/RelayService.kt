@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -29,7 +30,14 @@ class RelayService : Service() {
         worker.execute {
             if (relay != null) return@execute
             try {
-                relay = Relay.start(SOCKET_NAME)
+                val key = Store.privateKey(this)
+                val peers = Store.peers(this)
+                try {
+                    relay = Relay.start(SOCKET_NAME, key, peers)
+                } finally {
+                    key.fill(0)
+                }
+                saved = peers
                 error = null
             } catch (e: Exception) {
                 fail(e)
@@ -41,7 +49,9 @@ class RelayService : Service() {
     }
 
     override fun onDestroy() {
+        val context = applicationContext
         worker.execute {
+            save(context)
             val running = relay
             relay = null
             running?.close()
@@ -100,5 +110,21 @@ class RelayService : Service() {
         @Volatile
         var error: String? = null
             private set
+
+        /** The paired computers as last written; only touched on [worker]. */
+        private var saved: List<ByteArray> = emptyList()
+
+        /** Writes the paired computers if a pairing or removal changed them. */
+        fun savePeers(context: Context) {
+            val app = context.applicationContext
+            worker.execute { save(app) }
+        }
+
+        private fun save(context: Context) {
+            val peers = relay?.peers() ?: return
+            if (peers.size == saved.size && peers.zip(saved).all { (a, b) -> a.contentEquals(b) }) return
+            Store.savePeers(context, peers)
+            saved = peers
+        }
     }
 }

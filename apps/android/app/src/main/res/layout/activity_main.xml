@@ -38,5 +38,23 @@
             android:layout_marginTop="24dp"
             android:minHeight="48dp"
             android:minWidth="120dp" />
+
+        <Button
+            android:id="@+id/pair"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:minHeight="48dp"
+            android:minWidth="120dp"
+            android:text="@string/pair"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/pairing"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:accessibilityLiveRegion="polite"
+            android:textAppearance="@android:style/TextAppearance.Material.Title" />
     </LinearLayout>
 </ScrollView>

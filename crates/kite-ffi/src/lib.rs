@@ -3,12 +3,15 @@
 //! The relay listens on the abstract Unix socket that `kite connect --usb` opens through adb,
 //! runs on its own thread with a single-threaded tokio runtime, and opens every outbound socket in
 //! the app's process, so the phone's VPN applies to them. No file descriptor crosses the FFI.
+//! Every computer runs the Noise handshake and must be paired (see `kite_relay::pair`).
 
+// uniffi's generated scaffolding needs `allow`, which `forbid` would refuse.
 #![deny(unsafe_code)]
-// uniffi's generated scaffolding needs `allow`, which `forbid` would refuse
 // The relay itself only runs where abstract Unix sockets exist.
 #![cfg_attr(not(any(target_os = "linux", target_os = "android")), allow(dead_code))]
 
+use kite_relay::noise::{StaticKey, KEY_LEN};
+use kite_relay::pair::Pairing;
 use std::io;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -30,6 +33,13 @@ pub struct Relay {
     stop: Mutex<Option<oneshot::Sender<()>>>,
     thread: Mutex<Option<JoinHandle<()>>>,
     counters: Arc<Counters>,
+    pairing: Arc<Pairing>,
+}
+
+/// A new private key for the relay. The app stores it and passes it to [`Relay::start`].
+#[uniffi::export]
+pub fn generate_key() -> Result<Vec<u8>, RelayError> {
+    Ok(StaticKey::generate()?.as_bytes().to_vec())
 }
 
 /// Live counters of the tunnels' bytes, including framing.
@@ -66,13 +76,26 @@ impl From<io::Error> for RelayError {
 
 #[uniffi::export]
 impl Relay {
-    /// Listens on the abstract Unix socket `socket_name` and relays every computer that connects.
-    /// Fails if the name is taken, for example by another running relay.
+    /// Listens on the abstract Unix socket `socket_name` and relays every paired computer that
+    /// connects. `key` is the relay's private key from [`generate_key`] (wiped here); `peers` are
+    /// the public keys of the computers paired earlier. Fails if the name is taken, for example
+    /// by another running relay.
     #[uniffi::constructor]
-    pub fn start(socket_name: String) -> Result<Arc<Self>, RelayError> {
+    pub fn start(
+        socket_name: String,
+        mut key: Vec<u8>,
+        peers: Vec<Vec<u8>>,
+    ) -> Result<Arc<Self>, RelayError> {
+        let key = StaticKey::from_bytes(&mut key)?;
         if socket_name.is_empty() || socket_name.len() > 100 {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "bad socket name").into());
         }
+        let peers = peers
+            .into_iter()
+            .map(|p| p.try_into())
+            .collect::<Result<Vec<[u8; KEY_LEN]>, _>>()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "bad peer key"))?;
+        let pairing = Arc::new(Pairing::new(peers));
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             // Name lookups run on blocking threads; the default allows 512 of them.
@@ -84,7 +107,11 @@ impl Relay {
         };
         let counters = Arc::new(Counters::default());
         let (stop, stopped) = oneshot::channel();
-        let shared = counters.clone();
+        let shared = Shared {
+            key: Arc::new(key),
+            pairing: pairing.clone(),
+            counters: counters.clone(),
+        };
         let thread = std::thread::Builder::new()
             .name("kite-relay".into())
             .spawn(move || {
@@ -96,7 +123,28 @@ impl Relay {
             stop: Mutex::new(Some(stop)),
             thread: Mutex::new(Some(thread)),
             counters,
+            pairing,
         }))
+    }
+
+    /// Lets one more computer pair for two minutes. Call it only when the user asks to pair.
+    pub fn open_pairing(&self) {
+        self.pairing.open();
+    }
+
+    /// The 6-digit code to show while a computer is pairing, or None.
+    pub fn pairing_code(&self) -> Option<String> {
+        self.pairing.pairing_code()
+    }
+
+    /// Public keys of the paired computers; the app stores them for the next start.
+    pub fn peers(&self) -> Vec<Vec<u8>> {
+        self.pairing.peers().iter().map(|k| k.to_vec()).collect()
+    }
+
+    /// Unpairs a computer. A tunnel it has up keeps running until it closes.
+    pub fn remove_peer(&self, key: Vec<u8>) -> bool {
+        key.try_into().is_ok_and(|k| self.pairing.remove(&k))
     }
 
     /// Stops the relay and waits up to a few seconds for it. Call it off the UI thread.
@@ -139,6 +187,13 @@ struct Counters {
     tunnels: AtomicU32,
 }
 
+/// What every tunnel needs.
+struct Shared {
+    key: Arc<StaticKey>,
+    pairing: Arc<Pairing>,
+    counters: Arc<Counters>,
+}
+
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn listen(name: &str) -> io::Result<tokio::net::UnixListener> {
     #[cfg(target_os = "android")]
@@ -163,16 +218,17 @@ fn listen(_: &str) -> io::Result<Unsupported> {
 enum Unsupported {}
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
-async fn accept(listener: Unsupported, _: Arc<Counters>, _: oneshot::Receiver<()>) {
+async fn accept(listener: Unsupported, _: Shared, _: oneshot::Receiver<()>) {
     match listener {}
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 async fn accept(
     listener: tokio::net::UnixListener,
-    counters: Arc<Counters>,
+    shared: Shared,
     mut stopped: oneshot::Receiver<()>,
 ) {
+    let counters = &shared.counters;
     let allowed = allowed_uids();
     let mut tunnels = tokio::task::JoinSet::new();
     loop {
@@ -188,8 +244,13 @@ async fn accept(
                     let peer = stream.peer_cred().map(|c| c.uid());
                     if tunnels.len() < MAX_TUNNELS && peer.is_ok_and(|uid| allowed.contains(&uid)) {
                         let stream = Counted { inner: stream, counters: counters.clone() };
+                        let (key, pairing) = (shared.key.clone(), shared.pairing.clone());
                         tunnels.spawn(async move {
-                            let _ = kite_relay::serve(stream, kite_relay::Config::default()).await;
+                            // Unpaired computers stop here, unless pairing is open.
+                            let Ok(session) = kite_relay::pair::accept(stream, &key, &pairing).await else {
+                                return;
+                            };
+                            let _ = kite_relay::serve(session, kite_relay::Config::default()).await;
                         });
                     }
                 }
@@ -259,6 +320,8 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Counted<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use kite_relay::pair;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[tokio::test]
@@ -279,36 +342,86 @@ mod tests {
         assert_eq!(counters.bytes_in.load(Ordering::Relaxed), 3);
     }
 
+    fn key() -> Vec<u8> {
+        generate_key().unwrap()
+    }
+
     #[test]
-    fn rejects_bad_socket_names() {
-        assert!(Relay::start(String::new()).is_err());
-        assert!(Relay::start("x".repeat(101)).is_err());
+    fn rejects_bad_arguments() {
+        assert!(Relay::start(String::new(), key(), vec![]).is_err());
+        assert!(Relay::start("x".repeat(101), key(), vec![]).is_err());
+        assert!(Relay::start("kite-bad-key".into(), vec![1; 31], vec![]).is_err());
+        assert!(Relay::start("kite-bad-peer".into(), key(), vec![vec![1; 33]]).is_err());
     }
 
     #[cfg(target_os = "linux")]
-    #[test]
-    fn runs_counts_and_stops() {
-        use std::io::Write;
+    fn name(test: &str) -> String {
+        format!("kite-test-{test}-{}", std::process::id())
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn dial(name: &str) -> tokio::net::UnixStream {
         use std::os::linux::net::SocketAddrExt;
-        use std::os::unix::net::{SocketAddr, UnixStream};
+        let addr = std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes()).unwrap();
+        let s = std::os::unix::net::UnixStream::connect_addr(&addr).unwrap();
+        s.set_nonblocking(true).unwrap();
+        tokio::net::UnixStream::from_std(s).unwrap()
+    }
 
-        let name = format!("kite-test-{}", std::process::id());
-        let relay = Relay::start(name.clone()).unwrap();
-        assert!(Relay::start(name.clone()).is_err(), "name is taken");
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn runs_counts_and_stops() {
+        let name = name("run");
+        let relay = Relay::start(name.clone(), key(), vec![]).unwrap();
+        assert!(
+            Relay::start(name.clone(), key(), vec![]).is_err(),
+            "name is taken"
+        );
 
-        let addr = SocketAddr::from_abstract_name(name.as_bytes()).unwrap();
-        let mut computer = UnixStream::connect_addr(&addr).unwrap();
-        // Not yamux, so the relay ends the tunnel after reading it; the bytes still count.
-        computer.write_all(b"not a yamux frame").unwrap();
+        let mut computer = dial(&name).await;
+        // Not a Noise handshake, so the relay ends the tunnel after reading it; the bytes count.
+        computer.write_all(b"not a handshake").await.unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while relay.stats().bytes_in == 0 {
             assert!(std::time::Instant::now() < deadline, "no bytes counted");
-            std::thread::sleep(Duration::from_millis(10));
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
         relay.stop();
         relay.stop(); // twice is fine
                       // The name is free again once the relay stopped.
-        drop(Relay::start(name).unwrap());
+        drop(Relay::start(name, key(), vec![]).unwrap());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn pairs_a_computer_only_when_opened() {
+        let name = name("pair");
+        let phone = key();
+        let relay = Relay::start(name.clone(), phone.clone(), vec![]).unwrap();
+        let computer = StaticKey::generate().unwrap();
+
+        // Closed: an unknown computer is refused.
+        assert!(pair::start(dial(&name).await, &computer).await.is_err());
+
+        relay.open_pairing();
+        let attempt = pair::start(dial(&name).await, &computer).await.unwrap();
+        let code = relay.pairing_code().expect("code shown while pairing");
+        let pinned = attempt.finish(&code).await.unwrap();
+
+        let mut phone = phone;
+        assert_eq!(
+            pinned,
+            StaticKey::from_bytes(&mut phone).unwrap().public().unwrap()
+        );
+        let computer_public = computer.public().unwrap().to_vec();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while relay.peers() != vec![computer_public.clone()] {
+            assert!(std::time::Instant::now() < deadline, "computer not stored");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(relay.remove_peer(computer_public.clone()));
+        assert!(!relay.remove_peer(computer_public));
+        assert!(!relay.remove_peer(vec![0; 3]));
     }
 }

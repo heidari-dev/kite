@@ -23,8 +23,12 @@ are build outputs and ignored by git. CI builds the same debug APK and attaches 
 
 ## Try it
 
-Install the APK, open Kite and tap Start sharing. On the computer, with USB debugging allowed:
+Install the APK, open Kite and tap Start sharing. The first time, tap Pair a computer and, on the
+computer with USB debugging allowed, run `kite pair --usb` and type the code the phone shows. Then:
 
 ```
 kite connect --usb
 ```
+
+The relay's private key is stored in the app's no-backup directory, encrypted with an AES key that
+stays in Android Keystore; the paired computers' public keys are stored next to it.

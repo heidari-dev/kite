@@ -9,6 +9,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.format.Formatter
+import android.view.View
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.TextView
 
@@ -18,6 +20,8 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var counters: TextView
     private lateinit var toggle: Button
+    private lateinit var pair: Button
+    private lateinit var pairing: TextView
 
     private val refresh = object : Runnable {
         override fun run() {
@@ -28,13 +32,21 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The pairing code is shown here; keep it out of screenshots and the recents preview.
+        window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         setContentView(R.layout.activity_main)
         status = findViewById(R.id.status)
         counters = findViewById(R.id.counters)
         toggle = findViewById(R.id.toggle)
+        pair = findViewById(R.id.pair)
+        pairing = findViewById(R.id.pairing)
         toggle.setOnClickListener {
             if (RelayService.relay == null) start() else stop()
             handler.postDelayed({ show() }, 200)
+        }
+        pair.setOnClickListener {
+            RelayService.relay?.openPairing()
+            pairing.update(getString(R.string.pairing_open))
         }
     }
 
@@ -63,11 +75,19 @@ class MainActivity : Activity() {
     }
 
     private fun show() {
-        val stats = try {
-            RelayService.relay?.stats()
+        val relay = RelayService.relay
+        val (stats, code) = try {
+            relay?.stats() to relay?.pairingCode()
         } catch (e: IllegalStateException) {
-            null // stopped between the check and the call
+            null to null // stopped between the check and the call
         }
+        pair.visibility = if (stats == null) View.GONE else View.VISIBLE
+        if (code != null) {
+            pairing.update(getString(R.string.pairing_code, code.chunked(3).joinToString(" ")))
+        } else if (stats == null || pairing.text.toString() != getString(R.string.pairing_open)) {
+            pairing.update("")
+        }
+        if (stats != null) RelayService.savePeers(this)
         if (stats == null) {
             status.update(
                 RelayService.error?.let { getString(R.string.status_error, it) }
