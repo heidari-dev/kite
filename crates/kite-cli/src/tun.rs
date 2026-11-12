@@ -9,7 +9,7 @@ use std::process::Stdio;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tun::AbstractDevice;
 use tun2proxy::{ArgDns, Args, CancellationToken, ProxyParameters};
 
@@ -26,7 +26,7 @@ const DNS: IpAddr = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
 /// Runs TUN mode until the tunnel fails or `shutdown` completes. `tunnel` must bypass the routes
 /// set up here, see [`route::TABLE`].
 pub async fn run(
-    tunnel: TcpStream,
+    tunnel: crate::Tunnel,
     listener: TcpListener,
     active: Arc<AtomicUsize>,
     shutdown: impl Future<Output = ()>,
@@ -65,7 +65,7 @@ pub async fn restore() -> io::Result<()> {
 async fn serve(
     device: tun::AsyncDevice,
     link: u32,
-    tunnel: TcpStream,
+    tunnel: crate::Tunnel,
     listener: TcpListener,
     active: Arc<AtomicUsize>,
     shutdown: impl Future<Output = ()>,

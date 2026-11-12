@@ -163,7 +163,7 @@ async fn connect(c: Connect) -> io::Result<()> {
         c.listen
     };
     let listener = TcpListener::bind(listen).await?;
-    let tunnel = dial(&c.transport, c.tun).await?;
+    let tunnel = encrypt(dial(&c.transport, c.tun).await?).await?;
     let active = Arc::new(AtomicUsize::new(0));
     let mode = if c.tun {
         "all traffic through the tunnel".to_string()
@@ -201,15 +201,23 @@ async fn dial(transport: &Transport, tun: bool) -> io::Result<TcpStream> {
         // is answered by the local routing table before any TUN rule, and there is no IP path to a
         // USB phone to keep out of the tunnel. Keepalive would only be answered by the local
         // kernel, so it is skipped; an unplug or an adb crash closes the socket.
-        Transport::Usb(serial) => {
-            eprintln!(
-                "kite: the USB link is not authenticated yet; only use it on a computer you trust"
-            );
-            kite_link::adb::open(serial.as_deref()).await?
-        }
+        Transport::Usb(serial) => kite_link::adb::open(serial.as_deref()).await?,
     };
     s.set_nodelay(true)?;
     Ok(s)
+}
+
+/// The relay stream after the Noise handshake. yamux runs on this.
+type Tunnel = kite_relay::noise::Session<TcpStream>;
+
+/// Runs the Noise handshake on any transport, so TCP and USB are encrypted alike.
+async fn encrypt(s: TcpStream) -> io::Result<Tunnel> {
+    // shortcut: a new key per run and any phone key is accepted, so an active attacker on the
+    // link can still pose as the phone; pairing pins both keys (#9).
+    eprintln!("kite: the link is encrypted but the phone is not verified yet (no pairing)");
+    let key = kite_relay::noise::StaticKey::generate()?;
+    let (tunnel, _) = kite_relay::noise::connect(s, &key, |_| true).await?;
+    Ok(tunnel)
 }
 
 /// In TUN mode the socket carries the routing mark that keeps it out of the tunnel it carries.

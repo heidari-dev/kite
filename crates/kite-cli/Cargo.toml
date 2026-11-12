@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 kite-link = { path = "../kite-link", version = "0.0.0" }
+kite-relay = { path = "../kite-relay", version = "0.0.0" }
 socket2 = { version = "0.6", features = ["all"] }
 tokio = { version = "1.53", features = ["io-util", "macros", "net", "rt", "signal", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["compat"] }
