@@ -58,17 +58,20 @@ phones the adb server sees, as `serial state`.
 
 ## kite pair
 
-Pairs this computer with a phone, once. The phone shows a 6-digit code; type it when kite asks.
-Both sides then remember each other's key, and `kite connect` only talks to a paired phone.
+Pairs this computer with a phone, once. kite prints a fingerprint of this computer's key and the
+phone asks you to allow the computer, showing the same fingerprint. After you allow it the phone
+shows a 6-digit code; type it when kite asks. Both sides then remember each other's key, and
+`kite connect` only talks to a paired phone.
 
 ```
 $ kite pair --usb
-Type the 6-digit code shown on the phone and press Enter:
+This computer is 3F2A 91C0 77D4 0B1E.
+Allow it on the phone, then type the 6-digit code the phone shows and press Enter:
 123456
 paired with phone 3f9a...
 ```
 
-The code comes from the encrypted session itself, so it only matches when nothing sits between the
+If the fingerprints differ, tap Don't allow: some other device reached the phone first. The code comes from the encrypted session itself, so it only matches when nothing sits between the
 two devices. A code that does not match stops pairing: if you typed it right, someone is
 intercepting the link. Codes expire after 2 minutes. The phone accepts a new computer only for 2
 minutes after you open pairing in its app, one at a time, and after 5 failed attempts it refuses

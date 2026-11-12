@@ -8,9 +8,11 @@
 //! 1. phone -> computer: `PAIR`, commit = BLAKE2s(tag, n_phone)
 //! 2. computer -> phone: n_computer
 //! 3. phone -> computer: n_phone; the computer checks it against the commitment
-//! 4. both derive a 6-digit code from the handshake hash and both nonces; the phone shows it
-//! 5. the user types it on the computer, which compares it with its own value and sends it
-//! 6. phone -> computer: `OK` and the computer's key is stored, or `DENIED`
+//! 4. both derive a 6-digit code from the handshake hash and both nonces
+//! 5. the phone asks its user to allow the computer ([`Pairing::request`], [`Pairing::answer`]);
+//!    only after a yes does it show the code
+//! 6. the user types the code on the computer, which compares it with its own value and sends it
+//! 7. phone -> computer: `OK` and the computer's key is stored, or `DENIED`
 //!
 //! A man in the middle runs two handshakes with different hashes, so the two codes differ. The
 //! commitment fixes each side's nonce before it sees the other's, so no side can grind its
@@ -25,6 +27,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::Notify;
 use tokio::time::Instant;
 
 /// The computer is known: the tunnel starts.
@@ -46,9 +49,13 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(10);
 /// The phone's list of paired computers and the state of a pairing in progress. Share one
 /// instance between the app and every tunnel.
 ///
-/// The app loads the stored keys with [`Pairing::new`], shows [`Pairing::pairing_code`] while it
-/// is `Some`, and saves [`Pairing::peers`] after a pairing completes or a peer is removed.
-pub struct Pairing(Mutex<State>);
+/// The app loads the stored keys with [`Pairing::new`], asks the user about
+/// [`Pairing::request`] while it is `Some`, shows [`Pairing::pairing_code`] while that is `Some`,
+/// and saves [`Pairing::peers`] after a pairing completes or a peer is removed.
+pub struct Pairing {
+    state: Mutex<State>,
+    answered: Notify,
+}
 
 #[derive(Default)]
 struct State {
@@ -61,6 +68,9 @@ struct State {
 }
 
 struct Pending {
+    /// The computer asking to pair, until the user has answered.
+    request: Option<[u8; KEY_LEN]>,
+    decision: Option<bool>,
     code: Option<u32>,
     expires: Instant,
 }
@@ -69,10 +79,13 @@ impl Pairing {
     /// Starts with the computers paired earlier. An unknown computer may pair only while
     /// pairing is open, see [`Pairing::open`].
     pub fn new(peers: Vec<[u8; KEY_LEN]>) -> Self {
-        Self(Mutex::new(State {
-            peers,
-            ..State::default()
-        }))
+        Self {
+            state: Mutex::new(State {
+                peers,
+                ..State::default()
+            }),
+            answered: Notify::new(),
+        }
     }
 
     /// Lets one more computer pair within [`CODE_LIFETIME`]. Call it only when the user asks
@@ -90,6 +103,31 @@ impl Pairing {
         (pending.expires > Instant::now()).then(|| format!("{code:06}"))
     }
 
+    /// The computer waiting for the user's answer, or None. Show [`fingerprint`] of it and ask
+    /// whether to let it use the phone's connection.
+    pub fn request(&self) -> Option<[u8; KEY_LEN]> {
+        let state = self.lock();
+        let pending = state.pending.as_ref()?;
+        if pending.decision.is_some() || pending.expires <= Instant::now() {
+            return None;
+        }
+        pending.request
+    }
+
+    /// The user's answer about `key`, the one [`Pairing::request`] returned when it was asked.
+    /// Ignored when that computer is no longer the one waiting.
+    pub fn answer(&self, key: &[u8; KEY_LEN], allow: bool) {
+        let mut state = self.lock();
+        if let Some(p) = state
+            .pending
+            .as_mut()
+            .filter(|p| p.request.as_ref() == Some(key))
+        {
+            p.decision.get_or_insert(allow);
+            self.answered.notify_waiters();
+        }
+    }
+
     /// Public keys of the paired computers.
     pub fn peers(&self) -> Vec<[u8; KEY_LEN]> {
         self.lock().peers.clone()
@@ -105,7 +143,7 @@ impl Pairing {
 
     fn lock(&self) -> MutexGuard<'_, State> {
         // Every update is a plain assignment, so a poisoned State is still a valid one.
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn knows(&self, key: &[u8; KEY_LEN]) -> bool {
@@ -124,6 +162,8 @@ impl Pairing {
         }
         let expires = now + CODE_LIFETIME;
         state.pending = Some(Pending {
+            request: None,
+            decision: None,
             code: None,
             expires,
         });
@@ -154,6 +194,26 @@ impl Slot<'_> {
     /// this one expired.
     fn mine<'s>(&self, state: &'s mut State) -> Option<&'s mut Pending> {
         state.pending.as_mut().filter(|p| p.expires == self.expires)
+    }
+
+    /// Puts `key` in front of the user and waits for the answer. True means allowed.
+    async fn ask(&self, key: [u8; KEY_LEN]) -> bool {
+        if let Some(p) = self.mine(&mut self.pairing.lock()) {
+            p.request = Some(key);
+        }
+        loop {
+            // Registered before the state is read, so an answer in between is not missed.
+            let answered = self.pairing.answered.notified();
+            tokio::pin!(answered);
+            answered.as_mut().enable();
+            let decision = self.mine(&mut self.pairing.lock()).map(|p| p.decision);
+            match decision {
+                Some(Some(allow)) => return allow,
+                // The slot expired and a later pairing took the entry over.
+                None => return false,
+                Some(None) => answered.await,
+            }
+        }
     }
 
     fn show(&self, code: u32) {
@@ -194,6 +254,20 @@ impl Drop for Slot<'_> {
     }
 }
 
+/// A short name for a computer's key, to show on the phone and on the computer so the user can
+/// tell that both mean the same one: 8 bytes of a BLAKE2s hash in four groups, like `3F2A 91C0 77D4 0B1E`.
+pub fn fingerprint(key: &[u8; KEY_LEN]) -> Option<String> {
+    let hash = blake2s(&[b"kite key fingerprint", key]).ok()?;
+    let hex: String = hash[..8].iter().map(|b| format!("{b:02X}")).collect();
+    Some(
+        hex.as_bytes()
+            .chunks(4)
+            .map(|c| String::from_utf8_lossy(c))
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
 /// Phone side: runs the handshake, pairs an unknown computer if allowed, and returns the session
 /// to pass to [`crate::serve`]. An unknown computer that may not pair gets an error.
 pub async fn accept<T>(io: T, key: &StaticKey, pairing: &Pairing) -> io::Result<Session<T>>
@@ -217,10 +291,34 @@ where
     step(STEP_TIMEOUT, s.read_exact(&mut theirs)).await?;
     send(&mut s, &mine).await?;
     let code = code(&peer.hash, &theirs, &mine)?;
-    slot.show(code);
-    let mut typed = [0u8; 4];
     let left = slot.expires.saturating_duration_since(Instant::now());
-    step(left, s.read_exact(&mut typed)).await?;
+    // The code stays hidden until the user has allowed this computer, so one that reaches the
+    // socket first cannot pair unnoticed, even though it can work out the code itself. Keep
+    // reading meanwhile: a computer that hangs up frees the slot at once, and a code it sent
+    // early is held until the answer.
+    let mut typed = [0u8; 4];
+    let mut got = 0;
+    let allowed = step(left, async {
+        let ask = slot.ask(peer.key);
+        tokio::pin!(ask);
+        loop {
+            tokio::select! {
+                allow = &mut ask => return Ok(allow),
+                n = s.read(&mut typed[got..]), if got < typed.len() => match n? {
+                    0 => return Err(io::ErrorKind::UnexpectedEof.into()),
+                    n => got += n,
+                },
+            }
+        }
+    })
+    .await?;
+    if !allowed {
+        let _ = send(&mut s, &[DENIED]).await;
+        return Err(denied("pairing declined on the phone"));
+    }
+    slot.show(code);
+    let left = slot.expires.saturating_duration_since(Instant::now());
+    step(left, s.read_exact(&mut typed[got..])).await?;
     if !bool::from(typed.ct_eq(&code.to_be_bytes())) {
         let _ = send(&mut s, &[DENIED]).await;
         return Err(denied("wrong pairing code"));
@@ -415,6 +513,23 @@ mod tests {
         Arc::new(StaticKey::generate().unwrap())
     }
 
+    /// Plays the user: allows the computer the phone asks about and returns the code it shows.
+    async fn allow(pairing: &Pairing) -> String {
+        let key = loop {
+            if let Some(key) = pairing.request() {
+                break key;
+            }
+            tokio::task::yield_now().await;
+        };
+        pairing.answer(&key, true);
+        loop {
+            if let Some(code) = pairing.pairing_code() {
+                return code;
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
     /// Starts the phone side of one connection in a task.
     fn phone(
         pairing: &Arc<Pairing>,
@@ -431,7 +546,7 @@ mod tests {
         let (pairing, pk, ck) = (opened(), key(), key());
         let (io, task) = phone(&pairing, &pk);
         let attempt = start(io, &ck).await.unwrap();
-        let code = pairing.pairing_code().unwrap();
+        let code = allow(&pairing).await;
         let phone_key = attempt.finish(&code).await.unwrap();
         task.await.unwrap().unwrap();
         assert_eq!(phone_key, pk.public().unwrap());
@@ -466,10 +581,7 @@ mod tests {
         pairing.open();
         let (io, task) = phone(&pairing, &pk);
         let attempt = start(io, &stranger).await.unwrap();
-        attempt
-            .finish(&pairing.pairing_code().unwrap())
-            .await
-            .unwrap();
+        attempt.finish(&allow(&pairing).await).await.unwrap();
         task.await.unwrap().unwrap();
         assert_eq!(pairing.peers().len(), 2);
         assert!(pairing.remove(&stranger.public().unwrap()));
@@ -487,8 +599,8 @@ mod tests {
         let computer = start(to_attacker, &ck).await.unwrap();
 
         // The user types what the real phone shows; the two handshakes differ, so do the codes.
-        let shown = real.pairing_code().unwrap();
-        assert_ne!(Some(shown.clone()), attacker.pairing_code());
+        let shown = allow(&real).await;
+        assert_ne!(shown, allow(&attacker).await);
         let e = computer.finish(&shown).await.unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
         assert!(attacker_task.await.unwrap().is_err());
@@ -503,7 +615,7 @@ mod tests {
         let (pairing, pk, ck) = (opened(), key(), key());
         let (io, task) = phone(&pairing, &pk);
         let attempt = start(io, &ck).await.unwrap();
-        let code = pairing.pairing_code().unwrap();
+        let code = allow(&pairing).await;
         tokio::time::sleep(CODE_LIFETIME + Duration::from_secs(1)).await;
         assert_eq!(pairing.pairing_code(), None);
         assert_eq!(
@@ -520,7 +632,7 @@ mod tests {
         for _ in 0..MAX_FAILURES {
             let (io, task) = phone(&pairing, &pk);
             let attempt = start(io, &ck).await.unwrap();
-            let shown: u32 = pairing.pairing_code().unwrap().parse().unwrap();
+            let shown: u32 = allow(&pairing).await.parse().unwrap();
             let wrong = format!("{:06}", (shown + 1) % 1_000_000);
             assert!(attempt.finish(&wrong).await.is_err());
             assert!(task.await.unwrap().is_err());
@@ -533,11 +645,111 @@ mod tests {
         tokio::time::sleep(LOCKOUT).await;
         let (io, task) = phone(&pairing, &pk);
         let attempt = start(io, &ck).await.unwrap();
-        attempt
-            .finish(&pairing.pairing_code().unwrap())
-            .await
-            .unwrap();
+        attempt.finish(&allow(&pairing).await).await.unwrap();
         task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_code_stays_hidden_until_the_user_allows() {
+        let (pairing, pk, ck) = (opened(), key(), key());
+        let (io, task) = phone(&pairing, &pk);
+        let attempt = start(io, &ck).await.unwrap();
+        // The computer can work out the code itself and sends it at once.
+        let early = format!("{:06}", attempt.code);
+        let finish = tokio::spawn(async move { attempt.finish(&early).await });
+        while pairing.request().is_none() {
+            tokio::task::yield_now().await;
+        }
+        let asked = ck.public().unwrap();
+        assert_eq!(pairing.request(), Some(asked));
+        assert_eq!(pairing.pairing_code(), None);
+        assert!(pairing.peers().is_empty());
+
+        // An answer about another computer changes nothing.
+        pairing.answer(&[9; KEY_LEN], true);
+        assert_eq!(pairing.request(), Some(asked));
+        pairing.answer(&asked, true);
+        finish.await.unwrap().unwrap();
+        task.await.unwrap().unwrap();
+        assert_eq!(pairing.peers(), vec![ck.public().unwrap()]);
+        assert_eq!(pairing.request(), None);
+    }
+
+    #[tokio::test]
+    async fn declining_ends_the_pairing() {
+        let (pairing, pk, ck) = (opened(), key(), key());
+        let (io, task) = phone(&pairing, &pk);
+        let attempt = start(io, &ck).await.unwrap();
+        let early = format!("{:06}", attempt.code);
+        let finish = tokio::spawn(async move { attempt.finish(&early).await });
+        while pairing.request().is_none() {
+            tokio::task::yield_now().await;
+        }
+        let asked = ck.public().unwrap();
+        pairing.answer(&asked, false);
+        pairing.answer(&asked, true); // the first answer stands
+        assert_eq!(
+            task.await.unwrap().unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            finish.await.unwrap().unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(pairing.peers().is_empty());
+        assert_eq!(pairing.pairing_code(), None);
+        assert_eq!(pairing.request(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_request_expires() {
+        let (pairing, pk, ck) = (opened(), key(), key());
+        let (io, task) = phone(&pairing, &pk);
+        let _attempt = start(io, &ck).await.unwrap();
+        while pairing.request().is_none() {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(CODE_LIFETIME + Duration::from_secs(1)).await;
+        assert_eq!(pairing.request(), None);
+        assert_eq!(
+            task.await.unwrap().unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        pairing.answer(&ck.public().unwrap(), true); // nothing is waiting
+        assert!(pairing.peers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_computer_that_hangs_up_frees_the_slot() {
+        let (pairing, pk, ck) = (opened(), key(), key());
+        let (io, task) = phone(&pairing, &pk);
+        let attempt = start(io, &ck).await.unwrap();
+        while pairing.request().is_none() {
+            tokio::task::yield_now().await;
+        }
+        drop(attempt);
+        assert!(task.await.unwrap().is_err());
+        assert_eq!(pairing.request(), None);
+        // The slot is free again: the next attempt is asked.
+        let (io, task) = phone(&pairing, &pk);
+        let _attempt = start(io, &ck).await.unwrap();
+        while pairing.request().is_none() {
+            tokio::task::yield_now().await;
+        }
+        drop(task);
+    }
+
+    #[test]
+    fn fingerprints_are_four_groups_and_differ_per_key() {
+        let (a, b) = (
+            fingerprint(&[1; KEY_LEN]).unwrap(),
+            fingerprint(&[2; KEY_LEN]).unwrap(),
+        );
+        assert_ne!(a, b);
+        assert_eq!(a.len(), 19);
+        assert!(a.split(' ').all(|g| g.len() == 4
+            && g.bytes()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase())));
     }
 
     #[tokio::test(start_paused = true)]
