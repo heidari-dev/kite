@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+use kite_relay::pair;
 use std::io;
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -15,10 +16,15 @@ mod proxy;
 mod route;
 #[cfg(unix)]
 mod status;
+mod store;
 #[cfg(target_os = "linux")]
 mod tun;
 
 const USAGE: &str = "usage:
+  kite pair (--tcp HOST:PORT | --usb [--serial SERIAL])
+      Pair this computer with the phone: type the 6-digit code it shows.
+  kite peers [remove KEY]
+      List the paired phones, or forget the one whose key starts with KEY.
   kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) [--listen ADDR]
       Tunnel through the relay at HOST:PORT, or through a phone connected by USB
       (needs a running adb server), and serve a SOCKS5 proxy on ADDR
@@ -38,6 +44,13 @@ fn main() -> ExitCode {
             let tun = c.tun;
             block_on(connect(c), tun)
         }),
+        Some("pair") => parse_connect(&args[1..]).and_then(|c| {
+            if c.tun || c.listen != SocketAddr::from(([127, 0, 0, 1], 1080)) {
+                return Err(usage("pair takes only --tcp, --usb and --serial"));
+            }
+            block_on(pair(c.transport), false)
+        }),
+        Some("peers") => peers(&args[1..]),
         Some("status") => block_on(status(), false),
         Some("restore") => block_on(restore(), false),
         Some("--version" | "-V") => {
@@ -162,8 +175,17 @@ async fn connect(c: Connect) -> io::Result<()> {
     } else {
         c.listen
     };
+    let store = store::Store::open()?;
+    let phones = store.phones()?;
+    if phones.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "not paired with a phone yet: run kite pair first",
+        ));
+    }
+    let key = store.key()?;
     let listener = TcpListener::bind(listen).await?;
-    let tunnel = encrypt(dial(&c.transport, c.tun).await?).await?;
+    let tunnel = pair::connect(dial(&c.transport, c.tun).await?, &key, &phones).await?;
     let active = Arc::new(AtomicUsize::new(0));
     let mode = if c.tun {
         "all traffic through the tunnel".to_string()
@@ -208,16 +230,58 @@ async fn dial(transport: &Transport, tun: bool) -> io::Result<TcpStream> {
 }
 
 /// The relay stream after the Noise handshake. yamux runs on this.
+#[cfg(target_os = "linux")]
 type Tunnel = kite_relay::noise::Session<TcpStream>;
 
-/// Runs the Noise handshake on any transport, so TCP and USB are encrypted alike.
-async fn encrypt(s: TcpStream) -> io::Result<Tunnel> {
-    // shortcut: a new key per run and any phone key is accepted, so an active attacker on the
-    // link can still pose as the phone; pairing pins both keys (#9).
-    eprintln!("kite: the link is encrypted but the phone is not verified yet (no pairing)");
-    let key = kite_relay::noise::StaticKey::generate()?;
-    let (tunnel, _) = kite_relay::noise::connect(s, &key, |_| true).await?;
-    Ok(tunnel)
+/// Pairs with the phone on `transport`: the user types the code the phone shows.
+async fn pair(transport: Transport) -> io::Result<()> {
+    let store = store::Store::open()?;
+    let key = store.key()?;
+    let attempt = pair::start(dial(&transport, false).await?, &key).await?;
+    println!("Type the 6-digit code shown on the phone and press Enter:");
+    let phone = attempt.finish(&read_code().await?).await?;
+    store.add_phone(phone)?;
+    println!("paired with phone {}", store::hex(&phone));
+    Ok(())
+}
+
+/// One line from stdin, within the code's lifetime. A plain thread, so a timeout does not leave
+/// the runtime waiting on a blocked read at exit.
+async fn read_code() -> io::Result<String> {
+    use std::io::BufRead;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let read = std::io::Read::take(std::io::stdin().lock(), 64).read_line(&mut line);
+        let _ = tx.send(read.map(|_| line));
+    });
+    match tokio::time::timeout(pair::CODE_LIFETIME, rx).await {
+        Ok(Ok(line)) => line,
+        Ok(Err(_)) => Err(io::Error::other("stdin closed")),
+        Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "the code expired")),
+    }
+}
+
+fn peers(args: &[String]) -> io::Result<()> {
+    let store = store::Store::open()?;
+    match args {
+        [] => {
+            let phones = store.phones()?;
+            if phones.is_empty() {
+                println!("no paired phones; run kite pair");
+            }
+            for phone in phones {
+                println!("{}", store::hex(&phone));
+            }
+            Ok(())
+        }
+        [cmd, key] if cmd == "remove" => {
+            let phone = store.remove_phone(key)?;
+            println!("removed phone {}", store::hex(&phone));
+            Ok(())
+        }
+        _ => Err(usage("peers takes no arguments, or remove KEY")),
+    }
 }
 
 /// In TUN mode the socket carries the routing mark that keeps it out of the tunnel it carries.
