@@ -22,6 +22,9 @@ BIN=$(mktemp -d)
 chmod 755 "$BIN"
 install -m 755 "$1" "$BIN/kite"
 install -m 755 "$2" "$BIN/relay-dev"
+# nobody has no home; its key and paired phones go here.
+CONF=$BIN/conf
+install -d -m 700 -o nobody "$CONF"
 pids=()
 kite_pid=
 forward=$(sysctl -n net.ipv4.ip_forward)
@@ -141,8 +144,18 @@ foreign_rule() { pc ip rule | grep -q "^5300:.*lookup 52"; }
 phone "$BIN/relay-dev" "$RELAY" > "$BIN/relay.log" 2>&1 &
 pids+=($!)
 
+# Pair once, typing the code relay-dev prints where the phone would show it.
+shown_code() { sed -n 's/^pairing code \([0-9]\{6\}\)$/\1/p' "$BIN/relay.log" | tail -1; }
+for _ in $(seq 50); do
+  c=$(shown_code)
+  if [ -n "$c" ]; then echo "$c"; break; fi
+  sleep 0.2
+done | "${as_nobody[@]}" -c "XDG_CONFIG_HOME=$CONF exec $BIN/kite pair --tcp $RELAY" \
+  > "$BIN/pair.log" 2>&1 || { cat "$BIN/pair.log" >&2; fail "kite pair"; }
+[ "$(stat -c %a "$CONF/kite/key")" = 600 ] || fail "key file is not owner-only"
+
 start_kite() {
-  "${as_nobody[@]}" -c "exec $BIN/kite connect --tcp $RELAY --tun" > "$BIN/kite.log" 2>&1 &
+  "${as_nobody[@]}" -c "XDG_CONFIG_HOME=$CONF exec $BIN/kite connect --tcp $RELAY --tun" > "$BIN/kite.log" 2>&1 &
   kite_pid=$!
   for _ in $(seq 50); do
     # IPv6 rules are added last.
