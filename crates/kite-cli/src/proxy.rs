@@ -26,10 +26,11 @@ const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(10);
 type OpenRequest = oneshot::Sender<yamux::Stream>;
 
 /// Serves local connections from `listener` through a tunnel to the relay until the tunnel fails
-/// or `shutdown` completes. `active` tracks the number of open streams.
+/// or `shutdown` completes (`Ok`). `active` tracks the number of open streams. The listener stays
+/// open when this returns, so the caller can serve it through a new tunnel.
 pub async fn run<T>(
     tunnel: T,
-    listener: TcpListener,
+    listener: &TcpListener,
     active: Arc<AtomicUsize>,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()>
@@ -184,9 +185,13 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let active = Arc::new(AtomicUsize::new(0));
         let (stop, stopped) = oneshot::channel::<()>();
-        let task = tokio::spawn(run(tunnel, listener, active.clone(), async {
-            let _ = stopped.await;
-        }));
+        let a = active.clone();
+        let task = tokio::spawn(async move {
+            run(tunnel, &listener, a, async {
+                let _ = stopped.await;
+            })
+            .await
+        });
         Proxy {
             addr,
             active,

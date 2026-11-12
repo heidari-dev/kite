@@ -5,15 +5,56 @@ relay is the `relay-dev` example (see the README) and the phone app does not exi
 `relay-dev` can be reached; `--tcp` reaches it over the network and `--usb` is ready for the phone app.
 
 ```
+kite daemon [--state-dir DIR]
 kite pair (--tcp HOST:PORT | --usb [--serial SERIAL])
 kite peers [remove KEY]
 kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) [--listen ADDR]
 kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) --tun
+kite disconnect
+kite devices
 kite status
 kite restore
 kite --version | -V
 kite --help | -h | help
 ```
+
+On Linux the tunnel is owned by the [daemon](#kite-daemon), and `pair`, `peers`, `connect`,
+`disconnect`, `devices` and `status` talk to it. `pair`, `peers` and `connect` also take
+`--foreground`: they then run in the `kite` process itself, with the key and the paired phones of the
+user who runs it, and need no daemon. Every command takes `--socket PATH` to reach a daemon that
+listens somewhere other than `/run/kite/kite.sock`. Everything below that says "kite" without
+saying more works the same either way. Outside Linux there is no daemon and the commands always run
+in the process.
+
+## kite daemon
+
+Runs the background service. It owns the transports, the TUN device and the tunnel, so closing a
+terminal or the desktop app does not drop the connection, and it is the only part that needs
+`CAP_NET_ADMIN`. It keeps its own key and the paired phones in `--state-dir` (default
+`/var/lib/kite`, mode 0700), separate from the ones of any user's `--foreground` runs.
+
+It listens on `/run/kite/kite.sock`, mode 0660, group `kite`. Each caller's credentials are checked
+as well: only root, the daemon's own user and members of the daemon's group get an answer; the
+socket's mode is what enforces this, the check is a second layer. On a system that mounts `/proc`
+with `hidepid`, a caller whose groups the daemon cannot read is refused. Members of the group can
+connect, disconnect and read status, but pairing and forgetting phones (`pair`, `peers remove`) are
+for root and the daemon's user only, because the phones decide where all of the computer's traffic
+can go: run them with `sudo`.
+The protocol is one JSON object per line (`crates/kite-ipc`): `status`, `devices`, `connect`,
+`disconnect`, `stats`, `pair_start`, `pair`, `peers` and `remove_peer`. Requests over 4 KiB, with
+unknown commands or unknown fields, or that take over 10 s to arrive, are refused; at most 8 clients
+are served at once. `connect` returns when the tunnel is starting, and `status` tells how it went.
+State-changing requests are written to the system log, never with keys, codes, addresses or the
+caller's identity. The unit file that starts the daemon at boot comes with the Linux packages.
+
+```
+sudo -u kite kite daemon     # what the unit does; add --socket and --state-dir to try it by hand
+kite connect --usb --tun
+kite disconnect
+```
+
+`kite disconnect` closes the tunnel and, with it, the routes it set up. `kite devices` lists the
+phones the adb server sees, as `serial state`.
 
 ## kite pair
 
@@ -35,7 +76,9 @@ pairing for 60 seconds. `relay-dev` keeps pairing open until the first computer 
 
 This computer's key and the paired phones live in `$XDG_CONFIG_HOME/kite` (`~/.config/kite`;
 `%APPDATA%\kite` on Windows): `key` and `phones`, readable only by you. kite refuses to use them
-if other users can read or write them.
+if other users can read or write them. With the daemon they live in its state directory instead
+(`/var/lib/kite`), and `kite pair` asks the daemon to pair: it dials the phone, waits for the code
+you type, and gives it one try per pairing.
 
 ## kite peers
 
@@ -44,7 +87,9 @@ with `KEY`; give enough of it to match one phone. Remove this computer on the ph
 
 ## kite connect
 
-Opens one tunnel to the relay and keeps running until it is stopped or the tunnel fails.
+Opens one tunnel to the relay. With the daemon it returns as soon as the tunnel is up (or says why it
+could not come up) and the tunnel lives on in the daemon until `kite disconnect`. With
+`--foreground` it keeps running until it is stopped or the tunnel fails.
 
 | Option | Meaning | Default |
 |--------|---------|---------|
@@ -134,20 +179,24 @@ Kite does not block traffic if the tunnel drops; it exits and normal routing ret
 
 ## kite status
 
-Prints the running tunnel:
+Prints the tunnel of the daemon:
 
 ```
+state: connected
 relay: 192.168.1.50:7000
-mode: SOCKS5 proxy on 127.0.0.1:1080
+mode: SOCKS5 proxy
 streams: 3 of 224
+reconnects: 0
 uptime: 42s
 ```
 
-`mode` is `all traffic through the tunnel` in TUN mode. The running kite listens on
-`$XDG_RUNTIME_DIR/kite.sock` (a Unix socket, mode 0600) and only writes this text. If
-`XDG_RUNTIME_DIR` is unset or open to other users, kite still runs but prints
-`status unavailable`. `kite status` exits with 1 and prints `not connected` when no kite is running.
-Linux and other Unix systems only.
+`state` is `connecting`, `connected`, `reconnecting` or, once the tunnel has ended, `idle`; then
+`last error` says why. `mode` is `all traffic through the tunnel` in TUN mode. With no daemon, it
+shows a tunnel started with `--foreground` instead: that kite listens on
+`$XDG_RUNTIME_DIR/kite.sock` (a Unix socket, mode 0600) and only writes `relay`, `mode`, `streams`
+and `uptime`. If `XDG_RUNTIME_DIR` is unset or open to other users, such a kite still runs but
+prints `status unavailable`. `kite status` exits with 1 and prints `not connected` when nothing is
+running. Linux and other Unix systems only.
 
 ## kite restore
 

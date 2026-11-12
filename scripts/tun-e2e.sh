@@ -122,7 +122,7 @@ udp_echo || fail "no direct UDP path out of the pc"
 # Leak counters. pc: everything that leaves except the relay connection, logged to the kernel log.
 # phone: everything it forwards for the pc, and what its own sockets send.
 sysctl -qw net.netfilter.nf_log_all_netns=1
-pc iptables -A OUTPUT -o veth-pc -p tcp -d 10.200.0.1 --dport 7000 -j ACCEPT
+pc iptables -A OUTPUT -o veth-pc -p tcp -d 10.200.0.1 --dport 7000:7001 -j ACCEPT
 pc iptables -A OUTPUT -o veth-pc -j LOG --log-prefix "kite-leak: "
 pc ip6tables -A OUTPUT -o veth-pc -p ipv6-icmp -j ACCEPT
 pc ip6tables -A OUTPUT -o veth-pc -j LOG --log-prefix "kite-leak: "
@@ -150,12 +150,12 @@ for _ in $(seq 50); do
   c=$(shown_code)
   if [ -n "$c" ]; then echo "$c"; break; fi
   sleep 0.2
-done | "${as_nobody[@]}" -c "XDG_CONFIG_HOME=$CONF exec $BIN/kite pair --tcp $RELAY" \
+done | "${as_nobody[@]}" -c "XDG_CONFIG_HOME=$CONF exec $BIN/kite pair --foreground --tcp $RELAY" \
   > "$BIN/pair.log" 2>&1 || { cat "$BIN/pair.log" >&2; fail "kite pair"; }
 [ "$(stat -c %a "$CONF/kite/key")" = 600 ] || fail "key file is not owner-only"
 
 start_kite() {
-  "${as_nobody[@]}" -c "XDG_CONFIG_HOME=$CONF exec $BIN/kite connect --tcp $RELAY --tun" > "$BIN/kite.log" 2>&1 &
+  "${as_nobody[@]}" -c "XDG_CONFIG_HOME=$CONF exec $BIN/kite connect --foreground --tcp $RELAY --tun" > "$BIN/kite.log" 2>&1 &
   kite_pid=$!
   for _ in $(seq 50); do
     # IPv6 rules are added last.
@@ -241,5 +241,56 @@ pc dig +short +time=5 +tries=1 @1.1.1.1 example.com A > /dev/null || fail "DNS b
 "${as_nobody[@]}" -c "exec $BIN/kite restore" || fail "kite restore"
 if pc ip rule | grep -q "lookup 5300"; then fail "rules left after kite restore"; fi
 foreign_rule || fail "kite restore removed another program's rule"
+
+echo "== the daemon"
+# A second phone: relay-dev pairs the first computer it meets, and the first one was kite above.
+RELAY2=10.200.0.1:7001
+phone "$BIN/relay-dev" "$RELAY2" > "$BIN/relay2.log" 2>&1 &
+pids+=($!)
+RUN=$BIN/run
+install -d -m 750 -o nobody "$RUN"
+install -d -m 700 -o nobody "$BIN/state"
+sock=(--socket "$RUN/kite.sock")
+kite_cli() { "${as_nobody[@]}" -c "exec $BIN/kite $*"; }
+"${as_nobody[@]}" -c "exec $BIN/kite daemon ${sock[*]} --state-dir $BIN/state" > "$BIN/daemon.log" 2>&1 &
+daemon_pid=$!
+pids+=("$daemon_pid")
+for _ in $(seq 50); do
+  [ -S "$RUN/kite.sock" ] && break
+  kill -0 "$daemon_pid" 2>/dev/null || { cat "$BIN/daemon.log" >&2; fail "daemon exited"; }
+  sleep 0.2
+done
+[ "$(stat -c %a "$RUN/kite.sock")" = 660 ] || fail "daemon socket is not 0660"
+for set in CapPrm CapEff CapAmb; do
+  grep -q "^$set:\s*0000000000001000$" "/proc/$daemon_pid/status" || fail "daemon $set is not CAP_NET_ADMIN only"
+done
+echo "daemon idle RSS: $(rss "$daemon_pid")"
+
+shown_code2() { sed -n 's/^pairing code \([0-9]\{6\}\)$/\1/p' "$BIN/relay2.log" | tail -1; }
+for _ in $(seq 50); do
+  c=$(shown_code2)
+  if [ -n "$c" ]; then echo "$c"; break; fi
+  sleep 0.2
+done | kite_cli pair --tcp "$RELAY2" "${sock[@]}" > "$BIN/pair2.log" 2>&1 || { cat "$BIN/pair2.log" "$BIN/daemon.log" >&2; fail "kite pair through the daemon"; }
+[ "$(stat -c %a "$BIN/state/key")" = 600 ] || fail "daemon key file is not owner-only"
+[ "$(kite_cli peers "${sock[@]}" | wc -l)" = 1 ] || fail "the daemon did not keep the phone"
+
+pc iptables -Z OUTPUT
+pc ip6tables -Z OUTPUT
+phone iptables -Z
+kite_cli connect --tcp "$RELAY2" --tun "${sock[@]}" || { cat "$BIN/daemon.log" >&2; fail "kite connect through the daemon"; }
+kite_cli status "${sock[@]}" | grep -q '^state: connected' || fail "daemon status is not connected"
+pc curl -sS --max-time 20 https://1.1.1.1/cdn-cgi/trace | grep -q '^ip=' || fail "curl through the daemon"
+pc dig +short +time=10 +tries=1 example.com A | grep -q . || fail "DNS through the daemon"
+check_leaks daemon
+echo "daemon RSS with the tunnel up: $(rss "$daemon_pid")"
+kite_cli connect --tcp "$RELAY2" --tun "${sock[@]}" 2>/dev/null && fail "a second connect was accepted"
+kite_cli disconnect "${sock[@]}" || fail "kite disconnect"
+if pc ip link show kite0 2>/dev/null; then fail "kite0 still exists after disconnect"; fi
+if pc ip rule | grep -q "lookup 5300"; then fail "rules left after disconnect"; fi
+pc curl -sS --max-time 15 -o /dev/null https://1.1.1.1/ || fail "direct path broken after disconnect"
+kill -TERM "$daemon_pid"
+wait "$daemon_pid" || fail "the daemon exited with an error on SIGTERM"
+[ ! -e "$RUN/kite.sock" ] || fail "daemon socket left behind"
 
 echo "all TUN mode checks passed"

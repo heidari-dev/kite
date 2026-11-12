@@ -5,15 +5,19 @@
 use kite_relay::pair;
 use std::io;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::AtomicUsize;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::{TcpListener, TcpSocket, TcpStream};
+use tokio::net::{TcpSocket, TcpStream};
 
+#[cfg(unix)]
+mod client;
+#[cfg(target_os = "linux")]
+mod daemon;
 mod proxy;
 #[cfg(target_os = "linux")]
 mod route;
+mod session;
 #[cfg(unix)]
 mod status;
 mod store;
@@ -21,6 +25,9 @@ mod store;
 mod tun;
 
 const USAGE: &str = "usage:
+  kite daemon [--state-dir DIR]
+      Run the background service that owns the tunnel (Linux). The commands below
+      talk to it on /run/kite/kite.sock.
   kite pair (--tcp HOST:PORT | --usb [--serial SERIAL])
       Pair this computer with the phone: type the 6-digit code it shows.
   kite peers [remove KEY]
@@ -32,37 +39,29 @@ const USAGE: &str = "usage:
   kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) --tun
       Send all traffic and DNS of this computer through the relay (Linux, needs
       CAP_NET_ADMIN).
+  kite disconnect
+      Close the tunnel and lift the kill switch.
+  kite devices
+      List the phones connected by USB.
   kite status
       Show the running tunnel.
   kite restore
-      Remove routing rules left behind by a TUN mode run that was killed.";
+      Remove routing rules left behind by a TUN mode run that was killed.
+
+pair, peers and connect run in the daemon; add --foreground to run them in this
+process instead, with this user's own key and phones. --socket PATH picks another
+daemon socket.";
+
+const DEFAULT_LISTEN: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 1080);
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let result = match args.first().map(String::as_str) {
-        Some("connect") => parse_connect(&args[1..]).and_then(|c| {
-            let tun = c.tun;
-            block_on(connect(c), tun)
-        }),
-        Some("pair") => parse_connect(&args[1..]).and_then(|c| {
-            if c.tun || c.listen != SocketAddr::from(([127, 0, 0, 1], 1080)) {
-                return Err(usage("pair takes only --tcp, --usb and --serial"));
-            }
-            block_on(pair(c.transport), false)
-        }),
-        Some("peers") => peers(&args[1..]),
-        Some("status") => block_on(status(), false),
-        Some("restore") => block_on(restore(), false),
-        Some("--version" | "-V") => {
-            println!("kite {}", env!("CARGO_PKG_VERSION"));
-            Ok(())
-        }
-        Some("--help" | "-h" | "help") => {
-            println!("{USAGE}");
-            Ok(())
-        }
-        _ => Err(usage("expected a command")),
-    };
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let foreground = take_flag(&mut args, "--foreground");
+    let result = take_option(&mut args, "--socket").and_then(|socket| {
+        let socket = socket.unwrap_or_else(|| PathBuf::from(kite_ipc::DEFAULT_SOCKET));
+        run(&args, &socket, foreground)
+    });
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -73,6 +72,119 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Removes `flag` from `args` and says whether it was there.
+fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
+    let before = args.len();
+    args.retain(|a| a != flag);
+    args.len() != before
+}
+
+/// Removes `flag VALUE` from `args`.
+fn take_option(args: &mut Vec<String>, flag: &str) -> io::Result<Option<PathBuf>> {
+    let Some(at) = args.iter().position(|a| a == flag) else {
+        return Ok(None);
+    };
+    if at + 1 >= args.len() {
+        return Err(usage(format!("{flag} needs a value")));
+    }
+    let value = args.remove(at + 1);
+    args.remove(at);
+    Ok(Some(PathBuf::from(value)))
+}
+
+#[cfg_attr(not(unix), allow(unused_variables))]
+fn run(args: &[String], socket: &Path, foreground: bool) -> io::Result<()> {
+    match args.first().map(String::as_str) {
+        Some("daemon") => daemon_command(&args[1..], socket),
+        Some("connect") => parse_connect(&args[1..]).and_then(|c| {
+            #[cfg(unix)]
+            if !foreground {
+                return block_on(client::connect(socket, &c), false);
+            }
+            let tun = c.tun;
+            block_on(connect(c), tun)
+        }),
+        Some("pair") => parse_connect(&args[1..]).and_then(|c| {
+            if c.tun || c.listen != DEFAULT_LISTEN {
+                return Err(usage("pair takes only --tcp, --usb and --serial"));
+            }
+            #[cfg(unix)]
+            if !foreground {
+                return block_on(client::pair(socket, &c.transport), false);
+            }
+            block_on(pair(c.transport), false)
+        }),
+        Some("peers") => {
+            #[cfg(unix)]
+            if !foreground {
+                return block_on(client::peers(socket, &args[1..]), false);
+            }
+            peers(&args[1..])
+        }
+        Some("disconnect" | "devices") => daemon_only(args, socket),
+        Some("status") => block_on(status(socket), false),
+        Some("restore") => block_on(restore(), false),
+        Some("--version" | "-V") => {
+            println!("kite {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        Some("--help" | "-h" | "help") => {
+            println!("{USAGE}");
+            Ok(())
+        }
+        _ => Err(usage("expected a command")),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn daemon_command(args: &[String], socket: &Path) -> io::Result<()> {
+    let mut args = args.to_vec();
+    let state =
+        take_option(&mut args, "--state-dir")?.unwrap_or_else(|| PathBuf::from("/var/lib/kite"));
+    if !args.is_empty() {
+        return Err(usage("daemon takes only --state-dir and --socket"));
+    }
+    let opts = daemon::Options {
+        socket: socket.to_path_buf(),
+        state,
+    };
+    block_on(daemon::run(opts, shutdown_signal()), false)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn daemon_command(_: &[String], _: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "the daemon is only available on Linux",
+    ))
+}
+
+/// `disconnect` and `devices` only make sense against the daemon.
+#[cfg(unix)]
+fn daemon_only(args: &[String], socket: &Path) -> io::Result<()> {
+    if args.len() != 1 {
+        return Err(usage(format!("{} takes no arguments", args[0])));
+    }
+    block_on(
+        async {
+            if args[0] == "devices" {
+                client::devices(socket).await
+            } else {
+                client::disconnect(socket).await
+            }
+        },
+        false,
+    )
+}
+
+#[cfg(not(unix))]
+fn daemon_only(_: &[String], _: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "the daemon is only available on Linux",
+    ))
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
@@ -93,7 +205,7 @@ fn usage(msg: impl Into<String>) -> io::Error {
 }
 
 /// How to reach the relay.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Transport {
     Tcp(String),
     /// A phone connected by USB, found through the adb server; the serial picks one of several.
@@ -120,7 +232,7 @@ fn parse_connect(args: &[String]) -> io::Result<Connect> {
     let mut relay = None;
     let mut usb = false;
     let mut serial = None;
-    let mut listen = SocketAddr::from(([127, 0, 0, 1], 1080));
+    let mut listen = DEFAULT_LISTEN;
     let mut tun = false;
     let mut it = args.iter();
     while let Some(flag) = it.next() {
@@ -158,7 +270,7 @@ fn parse_connect(args: &[String]) -> io::Result<Connect> {
         (Some(_), true) => return Err(usage("use either --tcp or --usb")),
         (Some(_), false) => return Err(usage("--serial only applies to --usb")),
     };
-    if tun && listen != SocketAddr::from(([127, 0, 0, 1], 1080)) {
+    if tun && listen != DEFAULT_LISTEN {
         return Err(usage("--listen does not apply to --tun"));
     }
     Ok(Connect {
@@ -168,44 +280,33 @@ fn parse_connect(args: &[String]) -> io::Result<Connect> {
     })
 }
 
+/// `kite connect --foreground`: the tunnel runs in this process, with this user's key and phones.
 async fn connect(c: Connect) -> io::Result<()> {
-    // TUN mode feeds tun2proxy through a proxy on a free port.
-    let listen = if c.tun {
-        SocketAddr::from(([127, 0, 0, 1], 0))
-    } else {
-        c.listen
-    };
     let store = store::Store::open()?;
-    let phones = store.phones()?;
-    if phones.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "not paired with a phone yet: run kite pair first",
-        ));
-    }
-    let key = store.key()?;
-    let listener = TcpListener::bind(listen).await?;
-    let tunnel = pair::connect(dial(&c.transport, c.tun).await?, &key, &phones).await?;
-    let active = Arc::new(AtomicUsize::new(0));
-    let mode = if c.tun {
-        "all traffic through the tunnel".to_string()
-    } else {
-        format!("SOCKS5 proxy on {}", listener.local_addr()?)
+    let shared = session::Shared::default();
+    let relay = c.transport.to_string();
+    let params = session::Params {
+        transport: c.transport,
+        tun: c.tun,
+        listen: c.listen,
     };
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
+    let started = tokio::select! {
+        r = session::start(&params, &store) => r?,
+        () = &mut shutdown => return Ok(()),
+    };
+    let mode = started.mode()?;
     #[cfg(unix)]
     let _status = status::serve(status::Info {
-        relay: c.transport.to_string(),
+        relay: relay.clone(),
         mode: mode.clone(),
-        active: active.clone(),
+        active: shared.active.clone(),
         started: std::time::Instant::now(),
     })
     .map_err(|e| eprintln!("kite: status unavailable: {e}"));
-    println!("connected to {}, {mode}", c.transport);
-    #[cfg(target_os = "linux")]
-    if c.tun {
-        return tun::run(tunnel, listener, active, shutdown_signal()).await;
-    }
-    proxy::run(tunnel, listener, active, shutdown_signal()).await
+    println!("connected to {relay}, {mode}");
+    started.serve(&shared, shutdown).await
 }
 
 /// Connects to the relay. Over TCP, keepalive notices a peer that vanished without closing.
@@ -230,7 +331,6 @@ async fn dial(transport: &Transport, tun: bool) -> io::Result<TcpStream> {
 }
 
 /// The relay stream after the Noise handshake. yamux runs on this.
-#[cfg(target_os = "linux")]
 type Tunnel = kite_relay::noise::Session<TcpStream>;
 
 /// Pairs with the phone on `transport`: the user types the code the phone shows.
@@ -338,13 +438,17 @@ async fn restore() -> io::Result<()> {
     Ok(())
 }
 
+/// The daemon's tunnel, or else a `kite connect --foreground` one.
 #[cfg(unix)]
-async fn status() -> io::Result<()> {
-    status::query().await
+async fn status(socket: &Path) -> io::Result<()> {
+    match client::status(socket).await {
+        Err(e) if e.to_string().contains("daemon is not running") => status::query().await,
+        r => r,
+    }
 }
 
 #[cfg(not(unix))]
-async fn status() -> io::Result<()> {
+async fn status(_: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "status is only available on Linux",
@@ -377,6 +481,20 @@ mod tests {
         assert_eq!(c.transport, Transport::Usb(None));
         let c = parse_connect(&args("--usb --serial R5CT1234")).unwrap();
         assert_eq!(c.transport, Transport::Usb(Some("R5CT1234".into())));
+    }
+
+    #[test]
+    fn takes_global_options_out_of_the_arguments() {
+        let mut a = args("connect --socket /tmp/k.sock --foreground --usb");
+        assert!(super::take_flag(&mut a, "--foreground"));
+        assert_eq!(
+            super::take_option(&mut a, "--socket").unwrap(),
+            Some("/tmp/k.sock".into())
+        );
+        assert_eq!(a, args("connect --usb"));
+        assert!(!super::take_flag(&mut a, "--foreground"));
+        let mut a = args("status --socket");
+        assert!(super::take_option(&mut a, "--socket").is_err());
     }
 
     #[test]

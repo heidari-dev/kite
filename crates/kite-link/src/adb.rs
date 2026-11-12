@@ -32,6 +32,11 @@ pub async fn open(serial: Option<&str>) -> io::Result<TcpStream> {
     open_with(|| TcpStream::connect(SERVER), serial).await
 }
 
+/// The phones connected by USB as `(serial, adb state)`.
+pub async fn devices() -> io::Result<Vec<(String, String)>> {
+    devices_with(|| TcpStream::connect(SERVER)).await
+}
+
 /// [`open`] with a custom way to reach the server, for tests.
 pub async fn open_with<S, F, Fut>(connect: F, serial: Option<&str>) -> io::Result<S>
 where
@@ -39,25 +44,10 @@ where
     Fut: Future<Output = io::Result<S>>,
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let dial = || async {
-        match timeout(STEP, connect()).await {
-            Err(_) => Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "adb server did not answer",
-            )),
-            Ok(Err(e)) if e.kind() == io::ErrorKind::ConnectionRefused => Err(io::Error::new(
-                io::ErrorKind::ConnectionRefused,
-                "no adb server is running; start it with `adb start-server`",
-            )),
-            Ok(r) => r,
-        }
-    };
-    let mut list = dial().await?;
-    let devices = parse_devices(&exchange(&mut list, "host:devices-l", true).await?);
-    drop(list);
+    let devices = devices_with(&connect).await?;
     let target = select(&devices, serial)?;
 
-    let mut stream = dial().await?;
+    let mut stream = dial(&connect).await?;
     exchange(&mut stream, &format!("host:transport:{target}"), false)
         .await
         .map_err(|e| io::Error::new(e.kind(), format!("adb refused the phone: {e}")))?;
@@ -68,6 +58,36 @@ where
         )
     })?;
     Ok(stream)
+}
+
+async fn devices_with<S, F, Fut>(connect: F) -> io::Result<Vec<(String, String)>>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = io::Result<S>>,
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut list = dial(&connect).await?;
+    Ok(parse_devices(
+        &exchange(&mut list, "host:devices-l", true).await?,
+    ))
+}
+
+async fn dial<S, F, Fut>(connect: F) -> io::Result<S>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = io::Result<S>>,
+{
+    match timeout(STEP, connect()).await {
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "adb server did not answer",
+        )),
+        Ok(Err(e)) if e.kind() == io::ErrorKind::ConnectionRefused => Err(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            "no adb server is running; start it with `adb start-server`",
+        )),
+        Ok(r) => r,
+    }
 }
 
 /// Sends one request and checks the reply. With `data` the reply carries a length-prefixed body,

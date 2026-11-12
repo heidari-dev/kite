@@ -1229,6 +1229,7 @@ dependencies = [
 name = "kite-cli"
 version = "0.0.0"
 dependencies = [
+ "kite-ipc",
  "kite-link",
  "kite-relay",
  "netlink-packet-route",
@@ -1248,6 +1249,15 @@ dependencies = [
  "kite-relay",
  "tokio",
  "uniffi",
+]
+
+[[package]]
+name = "kite-ipc"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

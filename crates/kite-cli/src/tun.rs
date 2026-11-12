@@ -1,15 +1,12 @@
 //! TUN mode (Linux): every connection and DNS query of this computer goes through the relay.
 //! tun2proxy turns the TUN device's packets into connections to the local proxy from proxy mode.
 
-use crate::{proxy, route};
+use crate::route;
 use std::future::Future;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::process::Stdio;
-use std::sync::atomic::AtomicUsize;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::TcpListener;
 use tun::AbstractDevice;
 use tun2proxy::{ArgDns, Args, CancellationToken, ProxyParameters};
 
@@ -23,14 +20,18 @@ const UDPGW: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)
 /// as DNS over TCP through the relay.
 const DNS: IpAddr = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
 
-/// Runs TUN mode until the tunnel fails or `shutdown` completes. `tunnel` must bypass the routes
-/// set up here, see [`route::TABLE`].
-pub async fn run(
-    tunnel: crate::Tunnel,
-    listener: TcpListener,
-    active: Arc<AtomicUsize>,
+/// Runs TUN mode until `shutdown` completes or tun2proxy fails. `serve_link` carries the traffic
+/// that reaches the proxy at `proxy` through a tunnel to the relay, until the token it is given is
+/// cancelled; that tunnel must bypass the routes set up here, see [`route::TABLE`].
+pub async fn run<F, Fut>(
+    proxy: SocketAddr,
+    serve_link: F,
     shutdown: impl Future<Output = ()>,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    F: FnOnce(CancellationToken) -> Fut,
+    Fut: Future<Output = io::Result<()>>,
+{
     let mut cfg = tun::Configuration::default();
     cfg.address(ADDR)
         .netmask(Ipv4Addr::new(255, 255, 255, 252))
@@ -40,7 +41,7 @@ pub async fn run(
     let link = device.tun_index().map_err(io::Error::other)?;
     let link = u32::try_from(link).map_err(io::Error::other)?;
     route::restore().await?;
-    let result = serve(device, link, tunnel, listener, active, shutdown).await;
+    let result = serve(device, link, proxy, serve_link, shutdown).await;
     result.and(route::restore().await)
 }
 
@@ -62,14 +63,17 @@ pub async fn restore() -> io::Result<()> {
     route::restore().await
 }
 
-async fn serve(
+async fn serve<F, Fut>(
     device: tun::AsyncDevice,
     link: u32,
-    tunnel: crate::Tunnel,
-    listener: TcpListener,
-    active: Arc<AtomicUsize>,
+    proxy: SocketAddr,
+    serve_link: F,
     shutdown: impl Future<Output = ()>,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    F: FnOnce(CancellationToken) -> Fut,
+    Fut: Future<Output = io::Result<()>>,
+{
     // Polled from the start, so a signal during setup still ends in a clean restore.
     tokio::pin!(shutdown);
     tokio::select! {
@@ -77,7 +81,7 @@ async fn serve(
         () = &mut shutdown => return Ok(()),
     }
 
-    let proxy_url = format!("socks5://{}", listener.local_addr()?);
+    let proxy_url = format!("socks5://{proxy}");
     let mut args = Args::default();
     args.proxy(ProxyParameters::try_from(proxy_url.as_str()).map_err(io::Error::other)?)
         .dns(ArgDns::OverTcp)
@@ -91,7 +95,7 @@ async fn serve(
     let token = CancellationToken::new();
     let (proxied, tunneled, ()) = tokio::join!(
         async {
-            let r = proxy::run(tunnel, listener, active, token.cancelled()).await;
+            let r = serve_link(token.clone()).await;
             token.cancel();
             r
         },

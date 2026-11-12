@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 /// Far more than any real list of phones; the file is read whole.
 const MAX_PHONES_FILE: u64 = 64 * 1024;
 
+#[derive(Clone)]
 pub struct Store {
     dir: PathBuf,
 }
@@ -20,7 +21,8 @@ impl Store {
         Self::at(config_dir()?.join("kite"))
     }
 
-    fn at(dir: PathBuf) -> io::Result<Self> {
+    /// The store in `dir`, created owner-only if missing.
+    pub fn at(dir: PathBuf) -> io::Result<Self> {
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(fs::DirBuilder::new().recursive(true), 0o700)
             .create(&dir)?;

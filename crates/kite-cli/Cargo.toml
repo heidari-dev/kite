@@ -12,6 +12,7 @@ name = "kite"
 path = "src/main.rs"
 
 [dependencies]
+kite-ipc = { path = "../kite-ipc", version = "0.0.0" }
 kite-link = { path = "../kite-link", version = "0.0.0" }
 kite-relay = { path = "../kite-relay", version = "0.0.0" }
 socket2 = { version = "0.6", features = ["all"] }
