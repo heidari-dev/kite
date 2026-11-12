@@ -96,14 +96,23 @@ impl Relay {
             .collect::<Result<Vec<[u8; KEY_LEN]>, _>>()
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "bad peer key"))?;
         let pairing = Arc::new(Pairing::new(peers));
+        // Bound before the runtime exists: dropping a runtime panics if the caller is async.
+        let listener = listen(&socket_name)?;
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             // Name lookups run on blocking threads; the default allows 512 of them.
             .max_blocking_threads(8)
             .build()?;
-        let listener = {
+        let registered = {
             let _guard = rt.enter();
-            listen(&socket_name)?
+            register(listener)
+        };
+        let listener = match registered {
+            Ok(listener) => listener,
+            Err(e) => {
+                rt.shutdown_background();
+                return Err(e.into());
+            }
         };
         let counters = Arc::new(Counters::default());
         let (stop, stopped) = oneshot::channel();
@@ -195,7 +204,7 @@ struct Shared {
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn listen(name: &str) -> io::Result<tokio::net::UnixListener> {
+fn listen(name: &str) -> io::Result<std::os::unix::net::UnixListener> {
     #[cfg(target_os = "android")]
     use std::os::android::net::SocketAddrExt;
     #[cfg(target_os = "linux")]
@@ -203,6 +212,11 @@ fn listen(name: &str) -> io::Result<tokio::net::UnixListener> {
     let addr = std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes())?;
     let listener = std::os::unix::net::UnixListener::bind_addr(&addr)?;
     listener.set_nonblocking(true)?;
+    Ok(listener)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn register(listener: std::os::unix::net::UnixListener) -> io::Result<tokio::net::UnixListener> {
     tokio::net::UnixListener::from_std(listener)
 }
 
@@ -212,6 +226,11 @@ fn listen(_: &str) -> io::Result<Unsupported> {
         io::ErrorKind::Unsupported,
         "the relay listens on Android and Linux only",
     ))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn register(listener: Unsupported) -> io::Result<Unsupported> {
+    match listener {}
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]

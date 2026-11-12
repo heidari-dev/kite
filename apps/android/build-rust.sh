@@ -11,6 +11,8 @@ cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 --platform 26 -o "$main/jniLibs"
 # The release libraries are stripped, which removes the metadata uniffi reads, so the bindings come
 # from a debug build for this machine. The interface is the same on every target.
 cargo build -q -p kite-ffi --lib
-host=$(ls target/debug/libkite_ffi.so target/debug/libkite_ffi.dylib target/debug/kite_ffi.dll 2>/dev/null | head -n 1)
+for host in target/debug/libkite_ffi.so target/debug/libkite_ffi.dylib target/debug/kite_ffi.dll; do
+  [ -f "$host" ] && break
+done
 cargo run -q -p kite-ffi --features bindgen --bin uniffi-bindgen -- generate --no-format \
   --library "$host" --language kotlin --out-dir "$main/java"
