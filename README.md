@@ -15,8 +15,8 @@ Android and iPhone.
 
 Early development. On Linux the `kite` command works in proxy mode and in TUN mode against the
 development relay (`relay-dev`), which stands in for a phone. There is no phone app yet, WiFi is not
-supported, USB (`--usb`, through adb) is only tested against a fake adb server, and the link is encrypted but
-the phone is not verified until pairing lands, so do not use it on a network you do not trust. See
+supported, and USB (`--usb`, through adb) is only tested against a fake adb server. The link is
+encrypted with Noise and both sides are paired once with a 6-digit code. See
 the open issues and milestones for the roadmap.
 
 ## Try it from source
@@ -25,8 +25,12 @@ You need a Rust toolchain (see `rust-toolchain.toml`). On one machine, in two te
 
 ```
 cargo run --release -p kite-relay --example relay-dev -- 127.0.0.1:7000 --allow-loopback
+cargo run --release -p kite-cli -- pair --tcp 127.0.0.1:7000
 cargo run --release -p kite-cli -- connect --tcp 127.0.0.1:7000
 ```
+
+`kite pair` asks for the code that relay-dev prints, the way the phone will show it; it is needed
+once per relay-dev run, since relay-dev forgets its pairings when it stops.
 
 `--allow-loopback` lets the relay reach servers on its own machine; leave it off to behave like a
 phone. Kite then serves a SOCKS5 proxy on 127.0.0.1:1080:
