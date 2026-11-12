@@ -29,9 +29,9 @@ paired with phone 3f9a...
 
 The code comes from the encrypted session itself, so it only matches when nothing sits between the
 two devices. A code that does not match stops pairing: if you typed it right, someone is
-intercepting the link. Codes expire after 2 minutes. The phone accepts a new computer only while it
-has none paired or pairing is open in its app, one at a time, and after 5 failed attempts it
-refuses pairing for 60 seconds.
+intercepting the link. Codes expire after 2 minutes. The phone accepts a new computer only for 2
+minutes after you open pairing in its app, one at a time, and after 5 failed attempts it refuses
+pairing for 60 seconds. `relay-dev` keeps pairing open until the first computer pairs.
 
 This computer's key and the paired phones live in `$XDG_CONFIG_HOME/kite` (`~/.config/kite`;
 `%APPDATA%\kite` on Windows): `key` and `phones`, readable only by you. kite refuses to use them

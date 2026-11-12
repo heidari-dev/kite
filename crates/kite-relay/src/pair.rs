@@ -66,8 +66,8 @@ struct Pending {
 }
 
 impl Pairing {
-    /// Starts with the computers paired earlier. With none, the first computer that connects
-    /// may pair; after that only while pairing is open, see [`Pairing::open`].
+    /// Starts with the computers paired earlier. An unknown computer may pair only while
+    /// pairing is open, see [`Pairing::open`].
     pub fn new(peers: Vec<[u8; KEY_LEN]>) -> Self {
         Self(Mutex::new(State {
             peers,
@@ -75,7 +75,9 @@ impl Pairing {
         }))
     }
 
-    /// Lets one more computer pair within [`CODE_LIFETIME`].
+    /// Lets one more computer pair within [`CODE_LIFETIME`]. Call it only when the user asks
+    /// to pair: any device on the link can take the open slot, and the code cannot tell them
+    /// apart from the user's computer.
     pub fn open(&self) {
         self.lock().open_until = Some(Instant::now() + CODE_LIFETIME);
     }
@@ -116,7 +118,7 @@ impl Pairing {
         let mut state = self.lock();
         if state.locked_until.is_some_and(|t| t > now)
             || state.pending.as_ref().is_some_and(|p| p.expires > now)
-            || (!state.peers.is_empty() && !state.open_until.is_some_and(|t| t > now))
+            || !state.open_until.is_some_and(|t| t > now)
         {
             return None;
         }
@@ -148,26 +150,30 @@ struct Slot<'a> {
 }
 
 impl Slot<'_> {
+    /// The pending entry, if it is still this slot's and not one a later pairing started after
+    /// this one expired.
+    fn mine<'s>(&self, state: &'s mut State) -> Option<&'s mut Pending> {
+        state.pending.as_mut().filter(|p| p.expires == self.expires)
+    }
+
     fn show(&self, code: u32) {
-        if let Some(p) = self.pairing.lock().pending.as_mut() {
+        if let Some(p) = self.mine(&mut self.pairing.lock()) {
             p.code = Some(code);
         }
     }
 
-    /// Checks the code the computer sent and stores its key if it matches.
-    fn finish(&mut self, key: [u8; KEY_LEN], typed: [u8; 4], code: u32) -> bool {
-        if !bool::from(typed.ct_eq(&code.to_be_bytes())) {
-            return false;
-        }
+    /// Stores the computer's key. Only after the code matched and the phone said OK.
+    fn store(&mut self, key: [u8; KEY_LEN]) {
         let mut state = self.pairing.lock();
         if !state.peers.contains(&key) {
             state.peers.push(key);
         }
         state.open_until = None;
         state.failures = 0;
-        state.pending = None;
+        if self.mine(&mut state).is_some() {
+            state.pending = None;
+        }
         self.paired = true;
-        true
     }
 }
 
@@ -177,7 +183,9 @@ impl Drop for Slot<'_> {
             return;
         }
         let mut state = self.pairing.lock();
-        state.pending = None;
+        if self.mine(&mut state).is_some() {
+            state.pending = None;
+        }
         state.failures += 1;
         if state.failures >= MAX_FAILURES {
             state.failures = 0;
@@ -213,11 +221,13 @@ where
     let mut typed = [0u8; 4];
     let left = slot.expires.saturating_duration_since(Instant::now());
     step(left, s.read_exact(&mut typed)).await?;
-    if !slot.finish(peer.key, typed, code) {
+    if !bool::from(typed.ct_eq(&code.to_be_bytes())) {
         let _ = send(&mut s, &[DENIED]).await;
         return Err(denied("wrong pairing code"));
     }
+    // Stored only once OK is out, so a failed send cannot leave the phone half paired.
     send(&mut s, &[OK]).await?;
+    slot.store(peer.key);
     Ok(s)
 }
 
@@ -335,9 +345,13 @@ async fn status<T: AsyncRead + Unpin>(s: &mut Session<T>) -> io::Result<u8> {
     Ok(b[0])
 }
 
+/// A peer that stops reading must not hold the pairing slot past its expiry.
 async fn send<T: AsyncWrite + Unpin>(s: &mut Session<T>, msg: &[u8]) -> io::Result<()> {
-    s.write_all(msg).await?;
-    s.flush().await
+    step(STEP_TIMEOUT, async {
+        s.write_all(msg).await?;
+        s.flush().await
+    })
+    .await
 }
 
 async fn step<R>(
@@ -391,6 +405,12 @@ mod tests {
     use std::sync::Arc;
     use tokio::io::{duplex, DuplexStream};
 
+    fn opened() -> Arc<Pairing> {
+        let pairing = Arc::new(Pairing::new(Vec::new()));
+        pairing.open();
+        pairing
+    }
+
     fn key() -> Arc<StaticKey> {
         Arc::new(StaticKey::generate().unwrap())
     }
@@ -408,7 +428,7 @@ mod tests {
 
     #[tokio::test]
     async fn pairs_then_connects_and_refuses_strangers() {
-        let (pairing, pk, ck) = (Arc::new(Pairing::new(Vec::new())), key(), key());
+        let (pairing, pk, ck) = (opened(), key(), key());
         let (io, task) = phone(&pairing, &pk);
         let attempt = start(io, &ck).await.unwrap();
         let code = pairing.pairing_code().unwrap();
@@ -459,10 +479,7 @@ mod tests {
     #[tokio::test]
     async fn man_in_the_middle_gets_a_different_code() {
         // The attacker answers the computer as a phone and pairs with the real phone itself.
-        let (real, attacker) = (
-            Arc::new(Pairing::new(Vec::new())),
-            Arc::new(Pairing::new(Vec::new())),
-        );
+        let (real, attacker) = (opened(), opened());
         let (pk, mk, ck) = (key(), key(), key());
         let (to_phone, phone_task) = phone(&real, &pk);
         let (to_attacker, attacker_task) = phone(&attacker, &mk);
@@ -483,7 +500,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn code_expires_after_two_minutes() {
-        let (pairing, pk, ck) = (Arc::new(Pairing::new(Vec::new())), key(), key());
+        let (pairing, pk, ck) = (opened(), key(), key());
         let (io, task) = phone(&pairing, &pk);
         let attempt = start(io, &ck).await.unwrap();
         let code = pairing.pairing_code().unwrap();
@@ -499,7 +516,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn five_failures_lock_pairing_for_a_minute() {
-        let (pairing, pk, ck) = (Arc::new(Pairing::new(Vec::new())), key(), key());
+        let (pairing, pk, ck) = (opened(), key(), key());
         for _ in 0..MAX_FAILURES {
             let (io, task) = phone(&pairing, &pk);
             let attempt = start(io, &ck).await.unwrap();
@@ -523,24 +540,43 @@ mod tests {
         task.await.unwrap().unwrap();
     }
 
-    #[test]
-    fn phone_checks_the_code_and_allows_one_pairing_at_a_time() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .unwrap();
-        let _guard = rt.enter();
+    #[tokio::test(start_paused = true)]
+    async fn one_pairing_at_a_time_and_only_while_open() {
         let pairing = Pairing::new(Vec::new());
-        let mut slot = pairing.begin().unwrap();
+        assert!(pairing.begin().is_none(), "pairing without open()");
+        pairing.open();
+        let stale = pairing.begin().unwrap();
         assert!(
             pairing.begin().is_none(),
             "second pairing while one is pending"
         );
+
+        // The first slot outlives its expiry; a later pairing must not lose its code when the
+        // old slot finally drops.
+        tokio::time::sleep(CODE_LIFETIME + Duration::from_secs(1)).await;
+        pairing.open();
+        let mut slot = pairing.begin().unwrap();
         slot.show(42);
+        drop(stale);
         assert_eq!(pairing.pairing_code().as_deref(), Some("000042"));
-        assert!(!slot.finish([1; KEY_LEN], 43u32.to_be_bytes(), 42));
-        assert!(slot.finish([1; KEY_LEN], 42u32.to_be_bytes(), 42));
+        assert!(pairing.begin().is_none(), "slot freed by a stale drop");
+        slot.store([1; KEY_LEN]);
         assert_eq!(pairing.peers(), vec![[1; KEY_LEN]]);
+        assert_eq!(pairing.pairing_code(), None);
+        assert!(
+            pairing.begin().is_none(),
+            "pairing stays open after success"
+        );
+    }
+
+    #[tokio::test]
+    async fn closed_pairing_refuses_a_new_computer() {
+        let (pairing, pk) = (Arc::new(Pairing::new(Vec::new())), key());
+        let (io, task) = phone(&pairing, &pk);
+        let e = start(io, &key()).await.unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
+        assert!(task.await.unwrap().is_err());
+        assert!(pairing.peers().is_empty());
     }
 
     #[tokio::test]

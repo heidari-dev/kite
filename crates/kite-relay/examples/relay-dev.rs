@@ -2,8 +2,8 @@
 //!
 //! Usage: `cargo run --release -p kite-relay --example relay-dev -- [ADDR] [--allow-loopback]`
 //! ADDR defaults to 127.0.0.1:7000. `--allow-loopback` lets tests reach servers on this machine.
-//! The relay key and the paired computers live only as long as the process: the first computer
-//! that runs `kite pair` gets in, and the pairing code is printed where a phone would show it.
+//! The relay key and the paired computers live only as long as the process: pairing stays open
+//! until the first computer runs `kite pair`, and the code is printed where a phone would show it.
 
 use kite_relay::{noise, pair, Config};
 use std::sync::Arc;
@@ -32,6 +32,11 @@ fn main() -> std::io::Result<()> {
         tokio::spawn(async move {
             let mut last = None;
             loop {
+                // A phone opens pairing when the user asks; relay-dev keeps it open until the
+                // first computer pairs.
+                if shown.peers().is_empty() {
+                    shown.open();
+                }
                 let code = shown.pairing_code();
                 if code.is_some() && code != last {
                     println!("pairing code {}", code.as_deref().unwrap_or_default());

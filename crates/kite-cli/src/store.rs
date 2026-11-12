@@ -26,6 +26,18 @@ impl Store {
             .create(&dir)?;
         #[cfg(not(unix))]
         fs::create_dir_all(&dir)?;
+        // Another user who can write the directory could swap the files.
+        #[cfg(unix)]
+        if std::os::unix::fs::PermissionsExt::mode(&fs::metadata(&dir)?.permissions()) & 0o077 != 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "{} is open to other users; run chmod 700 on it",
+                    dir.display()
+                ),
+            ));
+        }
         Ok(Self { dir })
     }
 
@@ -36,8 +48,16 @@ impl Store {
             Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 let key = StaticKey::generate()?;
-                write_private(&path, key.as_bytes())?;
-                return Ok(key);
+                // A hard link never replaces an existing file: if another kite created the key
+                // first, use that one.
+                let tmp = write_temp(&path, key.as_bytes())?;
+                let linked = fs::hard_link(&tmp, &path);
+                let _ = fs::remove_file(&tmp);
+                return match linked {
+                    Ok(()) => Ok(key),
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => self.key(),
+                    Err(e) => Err(e),
+                };
             }
             Err(e) => return Err(e),
         };
@@ -173,8 +193,18 @@ fn open_private(path: &Path) -> io::Result<fs::File> {
 
 /// Replaces `path` with `data` through an owner-only temporary file, so a crash leaves either
 /// the old file or the new one.
+// shortcut: two kite processes changing the phone list at once can lose one change; add a lock
+// file if pairing ever runs from more than one process.
 fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
-    let tmp = path.with_extension("tmp");
+    let tmp = write_temp(path, data)?;
+    fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = fs::remove_file(&tmp);
+    })
+}
+
+/// Writes `data` to a new owner-only file next to `path`, named for this process.
+fn write_temp(path: &Path, data: &[u8]) -> io::Result<PathBuf> {
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
     let _ = fs::remove_file(&tmp);
     let mut opts = fs::OpenOptions::new();
     opts.write(true).create_new(true);
@@ -183,8 +213,7 @@ fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
     let mut file = opts.open(&tmp)?;
     file.write_all(data)?;
     file.sync_all()?;
-    drop(file);
-    fs::rename(&tmp, path)
+    Ok(tmp)
 }
 
 #[cfg(test)]
@@ -266,6 +295,9 @@ mod tests {
             }
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         }
+        fs::set_permissions(&store.dir, fs::Permissions::from_mode(0o770)).unwrap();
+        let e = Store::at(store.dir.clone()).map(drop).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
         fs::remove_dir_all(root).unwrap();
     }
 }
