@@ -96,19 +96,47 @@ Without it TUN mode stops with an error instead of running with DNS that could l
 |-------|------|
 | `kite-relay` | Phone side: Noise and yamux server, SOCKS5 and UDP handling per stream (tokio) |
 | `kite-link` | Transports that yield one async byte stream: ADB, usbmux, TCP |
+| `kite-ipc` | The local protocol between the daemon and its clients: request and response types, strict parser |
 | `kite-cli` | The `kite` binary: daemon, proxy mode, TUN mode, status |
 | `kite-ffi` | Planned: bindings of the relay for Kotlin and Swift |
 
 Apps live under `apps/`: a Slint desktop app, a Kotlin Views Android app with a foreground service, and
 a SwiftUI iOS app. The relay core is shared with the mobile apps through the bindings.
 
+## Daemon
+
+`kite daemon` (Linux first) owns the TUN device and the transports. The desktop app (with tray icon)
+and the `kite` command line are thin clients of that daemon over local IPC, so closing the window
+costs no connection and frees the GUI's memory.
+
+```
+ kite CLI / desktop app ==[ /run/kite/kite.sock, JSON lines ]== kite daemon
+                                                                  |-- main thread: accepts clients, one task each
+                                                                  `-- tunnel thread: transport, Noise, yamux, TUN
+```
+
+- The protocol lives in the small `kite-ipc` crate, so a client links only the request and response
+  types. One JSON object per line: `status`, `devices`, `connect`, `disconnect`, `stats`,
+  `pair_start`, `pair`, `peers`, `remove_peer`. A request is capped at 4 KiB, parsed strictly
+  (unknown commands and fields are refused) and checked again for its values before anything acts
+  on it. Keys never travel over it.
+- The socket is 0660 and belongs to the daemon's group. The daemon also checks each caller's
+  credentials (SO_PEERCRED, then `/proc/PID/status` for supplementary groups) and answers only
+  root, its own user and its group. At most 8 clients are served at once, each request has a
+  timeout, and no request carries a path or a command line.
+- The tunnel runs on its own thread with its own runtime, the same code that `kite connect
+  --foreground` runs in the CLI process, so a slow request never stalls traffic. `connect` returns
+  once the thread is started; `status` reports `connecting`, `connected` and, after the end, `idle`
+  with the error.
+- The daemon's key and the paired phones live in its state directory (`/var/lib/kite`, 0700),
+  never in a user's home. Pairing is two requests, `pair_start` (dial the phone, which shows a
+  code) and `pair` (the typed code), with one try per start and the same two-minute lifetime as on
+  the phone.
+
 ## Desktop delivery
 
-A system daemon owns the TUN device and the transports. The desktop app (with tray icon) and the `kite`
-command line are thin clients of that daemon over local IPC, so closing the window costs no connection
-and frees the GUI's memory. Installers set up the app, CLI, daemon service and autostart with at most
-one administrator prompt: `.deb` and AppImage for Linux first, then an MSI for Windows and a `.dmg` for
-macOS.
+Installers set up the app, CLI, daemon service and autostart with at most one administrator prompt:
+`.deb` and AppImage for Linux first, then an MSI for Windows and a `.dmg` for macOS.
 
 ## Security
 

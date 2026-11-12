@@ -68,17 +68,18 @@ exist yet; `relay-dev` keeps its key and pairings in memory and is for developme
 
 ## B2: local IPC
 
-The daemon owns the privileges. The CLI and the desktop app are unprivileged clients. None of this
-exists yet.
+The daemon owns the privileges. The CLI and the desktop app are unprivileged clients. The Linux
+daemon and its socket exist; the systemd unit that drops it to `CAP_NET_ADMIN` and the Windows and
+macOS equivalents do not yet.
 
 | | Threat | Mitigation | Owner | Status |
 |---|--------|------------|-------|--------|
-| S | Another local user connects to the daemon's socket or pipe. | Socket or pipe limited to the owner or the `kite` group. The daemon checks the peer's credentials where the OS offers them. | `kite-cli` (daemon) | planned |
-| T | A client sends malformed or oversized requests. | Every request is validated: size cap, known commands only, unknown fields rejected. | `kite-cli` (daemon) | planned |
-| R | An unprivileged action changes the network setup and nobody can tell. | The daemon logs each state-changing request to the system log, without payloads or hostnames. | `kite-cli` (daemon) | planned |
-| I | Status output or logs leak keys, pairing codes or visited hosts. | Keys never travel over IPC. Status shows device names and counters only. Logs follow the same rule by default. | `kite-cli` (daemon) | planned |
-| D | A client floods the daemon with connections or requests. | Cap on open IPC connections, per-request timeout, bounded buffers. | `kite-cli` (daemon) | planned |
-| E | A local user turns the daemon into a way to run commands or touch files as it. | A fixed set of commands with typed arguments, no paths or command lines taken from clients. On Linux the daemon gets `CAP_NET_ADMIN` from systemd instead of running as full root. | `kite-cli` (daemon) | planned |
+| S | Another local user connects to the daemon's socket or pipe. | Socket mode 0660, group `kite`. The daemon checks every caller's credentials (SO_PEERCRED, then the groups in `/proc/PID/status`) and answers only root, its own user and its group; a caller it cannot establish is refused. | `kite-cli` (daemon) | done (Linux) |
+| T | A client sends malformed or oversized requests. | Every request is one line of at most 4 KiB, parsed strictly (known commands only, unknown fields rejected) and its values checked, with a cargo-fuzz target on the parser. | `kite-ipc`, `kite-cli` | done |
+| R | An unprivileged action changes the network setup and nobody can tell. | The daemon logs each state-changing request to the system log with the caller's uid, without keys, codes, payloads or hostnames. | `kite-cli` (daemon) | done |
+| I | Status output or logs leak keys, pairing codes or visited hosts. | Keys never travel over IPC. Status shows the transport, mode, counters and the last error. Logs follow the same rule. | `kite-cli` (daemon) | done |
+| D | A client floods the daemon with connections or requests. | At most 8 open IPC connections, a 10 s wait for each request and a 30 s limit for handling it, bounded line buffer. Pairing runs one at a time, one try per start. | `kite-cli` (daemon) | done |
+| E | A local user turns the daemon into a way to run commands or touch files as it. | A fixed set of commands with typed arguments, no paths or command lines taken from clients. The daemon's state directory is 0700 and its own. On Linux the daemon is meant to get `CAP_NET_ADMIN` from systemd instead of running as full root. | `kite-cli` (daemon) | partial: the unit is not shipped yet |
 
 ## B3: phone and Internet
 
