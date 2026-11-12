@@ -56,5 +56,20 @@
             android:layout_marginTop="16dp"
             android:accessibilityLiveRegion="polite"
             android:textAppearance="@android:style/TextAppearance.Material.Title" />
+
+        <TextView
+            android:id="@+id/computers_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/computers"
+            android:textAppearance="@android:style/TextAppearance.Material.Subhead"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/computers"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
     </LinearLayout>
 </ScrollView>
