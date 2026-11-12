@@ -13,5 +13,8 @@ sandbox that allows only what the daemon does: unix, IP and netlink sockets, the
 own `/run/kite` and `/var/lib/kite`. CI runs `systemd-analyze security` on it and fails if the
 exposure score gets worse than the threshold in `.github/workflows/ci.yml`.
 
+The daemon reads `/proc/PID/status` of its callers to check their groups. If `/proc` is mounted with
+`hidepid=1` or `2`, add `gid=` of a group the `kite` user is in, or non-root callers are refused.
+
 Members of the `kite` group can use the tunnel. Pairing phones is for root and the `kite` user
 (see `docs/cli.md`).
