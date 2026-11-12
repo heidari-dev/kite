@@ -19,6 +19,7 @@ RELAY=10.200.0.1:7000
 HOST_IP=10.201.0.1
 UDP_ECHO=$HOST_IP:9999
 BIN=$(mktemp -d)
+ROOT=$(pwd)
 chmod 755 "$BIN"
 install -m 755 "$1" "$BIN/kite"
 install -m 755 "$2" "$BIN/relay-dev"
@@ -122,7 +123,7 @@ udp_echo || fail "no direct UDP path out of the pc"
 # Leak counters. pc: everything that leaves except the relay connection, logged to the kernel log.
 # phone: everything it forwards for the pc, and what its own sockets send.
 sysctl -qw net.netfilter.nf_log_all_netns=1
-pc iptables -A OUTPUT -o veth-pc -p tcp -d 10.200.0.1 --dport 7000:7001 -j ACCEPT
+pc iptables -A OUTPUT -o veth-pc -p tcp -d 10.200.0.1 --dport 7000:7002 -j ACCEPT
 pc iptables -A OUTPUT -o veth-pc -j LOG --log-prefix "kite-leak: "
 pc ip6tables -A OUTPUT -o veth-pc -p ipv6-icmp -j ACCEPT
 pc ip6tables -A OUTPUT -o veth-pc -j LOG --log-prefix "kite-leak: "
@@ -292,5 +293,58 @@ pc curl -sS --max-time 15 -o /dev/null https://1.1.1.1/ || fail "direct path bro
 kill -TERM "$daemon_pid"
 wait "$daemon_pid" || fail "the daemon exited with an error on SIGTERM"
 [ ! -e "$RUN/kite.sock" ] || fail "daemon socket left behind"
+
+echo "== the systemd unit"
+# The real unit, with its sandbox, in the pc namespace: only the unit file's own settings count.
+# The resolver is the pc's, so the daemon does not ask the host's systemd-resolved for a link
+# that lives in another namespace.
+RELAY3=10.200.0.1:7002
+phone "$BIN/relay-dev" "$RELAY3" > "$BIN/relay3.log" 2>&1 &
+pids+=($!)
+install -m 755 "$BIN/kite" /usr/local/bin/kite
+systemd-sysusers "$ROOT/packaging/linux/kite.sysusers"
+install -m 644 "$ROOT/packaging/linux/kite.service" /etc/systemd/system/kite.service
+install -d /etc/systemd/system/kite.service.d
+cat > /etc/systemd/system/kite.service.d/e2e.conf <<EOF
+[Service]
+NetworkNamespacePath=/run/netns/$PC
+BindReadOnlyPaths=/etc/netns/$PC/resolv.conf:/etc/resolv.conf
+EOF
+unit_cleanup() { systemctl stop kite 2>/dev/null; rm -rf /etc/systemd/system/kite.service /etc/systemd/system/kite.service.d /usr/local/bin/kite; systemctl daemon-reload; }
+trap 'unit_cleanup; cleanup' EXIT
+systemctl daemon-reload
+systemctl start kite || { journalctl -u kite --no-pager | tail -30 >&2; fail "the unit did not start"; }
+for _ in $(seq 50); do
+  [ -S /run/kite/kite.sock ] && break
+  sleep 0.2
+done
+unit_fail() { journalctl -u kite --no-pager | tail -30 >&2; fail "$1"; }
+[ -S /run/kite/kite.sock ] || unit_fail "no socket from the unit"
+[ "$(stat -c '%a %U:%G' /run/kite/kite.sock)" = "660 kite:kite" ] || unit_fail "socket is $(stat -c '%a %U:%G' /run/kite/kite.sock)"
+[ "$(stat -c %a /var/lib/kite)" = 700 ] || unit_fail "state directory is not 0700"
+unit_pid=$(systemctl show -p MainPID --value kite)
+[ "$(stat -c %u "/proc/$unit_pid")" = "$(id -u kite)" ] || unit_fail "the unit does not run as kite"
+for set in CapPrm CapEff CapAmb CapBnd; do
+  grep -q "^$set:\s*0000000000001000$" "/proc/$unit_pid/status" || unit_fail "$set is not CAP_NET_ADMIN only"
+done
+for _ in $(seq 50); do
+  c=$(sed -n 's/^pairing code \([0-9]\{6\}\)$/\1/p' "$BIN/relay3.log" | tail -1)
+  if [ -n "$c" ]; then echo "$c"; break; fi
+  sleep 0.2
+done | /usr/local/bin/kite pair --tcp "$RELAY3" > "$BIN/pair3.log" 2>&1 || { cat "$BIN/pair3.log" >&2; unit_fail "kite pair through the unit"; }
+pc iptables -Z OUTPUT
+pc ip6tables -Z OUTPUT
+phone iptables -Z
+/usr/local/bin/kite connect --tcp "$RELAY3" --tun || unit_fail "kite connect through the unit"
+pc curl -sS --max-time 20 https://1.1.1.1/cdn-cgi/trace | grep -q '^ip=' || unit_fail "curl through the unit"
+pc dig +short +time=10 +tries=1 example.com A | grep -q . || unit_fail "DNS through the unit"
+check_leaks unit
+echo "unit RSS with the tunnel up: $(rss "$unit_pid")"
+/usr/local/bin/kite disconnect || unit_fail "kite disconnect through the unit"
+systemctl stop kite || unit_fail "the unit did not stop cleanly"
+if pc ip link show kite0 2>/dev/null; then fail "kite0 still exists after the unit stopped"; fi
+if pc ip rule | grep -q "lookup 5300"; then fail "rules left after the unit stopped"; fi
+unit_cleanup
+trap cleanup EXIT
 
 echo "all TUN mode checks passed"

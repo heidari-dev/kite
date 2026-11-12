@@ -77,18 +77,11 @@ working. kite deletes them at the next start, on a clean exit, and with `kite re
 
 Routes, rules and the device need only `CAP_NET_ADMIN`. systemd-resolved does not accept that
 capability for link settings and asks polkit instead, so on a host that resolves through it a
-non-root kite needs a rule such as this one for the user it runs as:
-
-```js
-// /etc/polkit-1/rules.d/50-kite.rules
-polkit.addRule(function (action, subject) {
-  if (action.id.indexOf("org.freedesktop.resolve1.set-") == 0 && subject.user == "kite") {
-    return polkit.Result.YES;
-  }
-});
-```
-
-Without it TUN mode stops with an error instead of running with DNS that could leak.
+non-root kite needs a polkit rule for the user it runs as. The Linux packages install
+`packaging/linux/50-kite.rules`, which lets the `kite` user do the three things TUN mode asks of
+resolved (`set-dns-servers`, `set-domains`, `set-default-route`) and nothing else. polkit cannot
+name the link, so the rule covers any link, and the daemon only touches its own. Without it TUN mode
+stops with an error instead of running with DNS that could leak.
 
 ## Crates
 
@@ -129,6 +122,10 @@ costs no connection and frees the GUI's memory.
   --foreground` runs in the CLI process, so a slow request never stalls traffic. `connect` returns
   once the thread is started; `status` reports `connecting`, `connected` and, after the end, `idle`
   with the error.
+- `packaging/linux/kite.service` runs it as the `kite` user with `CAP_NET_ADMIN` and nothing else,
+  `NoNewPrivileges`, a read-only system, no home directories and a system call and address family
+  filter. `systemd-analyze security` rates it 1.9 (OK), CI keeps it under 2.5, and the netns test
+  runs the real unit.
 - The daemon's key and the paired phones live in its state directory (`/var/lib/kite`, 0700),
   never in a user's home. Pairing is two requests, `pair_start` (dial the phone, which shows a
   code) and `pair` (the typed code), with one try per start and the same two-minute lifetime as on

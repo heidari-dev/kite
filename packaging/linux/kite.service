@@ -1,0 +1,58 @@
+[Unit]
+Description=Kite daemon: shares a phone's connection with this computer
+Documentation=https://github.com/heidari-dev/kite/blob/main/docs/cli.md
+After=network.target
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/kite daemon
+User=kite
+Group=kite
+Restart=on-failure
+RestartSec=2
+
+# The socket in /run/kite is for the kite group (0750 here, the daemon sets the socket to 0660);
+# the key and the paired phones in /var/lib/kite are for the daemon only.
+RuntimeDirectory=kite
+RuntimeDirectoryMode=0750
+StateDirectory=kite
+StateDirectoryMode=0700
+UMask=0077
+
+# The TUN device, routes and rules need CAP_NET_ADMIN and nothing else.
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+NoNewPrivileges=yes
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+# Not ProtectProc=invisible: the daemon reads /proc/PID/status of its callers to check their groups.
+ProcSubset=pid
+RemoveIPC=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+# Unix sockets (clients, the system bus for resolvectl), IP (the relay), netlink (routes and rules).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# Standard pseudo devices plus the TUN device.
+DevicePolicy=closed
+DeviceAllow=/dev/net/tun rw
+
+# The daemon needs a few MiB (see docs/architecture.md); this only stops a runaway.
+MemoryMax=128M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

@@ -69,8 +69,8 @@ exist yet; `relay-dev` keeps its key and pairings in memory and is for developme
 ## B2: local IPC
 
 The daemon owns the privileges. The CLI and the desktop app are unprivileged clients. The Linux
-daemon and its socket exist; the systemd unit that drops it to `CAP_NET_ADMIN` and the Windows and
-macOS equivalents do not yet.
+daemon, its socket and its systemd unit exist (`packaging/linux`); the Windows and macOS
+equivalents do not yet.
 
 | | Threat | Mitigation | Owner | Status |
 |---|--------|------------|-------|--------|
@@ -80,7 +80,7 @@ macOS equivalents do not yet.
 | I | Status output or logs leak keys, pairing codes or visited hosts. | Keys never travel over IPC. Status shows the transport, mode, counters and the last error. Logs follow the same rule. | `kite-cli` (daemon) | done |
 | D | A client floods the daemon with connections or requests. | At most 8 open IPC connections, a 10 s wait for each request and a 30 s limit for handling it, bounded line buffer. Pairing runs one at a time, one try per start. | `kite-cli` (daemon) | done |
 | E | A member of the `kite` group points the computer's traffic at a relay of their own. | Pairing decides which phones may be used, so `pair_start`, `pair` and `remove_peer` are refused for everyone but root and the daemon's user. The group can only use phones that are already paired. | `kite-cli` (daemon) | done |
-| E | A local user turns the daemon into a way to run commands or touch files as it. | A fixed set of commands with typed arguments, no paths or command lines taken from clients. The daemon's state directory is 0700 and its own. On Linux the daemon is meant to get `CAP_NET_ADMIN` from systemd instead of running as full root. | `kite-cli` (daemon) | partial: the unit is not shipped yet |
+| E | A local user turns the daemon into a way to run commands or touch files as it. | A fixed set of commands with typed arguments, no paths or command lines taken from clients. The daemon's state directory is 0700 and its own. On Linux the unit runs it as the `kite` user with `CAP_NET_ADMIN` and nothing else (bounding set and ambient), `NoNewPrivileges`, a read-only system, no home directories, a system call and address family filter and a device allow-list; CI checks the unit with `systemd-analyze security` and runs it in the netns test. The polkit rule lets that user change DNS on a link through systemd-resolved and nothing else. | `kite-cli` (daemon), `packaging/linux` | done (installed by the Linux packages) |
 
 ## B3: phone and Internet
 

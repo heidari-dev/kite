@@ -1,0 +1,19 @@
+// Installed as /usr/share/polkit-1/rules.d/50-kite.rules.
+//
+// In TUN mode the daemon gives its tunnel link a DNS server, the "~." routing domain and the
+// default-route flag through systemd-resolved, so that every query leaves through the phone.
+// resolved does not accept CAP_NET_ADMIN for that and asks polkit instead. This rule lets the
+// kite user do exactly those three things and nothing else. polkit cannot name the link, so it
+// covers any link; the daemon only ever touches its own.
+polkit.addRule(function (action, subject) {
+  if (subject.user !== "kite") {
+    return polkit.Result.NOT_HANDLED;
+  }
+  switch (action.id) {
+    case "org.freedesktop.resolve1.set-dns-servers":
+    case "org.freedesktop.resolve1.set-domains":
+    case "org.freedesktop.resolve1.set-default-route":
+      return polkit.Result.YES;
+  }
+  return polkit.Result.NOT_HANDLED;
+});
