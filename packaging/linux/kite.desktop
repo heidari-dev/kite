@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Kite
+Comment=Share your phone's internet connection with this computer
+Exec=kite-desktop
+TryExec=kite-desktop
+Icon=kite
+Terminal=false
+Categories=Network;
+Keywords=phone;tethering;usb;vpn;
+StartupWMClass=kite-desktop

@@ -1,0 +1,13 @@
+#!/bin/sh
+# Stops the daemon and takes its routing rules out, so removing Kite never leaves the network blocked.
+set -e
+
+case "$1" in
+remove)
+  if [ -d /run/systemd/system ]; then
+    systemctl disable --now kite.service || true
+  fi
+  /usr/bin/kite restore >/dev/null 2>&1 || true
+  pkill -x kite-desktop || true
+  ;;
+esac

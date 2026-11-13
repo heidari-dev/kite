@@ -1,0 +1,54 @@
+#!/bin/sh
+# Creates the kite user, puts the person who installed the package in the kite group and starts the
+# daemon. Nothing here asks a question.
+set -e
+
+# The user who ran the installer: sudo and pkexec say so; a software centre (PackageKit) runs as
+# root without a hint, so fall back to the person at the active graphical session.
+installer() {
+  if [ -n "${SUDO_USER:-}" ]; then
+    echo "$SUDO_USER"
+  elif [ -n "${PKEXEC_UID:-}" ]; then
+    getent passwd "$PKEXEC_UID" | cut -d: -f1
+  elif command -v loginctl >/dev/null 2>&1; then
+    loginctl list-sessions --no-legend 2>/dev/null | while read -r id _ user seat _; do
+      if [ "$seat" = seat0 ] && [ "$(loginctl show-session "$id" -p Active --value 2>/dev/null)" = yes ]; then
+        echo "$user"
+        break
+      fi
+    done
+  fi
+}
+
+case "$1" in
+configure)
+  # A removed package leaves $2 set, but removing deletes the group, so a missing group is what
+  # tells a fresh install (or a reinstall after removal) from an upgrade. An upgrade leaves a person
+  # who was taken out of the group, and a daemon the administrator disabled, alone.
+  fresh=
+  getent group kite >/dev/null || fresh=1
+  systemd-sysusers /usr/lib/sysusers.d/kite.conf
+
+  if [ -n "$fresh" ]; then
+    user=$(installer | head -n 1)
+    if [ -n "$user" ] && uid=$(id -u -- "$user" 2>/dev/null) && [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ]; then
+      if usermod -aG kite -- "$user"; then
+        echo "kite: added $user to the kite group; log out and in once to use it." >&2
+      else
+        echo "kite: could not add $user to the kite group; do it with: usermod -aG kite $user" >&2
+      fi
+    fi
+  fi
+
+  if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload
+    if [ -n "$fresh" ]; then
+      systemctl enable kite.service
+      systemctl restart kite.service || echo "kite: the daemon did not start; see: systemctl status kite" >&2
+    else
+      # An upgrade runs the new binary but leaves a daemon the administrator stopped or disabled alone.
+      systemctl try-restart kite.service || true
+    fi
+  fi
+  ;;
+esac

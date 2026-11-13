@@ -96,6 +96,7 @@ equivalents do not yet.
 | S | The window shows a setting that is not what the daemon runs. | While a tunnel is up the window shows the daemon's own mode and kill switch and locks those controls; the saved choice only applies at the next connect. | `apps/desktop` | done |
 | I | The app keeps or leaks the pairing code or a key. | The code is sent once and not stored, logged or printed (its `Debug` output hides it). The app never holds a key; it shows the computer's fingerprint, and pairing stops if the daemon gives none. The only file it writes is `kite/desktop.json` (mode, kill switch), owner-only, replaced through a temporary file and ignored if damaged. | `apps/desktop` | done |
 | E | A local user turns the daemon into a way to run commands or touch files as it. | A fixed set of commands with typed arguments, no paths or command lines taken from clients. The daemon's state directory is 0700 and its own. On Linux the unit runs it as the `kite` user with `CAP_NET_ADMIN` and nothing else (bounding set and ambient), `NoNewPrivileges`, a read-only system, no home directories, a system call and address family filter and a device allow-list; CI checks the unit with `systemd-analyze security` and runs it in the netns test. The polkit rule lets that user change DNS on a link through systemd-resolved and nothing else. | `kite-cli` (daemon), `packaging/linux` | done (installed by the Linux packages) |
+| E | The package gives the wrong person access to the tunnel. | The install script adds one person to the `kite` group, once, on first install: the one `sudo` or `pkexec` names, or else the person at the active graphical session. Only ordinary accounts qualify (UID 1000 to 59999), never root, and it prints who it added. Pairing stays closed to the group (see above). Removing the package deletes the user, the group and the state. | `packaging/linux` | done |
 
 ## B3: phone and Internet
 
@@ -132,6 +133,7 @@ pairing, is a planned part of B1.
 | A dependency has a known vulnerability, is yanked, or comes from an unexpected source. | `cargo-deny` on every pull request and weekly: advisories, bans, licenses, and only crates.io allowed. Dependabot for crates and Actions. | done |
 | A CI action is swapped for a malicious version. | Every action is pinned to a full commit SHA. Workflows default to `contents: read` and never use `pull_request_target`. | done |
 | Unsafe or buggy code lands in a parser. | `#![forbid(unsafe_code)]` outside FFI and TUN glue, CodeQL, fuzz targets, review on every pull request. | done |
+| The AppImage runtime or a packaging tool is swapped. | The .deb is built with `dpkg-deb` and no other tool. The only download is the AppImage runtime, checked against a SHA-256 in `scripts/package-linux.sh`. | done |
 | A release is built or altered somewhere untrusted. | Releases are built only by CI from tags, with SHA-256 checksums, GitHub artifact attestations and a CycloneDX SBOM. OpenSSF Scorecard tracks the repository's practices. | planned (releases), done (Scorecard) |
 
 ## Known gaps

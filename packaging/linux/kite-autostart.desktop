@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Kite
+Comment=Kite tray icon
+Exec=kite-desktop --hidden
+TryExec=kite-desktop
+Icon=kite
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

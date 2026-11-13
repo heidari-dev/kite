@@ -1,0 +1,15 @@
+#!/bin/sh
+# Starts the desktop app, or the command line client with: Kite.AppImage --cli COMMAND
+HERE=$(dirname "$(readlink -f "$0")")
+export PATH="$HERE/usr/bin:$PATH"
+
+if [ "${1:-}" = --cli ]; then
+  shift
+  exec kite "$@"
+fi
+
+if [ ! -S /run/kite/kite.sock ]; then
+  echo "Kite: the window needs the Kite daemon, and so does TUN mode. Both come with the .deb." >&2
+  echo "Without it, pair and connect in proxy mode: ${APPIMAGE:-Kite.AppImage} --cli connect --usb --foreground" >&2
+fi
+exec kite-desktop "$@"
