@@ -18,8 +18,11 @@ const SLOW: Duration = Duration::from_secs(3);
 const POLL_WAIT: Duration = Duration::from_secs(5);
 const COMMAND_WAIT: Duration = Duration::from_secs(35);
 
+const NO_FINGERPRINT: &str = "The daemon did not say which computer this is, so the phone's \
+     fingerprint cannot be checked. Update Kite and try again.";
+
 /// What the user asked for.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub enum Cmd {
     Connect {
         serial: String,
@@ -38,13 +41,27 @@ pub enum Cmd {
     Refresh,
 }
 
+// The pairing code must not reach a log through a stray `{:?}`.
+impl std::fmt::Debug for Cmd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pair { .. } => f.write_str("Pair { code: .. }"),
+            Self::Connect { mode, .. } => write!(f, "Connect {{ mode: {mode:?}, .. }}"),
+            Self::Disconnect => f.write_str("Disconnect"),
+            Self::PairStart { .. } => f.write_str("PairStart { .. }"),
+            Self::PairCancel => f.write_str("PairCancel"),
+            Self::Refresh => f.write_str("Refresh"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Pair {
     #[default]
     Idle,
     /// The phone is showing a code. The fingerprint is this computer's, for the user to compare
     /// with the one on the phone.
-    Waiting { fingerprint: Option<String> },
+    Waiting { fingerprint: String },
     /// Paired; the start of the phone's key.
     Done(String),
 }
@@ -147,7 +164,12 @@ struct Worker {
     view: View,
     meter: Meter,
     slow_at: Option<Instant>,
+    /// When the last `PairStart` was answered.
+    pair_at: Option<Instant>,
 }
+
+/// A pairing the daemon does not report yet is given this long before it counts as over.
+const PAIR_GRACE: Duration = Duration::from_secs(5);
 
 /// Runs until `cmds` closes. `visible` says whether the window is open; `publish` gets a view each
 /// time it changes.
@@ -162,6 +184,7 @@ pub async fn run(
         view: View::default(),
         meter: Meter::default(),
         slow_at: None,
+        pair_at: None,
     };
     let mut shown = None;
     loop {
@@ -228,8 +251,15 @@ impl Worker {
                     transport: usb(serial),
                 };
                 if let Some(r) = self.ask(req, COMMAND_WAIT).await {
-                    self.view.pair = Pair::Waiting {
-                        fingerprint: r.fingerprint,
+                    // The fingerprint is the user's only check that the phone talks to this
+                    // computer, so a daemon that does not give one ends the pairing.
+                    self.pair_at = Some(Instant::now());
+                    self.view.pair = match r.fingerprint {
+                        Some(fingerprint) => Pair::Waiting { fingerprint },
+                        None => {
+                            self.view.message = Some(NO_FINGERPRINT.into());
+                            Pair::Idle
+                        }
                     };
                 }
             }
@@ -261,7 +291,16 @@ impl Worker {
             return;
         };
         self.view.status = r.status;
+        // The daemon drops a pairing after two minutes; the code field must go with it.
+        let waiting = self.view.status.as_ref().is_some_and(|s| s.pairing);
+        let started = self.pair_at.is_some_and(|t| t.elapsed() > PAIR_GRACE);
+        if matches!(self.view.pair, Pair::Waiting { .. }) && !waiting && started {
+            self.view.pair = Pair::Idle;
+            self.view.message = Some("The pairing expired. Start it again.".into());
+        }
         if !open {
+            // A reading from before the window closed would give a wrong speed on reopening.
+            self.meter.reset();
             return;
         }
         let connected = self.view.state() == Some(State::Connected);
@@ -279,7 +318,8 @@ impl Worker {
                 (0, 0)
             }
         };
-        if self.slow_at.is_some_and(|t| t.elapsed() < SLOW) {
+        // A daemon that stopped answering is not asked twice more.
+        if self.view.unreachable.is_some() || self.slow_at.is_some_and(|t| t.elapsed() < SLOW) {
             return;
         }
         self.slow_at = Some(Instant::now());
@@ -292,7 +332,10 @@ impl Worker {
                 self.view.devices.clear();
                 self.view.devices_error = Some(m);
             }
-            Err(CallError::Unreachable(m)) => self.view.unreachable = Some(m),
+            Err(CallError::Unreachable(m)) => {
+                self.view.unreachable = Some(m);
+                return;
+            }
         }
         if let Some(r) = self.ask(Request::Peers {}, POLL_WAIT).await {
             self.view.paired = r.peers.map_or(0, |p| p.len());
@@ -342,6 +385,7 @@ mod tests {
             view: View::default(),
             meter: Meter::default(),
             slow_at: None,
+            pair_at: None,
         }
     }
 
@@ -497,7 +541,7 @@ mod tests {
         assert_eq!(
             w.view.pair,
             Pair::Waiting {
-                fingerprint: Some("3F2A 91C0 77D4 0B1E".into())
+                fingerprint: "3F2A 91C0 77D4 0B1E".into()
             }
         );
         w.command(Cmd::Pair {
@@ -513,6 +557,44 @@ mod tests {
         .await;
         assert_eq!(w.view.pair, Pair::Idle);
         assert_eq!(w.view.message.as_deref(), Some("the code does not match"));
+    }
+
+    #[tokio::test]
+    async fn pairing_without_a_fingerprint_does_not_go_on() {
+        let (path, _) = daemon("nofp", |_| Response::ok());
+        let mut w = worker(path);
+        w.command(Cmd::PairStart {
+            serial: "R5CT".into(),
+        })
+        .await;
+        assert_eq!(w.view.pair, Pair::Idle);
+        assert_eq!(w.view.message.as_deref(), Some(NO_FINGERPRINT));
+    }
+
+    #[tokio::test]
+    async fn an_expired_pairing_closes_the_code_field() {
+        let (path, _) = idle_daemon("expire");
+        let mut w = worker(path);
+        w.command(Cmd::PairStart {
+            serial: "R5CT".into(),
+        })
+        .await;
+        // Just started: the daemon may not report it yet.
+        w.poll(false).await;
+        assert!(matches!(w.view.pair, Pair::Waiting { .. }));
+        // The idle daemon reports no pairing waiting.
+        w.pair_at = Some(Instant::now() - Duration::from_secs(60));
+        w.poll(false).await;
+        assert_eq!(w.view.pair, Pair::Idle);
+        assert!(w.view.message.unwrap().contains("expired"));
+    }
+
+    #[test]
+    fn the_pairing_code_stays_out_of_debug_output() {
+        let cmd = Cmd::Pair {
+            code: "123456".into(),
+        };
+        assert!(!format!("{cmd:?}").contains("123456"));
     }
 
     #[test]

@@ -64,11 +64,12 @@ pub fn card(v: &View, mode: Mode, phone: bool) -> Card {
         enabled: true,
     };
     match v.state() {
+        // What runs is what the daemon says, which may have been started from the command line.
         Some(State::Connected) => busy(
             "Connected",
-            match mode {
+            match v.status.as_ref().and_then(|s| s.mode).unwrap_or(mode) {
                 Mode::Tun => "All traffic goes through the phone.",
-                Mode::Proxy => "The proxy is on 127.0.0.1:1080.",
+                Mode::Proxy => "A SOCKS5 proxy is running on this computer.",
             },
         ),
         Some(State::Connecting) => Card {
@@ -168,9 +169,10 @@ mod tests {
         let c = card(&view(Some(State::Connecting), None), Mode::Tun, true);
         assert_eq!((c.action, c.label), (Action::Disconnect, "Cancel"));
 
+        // The daemon runs full mode (see `view`), whatever the window's choice says.
         let c = card(&view(Some(State::Connected), None), Mode::Proxy, true);
         assert_eq!((c.headline, c.action), ("Connected", Action::Disconnect));
-        assert!(c.detail.contains("127.0.0.1:1080"));
+        assert!(c.detail.contains("All traffic"));
 
         let c = card(
             &view(Some(State::Reconnecting), Some("lost")),

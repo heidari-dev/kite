@@ -44,6 +44,7 @@ pub async fn call(socket: &Path, req: &Request, wait: Duration) -> Result<Respon
         .await
         .map_err(|_| CallError::Unreachable("The Kite daemon did not answer in time.".into()))?
         .map_err(unreachable)?;
+    let response = clean(response);
     if response.ok {
         Ok(response)
     } else {
@@ -53,6 +54,49 @@ pub async fn call(socket: &Path, req: &Request, wait: Duration) -> Result<Respon
                 .unwrap_or_else(|| "The daemon refused.".into()),
         ))
     }
+}
+
+/// Longest text shown from an answer, and most phones and keys kept.
+#[cfg(unix)]
+const MAX_TEXT: usize = 256;
+#[cfg(unix)]
+const MAX_LIST: usize = 32;
+
+/// Makes text from an answer fit for a window: short, with no control or direction characters
+/// that could make it read as something else.
+#[cfg(unix)]
+fn text(s: String) -> String {
+    let odd = |c: &char| {
+        c.is_control()
+            || ('\u{200e}'..='\u{200f}').contains(c)
+            || ('\u{202a}'..='\u{202e}').contains(c)
+            || ('\u{2066}'..='\u{2069}').contains(c)
+    };
+    if s.chars().count() <= MAX_TEXT && !s.chars().any(|c| odd(&c)) {
+        return s;
+    }
+    s.chars().filter(|c| !odd(c)).take(MAX_TEXT).collect()
+}
+
+#[cfg(unix)]
+fn clean(mut r: Response) -> Response {
+    r.error = r.error.map(text);
+    r.fingerprint = r.fingerprint.map(text);
+    if let Some(s) = &mut r.status {
+        s.transport = s.transport.take().map(text);
+        s.error = s.error.take().map(text);
+    }
+    if let Some(devices) = &mut r.devices {
+        devices.truncate(MAX_LIST);
+        for d in devices {
+            d.serial = text(std::mem::take(&mut d.serial));
+            d.state = text(std::mem::take(&mut d.state));
+        }
+    }
+    if let Some(peers) = &mut r.peers {
+        peers.truncate(MAX_LIST);
+    }
+    r
 }
 
 /// shortcut: the daemon only exists on Linux today; a named pipe client comes with the Windows
@@ -175,6 +219,29 @@ mod tests {
             let e = call(&path, &Request::Status {}, WAIT).await.unwrap_err();
             assert!(matches!(e, CallError::Unreachable(_)), "{e:?}");
         }
+    }
+
+    #[test]
+    fn text_from_the_daemon_is_short_and_plain() {
+        assert_eq!(text("3F2A 91C0".into()), "3F2A 91C0");
+        // A direction override and a newline would let a name pose as another.
+        assert_eq!(text("ab\u{202e}cd\ne".into()), "abcde");
+        assert_eq!(text("x".repeat(10_000)).len(), MAX_TEXT);
+        let r = clean(Response {
+            devices: Some(vec![
+                kite_ipc::Device {
+                    serial: "a".into(),
+                    state: "device".into()
+                };
+                100
+            ]),
+            peers: Some(vec!["ab".into(); 100]),
+            ..Response::ok()
+        });
+        assert_eq!(
+            (r.devices.unwrap().len(), r.peers.unwrap().len()),
+            (MAX_LIST, MAX_LIST)
+        );
     }
 
     #[tokio::test(start_paused = true)]

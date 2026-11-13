@@ -10,12 +10,13 @@ mod present;
 mod settings;
 mod worker;
 
-use kite_ipc::Mode;
+use kite_ipc::{Mode, State as Tunnel};
 use present::Action;
 use settings::Settings;
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
@@ -34,6 +35,8 @@ struct State {
     /// The phone the user clicked; the first ready one is used until then.
     picked: Option<String>,
     view: View,
+    /// The rows in the window; kept, so a redraw does not replace the rows under a click.
+    phones: Rc<VecModel<PhoneRow>>,
 }
 
 thread_local! {
@@ -45,12 +48,18 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
-    let Some(_lock) = single_instance() else {
-        eprintln!("kite-desktop: already running");
-        return Ok(());
+    let _lock = match single_instance() {
+        Lock::Taken => {
+            eprintln!("kite-desktop: already running");
+            return Ok(());
+        }
+        Lock::Held(file) => Some(file),
+        // Without a lock the app still runs; at worst there are two tray icons.
+        Lock::Unavailable => None,
     };
     let hidden = std::env::args().any(|a| a == "--hidden");
     let settings_path = Settings::path();
+    let phones = Rc::new(VecModel::default());
     STATE.set(Some(State {
         settings: settings_path
             .as_deref()
@@ -59,9 +68,11 @@ fn main() -> Result<(), slint::PlatformError> {
         settings_path,
         picked: None,
         view: View::default(),
+        phones: phones.clone(),
     }));
 
     let ui = AppWindow::new()?;
+    ui.set_phones(ModelRc::from(phones));
     let tray = Tray::new()?;
     let (cmds, rx) = unbounded_channel();
     let visible = Arc::new(AtomicBool::new(false));
@@ -246,20 +257,29 @@ fn render(ui: &AppWindow, tray: &Tray) {
                 selected: phone == Some(d.serial.as_str()),
             })
             .collect();
-        ui.set_phones(ModelRc::new(VecModel::from(rows)));
+        let same = rows.len() == s.phones.row_count()
+            && rows
+                .iter()
+                .enumerate()
+                .all(|(i, r)| s.phones.row_data(i).as_ref() == Some(r));
+        if !same {
+            s.phones.set_vec(rows);
+        }
         ui.set_phones_note(present::phones_note(v).into());
-        ui.set_mode(i32::from(s.settings.mode == Mode::Proxy));
-        ui.set_kill_switch(s.settings.kill_switch);
+        // While a tunnel runs the choices cannot change it, so the window shows what the daemon
+        // runs, which may have been started from the command line.
+        let running = v.status.as_ref().filter(|st| st.state != Tunnel::Idle);
+        let mode = running.and_then(|st| st.mode).unwrap_or(s.settings.mode);
+        let kill_switch = running.map_or(s.settings.kill_switch, |st| st.kill_switch);
+        ui.set_locked(running.is_some());
+        ui.set_mode(i32::from(mode == Mode::Proxy));
+        ui.set_kill_switch(kill_switch);
         ui.set_show_speed(card.icon == Icon::Connected);
         ui.set_speed_up(format_rate(v.up).into());
         ui.set_speed_down(format_rate(v.down).into());
         let (step, fingerprint, note) = match &v.pair {
             Pair::Idle => (0, String::new(), String::new()),
-            Pair::Waiting { fingerprint } => (
-                1,
-                fingerprint.clone().unwrap_or_else(|| "unknown".into()),
-                String::new(),
-            ),
+            Pair::Waiting { fingerprint } => (1, fingerprint.clone(), String::new()),
             Pair::Done(key) => (2, String::new(), format!("Paired with phone {key}.")),
         };
         ui.set_pair_step(step);
@@ -268,7 +288,12 @@ fn render(ui: &AppWindow, tray: &Tray) {
         ui.set_pair_enabled(phone.is_some());
 
         tray.set_kind(kind);
-        tray.set_tip(SharedString::from(format!("Kite: {}", card.headline)));
+        let tip = if v.unreachable.is_some() {
+            "Kite: the daemon is not available"
+        } else {
+            card.headline
+        };
+        tray.set_tip(SharedString::from(format!("Kite: {tip}")));
         tray.set_toggle_label(
             match card.action {
                 Action::Connect => "Connect",
@@ -280,19 +305,35 @@ fn render(ui: &AppWindow, tray: &Tray) {
     });
 }
 
+enum Lock {
+    Held(std::fs::File),
+    /// Another copy holds it.
+    Taken,
+    Unavailable,
+}
+
 /// A second copy would add a second tray icon. The lock goes away with the process, whatever
-/// way it ends.
-fn single_instance() -> Option<std::fs::File> {
+/// way it ends. It lives in the user's runtime directory, or else in their own config directory,
+/// never in a directory that other users share.
+fn single_instance() -> Lock {
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .filter(|d| d.is_absolute())
-        .unwrap_or_else(std::env::temp_dir);
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(dir.join("kite-desktop.lock"))
-        .ok()?;
-    file.try_lock().ok()?;
-    Some(file)
+        .or_else(|| Settings::path()?.parent().map(PathBuf::from));
+    let Some(dir) = dir else {
+        return Lock::Unavailable;
+    };
+    let open = || {
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join("kite-desktop.lock"))
+    };
+    match open().map(|f| (f.try_lock(), f)) {
+        Ok((Ok(()), file)) => Lock::Held(file),
+        Ok((Err(std::fs::TryLockError::WouldBlock), _)) => Lock::Taken,
+        _ => Lock::Unavailable,
+    }
 }

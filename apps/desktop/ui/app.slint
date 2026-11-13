@@ -81,6 +81,8 @@ export component AppWindow inherits Window {
     in property <string> phones-note;
     in property <int> mode;
     in property <bool> kill-switch;
+    // A tunnel is up: mode and kill switch show what runs and cannot change until it stops.
+    in property <bool> locked;
     in property <string> speed-up;
     in property <string> speed-down;
     in property <bool> show-speed;
@@ -187,11 +189,13 @@ export component AppWindow inherits Window {
                     Button {
                         text: "Full";
                         primary: root.mode == 0;
+                        enabled: !root.locked;
                         clicked => { root.set-mode(0); }
                     }
                     Button {
                         text: "Proxy only";
                         primary: root.mode == 1;
+                        enabled: !root.locked;
                         clicked => { root.set-mode(1); }
                     }
                 }
@@ -205,7 +209,7 @@ export component AppWindow inherits Window {
                 }
                 Switch {
                     text: "Block traffic if the phone disconnects";
-                    enabled: root.mode == 0;
+                    enabled: root.mode == 0 && !root.locked;
                     checked: root.kill-switch;
                     toggled => { root.set-kill-switch(self.checked); }
                 }

@@ -4,7 +4,7 @@
 
 use kite_ipc::Mode;
 use serde::{Deserialize, Serialize};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 /// The file is read whole; a real one is a few dozen bytes.
@@ -35,7 +35,12 @@ impl Settings {
             std::env::var_os("XDG_CONFIG_HOME")
                 .map(PathBuf::from)
                 .filter(|p| p.is_absolute())
-                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+                .or_else(|| {
+                    std::env::var_os("HOME")
+                        .map(PathBuf::from)
+                        .filter(|p| p.is_absolute())
+                        .map(|h| h.join(".config"))
+                })
         };
         base.map(|b| b.join("kite").join("desktop.json"))
     }
@@ -46,7 +51,8 @@ impl Settings {
             if file.metadata()?.len() > MAX_FILE {
                 return Err(io::ErrorKind::InvalidData.into());
             }
-            serde_json::from_reader(file).map_err(io::Error::other)
+            // The length check does not hold for a pipe or a device, so the read is capped too.
+            serde_json::from_reader(file.take(MAX_FILE)).map_err(io::Error::other)
         };
         read().unwrap_or_default()
     }
