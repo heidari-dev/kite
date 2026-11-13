@@ -22,6 +22,9 @@ allow = [
   "Unicode-3.0",
   "Zlib",
   "CC0-1.0",
+  # GPL-compatible (FSF list); Slint's clipboard and tray crates use them.
+  "BSL-1.0",
+  "Unlicense",
 ]
 # The TUN device crate used by tun2proxy. WTFPL is a GPL-compatible permissive license (FSF).
 exceptions = [{ allow = ["WTFPL"], crate = "tun" }]
