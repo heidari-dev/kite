@@ -72,7 +72,7 @@ ln -s kite.svg "$a/.DirIcon"
 curl --proto '=https' --tlsv1.2 -fsSL -o "$work/runtime" "$runtime_url"
 echo "$runtime_sha256  $work/runtime" | sha256sum -c --quiet -
 mksquashfs "$a" "$work/image.squashfs" -root-owned -noappend -no-progress -quiet \
-  -comp zstd -Xcompression-level 19 -all-time "$SOURCE_DATE_EPOCH" -mkfs-time "$SOURCE_DATE_EPOCH"
+  -comp zstd -Xcompression-level 19
 cat "$work/runtime" "$work/image.squashfs" >"$out/Kite-$version-x86_64.AppImage"
 chmod 0755 "$out/Kite-$version-x86_64.AppImage"
 
