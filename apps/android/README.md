@@ -34,3 +34,15 @@ kite connect --usb
 
 The relay's private key is stored in the app's no-backup directory, encrypted with an AES key that
 stays in Android Keystore; the paired computers' public keys are stored next to it.
+
+## The screen
+
+One column: the kite, a line saying what it is doing, the live speed, Start or Stop, and pairing.
+The kite follows [docs/design/motion.md](../../docs/design/motion.md): each layer is a vector
+drawable in its own `ImageView` (`res/layout/view_kite.xml`), moved with property animators, and
+the numbers live in `KiteMotion.kt`. It rests while sharing is off, leans back and wobbles while it
+waits for a computer, flies upright when one is connected and flutters its tail faster with
+throughput, and falls and shows a badge when the relay cannot start. The loops run from one frame
+callback at most 30 times a second and stop when the app is not in front or the screen is off.
+With animations turned off in the system settings (animator duration scale 0) it fades between
+states instead of moving. Light and dark follow the system.

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Slack string from the hand H (6, 62) to where B lands in the Rest pose (20, 50). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="64dp"
+    android:height="64dp"
+    android:viewportWidth="64"
+    android:viewportHeight="64">
+    <path
+        android:pathData="M6,62 Q12,67 20,50"
+        android:strokeColor="#B63E1C"
+        android:strokeLineCap="round"
+        android:strokeWidth="2" />
+</vector>
