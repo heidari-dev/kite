@@ -7,6 +7,7 @@
 //! again with backoff until it answers or the user disconnects. Nothing reaches the network
 //! meanwhile, because everything that enters the tunnel ends at a proxy with no tunnel behind it.
 
+use crate::proxy::Bytes;
 use crate::store::Store;
 use crate::{dial, proxy, Transport, Tunnel};
 use kite_ipc::State;
@@ -37,6 +38,8 @@ pub struct Params {
 pub struct Shared {
     /// Open streams.
     pub active: Arc<AtomicUsize>,
+    /// What they carried since the session began.
+    pub bytes: Arc<Bytes>,
     live: Mutex<Live>,
 }
 
@@ -59,6 +62,7 @@ impl Default for Shared {
     fn default() -> Self {
         Self {
             active: Arc::new(AtomicUsize::new(0)),
+            bytes: Arc::default(),
             live: Mutex::new(Live {
                 state: State::Connecting,
                 error: None,
@@ -221,8 +225,14 @@ async fn keep(
     loop {
         shared.set(State::Connected, None);
         // Ok means shutdown; the tunnel itself ends in an error.
-        let Err(lost) =
-            proxy::run(tunnel, listener, shared.active.clone(), shutdown.as_mut()).await
+        let Err(lost) = proxy::run(
+            tunnel,
+            listener,
+            shared.active.clone(),
+            shared.bytes.clone(),
+            shutdown.as_mut(),
+        )
+        .await
         else {
             return Ok(());
         };

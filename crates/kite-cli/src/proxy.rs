@@ -3,12 +3,13 @@
 
 use std::future::{poll_fn, Future};
 use std::io;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::task::Poll;
+use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpListener;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
@@ -25,13 +26,69 @@ const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(10);
 
 type OpenRequest = oneshot::Sender<yamux::Stream>;
 
+/// Bytes carried since the session began, as seen at the local connections; clients turn the
+/// difference between two readings into a speed.
+#[derive(Default)]
+pub struct Bytes {
+    /// From the computer to the phone.
+    pub up: AtomicU64,
+    /// From the phone to the computer.
+    pub down: AtomicU64,
+}
+
+/// A local connection that adds what passes through it to [`Bytes`].
+struct Counted {
+    inner: TcpStream,
+    bytes: Arc<Bytes>,
+}
+
+impl AsyncRead for Counted {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        let r = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if r.is_ready() {
+            let n = (buf.filled().len() - before) as u64;
+            self.bytes.up.fetch_add(n, Ordering::Relaxed);
+        }
+        r
+    }
+}
+
+impl AsyncWrite for Counted {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        data: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let r = Pin::new(&mut self.inner).poll_write(cx, data);
+        if let Poll::Ready(Ok(n)) = r {
+            self.bytes.down.fetch_add(n as u64, Ordering::Relaxed);
+        }
+        r
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
 /// Serves local connections from `listener` through a tunnel to the relay until the tunnel fails
-/// or `shutdown` completes (`Ok`). `active` tracks the number of open streams. The listener stays
-/// open when this returns, so the caller can serve it through a new tunnel.
+/// or `shutdown` completes (`Ok`). `active` tracks the number of open streams and `bytes` what
+/// they carry. The listener stays open when this returns, so the caller can serve it through a new
+/// tunnel.
 pub async fn run<T>(
     tunnel: T,
     listener: &TcpListener,
     active: Arc<AtomicUsize>,
+    bytes: Arc<Bytes>,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()>
 where
@@ -49,7 +106,7 @@ where
             // At the cap new connections wait in the kernel's accept queue.
             accepted = listener.accept(), if conns.len() < MAX_STREAMS => match accepted {
                 Ok((local, _)) => {
-                    conns.spawn(pipe(local, opener.clone()));
+                    conns.spawn(pipe(local, opener.clone(), bytes.clone()));
                 }
                 Err(e) => {
                     eprintln!("kite: accept: {e}");
@@ -68,7 +125,7 @@ where
 }
 
 /// Pipes one local connection into a new stream until both sides are done.
-async fn pipe(mut local: tokio::net::TcpStream, opener: mpsc::Sender<OpenRequest>) {
+async fn pipe(local: TcpStream, opener: mpsc::Sender<OpenRequest>, bytes: Arc<Bytes>) {
     let _ = local.set_nodelay(true);
     // No stream is opened before the client speaks, so idle connections cannot hold slots forever.
     let mut first = [0u8; 1];
@@ -82,6 +139,10 @@ async fn pipe(mut local: tokio::net::TcpStream, opener: mpsc::Sender<OpenRequest
     }
     let Ok(stream) = rx.await else { return };
     let mut stream = stream.compat();
+    let mut local = Counted {
+        inner: local,
+        bytes,
+    };
     let _ = tokio::io::copy_bidirectional_with_sizes(&mut local, &mut stream, BUF, BUF).await;
 }
 
@@ -143,7 +204,6 @@ mod tests {
     use super::*;
     use std::net::SocketAddr;
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
-    use tokio::net::TcpStream;
     use tokio::task::JoinHandle;
 
     async fn echo_server() -> SocketAddr {
@@ -173,6 +233,7 @@ mod tests {
     struct Proxy {
         addr: SocketAddr,
         active: Arc<AtomicUsize>,
+        bytes: Arc<Bytes>,
         stop: oneshot::Sender<()>,
         task: JoinHandle<io::Result<()>>,
     }
@@ -184,10 +245,11 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let active = Arc::new(AtomicUsize::new(0));
+        let bytes = Arc::new(Bytes::default());
         let (stop, stopped) = oneshot::channel::<()>();
-        let a = active.clone();
+        let (a, b) = (active.clone(), bytes.clone());
         let task = tokio::spawn(async move {
-            run(tunnel, &listener, a, async {
+            run(tunnel, &listener, a, b, async {
                 let _ = stopped.await;
             })
             .await
@@ -195,6 +257,7 @@ mod tests {
         Proxy {
             addr,
             active,
+            bytes,
             stop,
             task,
         }
@@ -236,6 +299,11 @@ mod tests {
         r.read_exact(&mut back).await.unwrap();
         writer.await.unwrap();
         assert!(back == data, "echoed bytes differ");
+        // The SOCKS5 request and reply count too, so a little more than the payload.
+        for counter in [&p.bytes.up, &p.bytes.down] {
+            let n = counter.load(Ordering::Relaxed);
+            assert!((300_000..300_100).contains(&n), "{n}");
+        }
     }
 
     #[tokio::test]

@@ -187,6 +187,12 @@ pub struct Stats {
     pub reconnects: u32,
     /// Seconds since the tunnel last came up; 0 when it is not up.
     pub uptime_secs: u64,
+    /// Bytes sent to the phone since `Connect`. Two readings give a speed.
+    #[serde(default)]
+    pub bytes_up: u64,
+    /// Bytes received from the phone since `Connect`.
+    #[serde(default)]
+    pub bytes_down: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -380,6 +386,13 @@ mod tests {
         assert!(read_line(&mut long, 8).await.is_err());
         let mut empty: &[u8] = b"";
         assert_eq!(read_line(&mut empty, 8).await.unwrap(), None);
+    }
+
+    #[test]
+    fn stats_without_byte_counters_still_parse() {
+        let old = br#"{"ok":true,"stats":{"streams":1,"max_streams":224,"reconnects":0,"uptime_secs":5}}"#;
+        let stats = Response::parse(old).unwrap().stats.unwrap();
+        assert_eq!((stats.bytes_up, stats.bytes_down), (0, 0));
     }
 
     #[test]

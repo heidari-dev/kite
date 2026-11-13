@@ -324,6 +324,8 @@ impl Daemon {
                 max_streams: crate::proxy::MAX_STREAMS,
                 reconnects: 0,
                 uptime_secs: 0,
+                bytes_up: 0,
+                bytes_down: 0,
             },
             Some(a) => {
                 let s = a.shared.snapshot();
@@ -332,6 +334,8 @@ impl Daemon {
                     max_streams: crate::proxy::MAX_STREAMS,
                     reconnects: s.reconnects,
                     uptime_secs: s.uptime.as_secs(),
+                    bytes_up: a.shared.bytes.up.load(Ordering::Relaxed),
+                    bytes_down: a.shared.bytes.down.load(Ordering::Relaxed),
                 }
             }
         };
