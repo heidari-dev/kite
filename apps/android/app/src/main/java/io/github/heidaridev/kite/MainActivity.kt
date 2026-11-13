@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -60,8 +61,14 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // The pairing code is shown here; keep it out of screenshots and the recents preview.
-        window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+        // The pairing code is shown here; keep it out of screenshots and the recents preview. Only
+        // a debuggable build started with this extra (scripts/android-screens.sh) skips it, because
+        // screencap shows a secure window black.
+        val screenshots = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0 &&
+            intent.getBooleanExtra("screenshots", false)
+        if (!screenshots) {
+            window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+        }
         setContentView(R.layout.activity_main)
         kite = findViewById(R.id.kite)
         status = findViewById(R.id.status)

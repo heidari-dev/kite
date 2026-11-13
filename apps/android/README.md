@@ -46,3 +46,11 @@ throughput, and falls and shows a badge when the relay cannot start. The loops r
 callback at most 30 times a second and stop when the app is not in front or the screen is off.
 With animations turned off in the system settings (animator duration scale 0) it fades between
 states instead of moving. Light and dark follow the system.
+
+## Screenshots
+
+The `Android screens` workflow (push to main, or run it by hand) boots an emulator, installs the debug
+APK and saves screenshots of the main screen in light and dark: stopped, waiting for a computer and
+pairing open. They are the `android-screens` artifact of the run. `scripts/android-screens.sh` does
+the driving. Screenshots show a secure window black, so the script starts a debuggable build with
+`--ez screenshots true`, which skips `FLAG_SECURE`; release builds never do.
