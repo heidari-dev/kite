@@ -1,0 +1,297 @@
+import { Button, LineEdit, Palette, Switch } from "std-widgets.slint";
+
+export enum Kind { disconnected, connecting, connected, error }
+
+export struct PhoneRow {
+    serial: string,
+    /// Why it cannot be used yet; empty when it is ready.
+    note: string,
+    selected: bool,
+}
+
+component Phone inherits Rectangle {
+    in property <PhoneRow> phone;
+    callback picked();
+
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: root.phone.selected ? Palette.accent-background : Palette.border;
+    background: root.phone.selected ? Palette.accent-background.with-alpha(0.12) : transparent;
+
+    TouchArea {
+        clicked => { root.picked(); }
+    }
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 2px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.phone.serial;
+                font-weight: 600;
+                color: Palette.foreground;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                width: usb.preferred-width + 12px;
+                height: 20px;
+                border-radius: 4px;
+                background: Palette.foreground.with-alpha(0.1);
+                usb := Text {
+                    text: "USB";
+                    font-size: 11px;
+                    color: Palette.foreground;
+                }
+            }
+        }
+        if root.phone.note != "": Text {
+            text: root.phone.note;
+            font-size: 12px;
+            wrap: word-wrap;
+            color: Palette.foreground.with-alpha(0.75);
+        }
+    }
+}
+
+component Heading inherits Text {
+    font-size: 12px;
+    font-weight: 600;
+    color: Palette.foreground.with-alpha(0.75);
+}
+
+export component AppWindow inherits Window {
+    title: "Kite";
+    icon: @image-url("../../../assets/brand/app-icon.svg");
+    preferred-width: 380px;
+    preferred-height: 640px;
+    min-width: 340px;
+    min-height: 520px;
+    background: Palette.background;
+
+    // The daemon cannot be used: this is all there is to show.
+    in property <string> blocker;
+    in property <Kind> kind;
+    in property <string> headline;
+    in property <string> detail;
+    in property <string> action-label;
+    in property <bool> action-enabled;
+    in property <[PhoneRow]> phones;
+    in property <string> phones-note;
+    in property <int> mode;
+    in property <bool> kill-switch;
+    in property <string> speed-up;
+    in property <string> speed-down;
+    in property <bool> show-speed;
+    // 0: nothing, 1: waiting for the code, 2: paired.
+    in property <int> pair-step;
+    in property <string> fingerprint;
+    in property <string> pair-note;
+    in property <bool> pair-enabled;
+
+    callback action();
+    callback select-phone(int);
+    callback set-mode(int);
+    callback set-kill-switch(bool);
+    callback pair-start();
+    callback pair-submit(string);
+    callback pair-cancel();
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 14px;
+        alignment: start;
+
+        Text {
+            text: "Kite";
+            font-size: 13px;
+            font-weight: 700;
+            color: #E4572E;
+        }
+
+        if root.blocker != "": Text {
+            text: root.blocker;
+            wrap: word-wrap;
+            font-size: 15px;
+            color: Palette.foreground;
+        }
+
+        if root.blocker == "": VerticalLayout {
+            spacing: 14px;
+
+            VerticalLayout {
+                spacing: 4px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    Rectangle {
+                        width: 12px;
+                        height: 12px;
+                        y: (headline-text.preferred-height - self.height) / 2;
+                        border-radius: 6px;
+                        background: root.kind == Kind.connected ? #E4572E
+                            : root.kind == Kind.connecting ? #B63E1C
+                            : root.kind == Kind.error ? #B63E1C
+                            : #7C828D;
+                    }
+                    headline-text := Text {
+                        text: root.headline;
+                        font-size: 22px;
+                        font-weight: 700;
+                        color: Palette.foreground;
+                    }
+                }
+                if root.detail != "": Text {
+                    text: root.detail;
+                    wrap: word-wrap;
+                    font-size: 13px;
+                    color: Palette.foreground.with-alpha(0.75);
+                }
+            }
+
+            Button {
+                text: root.action-label;
+                primary: true;
+                enabled: root.action-enabled;
+                height: 52px;
+                clicked => { root.action(); }
+            }
+
+            if root.show-speed: HorizontalLayout {
+                spacing: 16px;
+                Text { text: "Up " + root.speed-up; color: Palette.foreground; }
+                Text { text: "Down " + root.speed-down; color: Palette.foreground; }
+            }
+
+            VerticalLayout {
+                spacing: 6px;
+                Heading { text: "Phone"; }
+                for item[i] in root.phones: Phone {
+                    phone: item;
+                    picked => { root.select-phone(i); }
+                }
+                if root.phones-note != "": Text {
+                    text: root.phones-note;
+                    wrap: word-wrap;
+                    font-size: 13px;
+                    color: Palette.foreground.with-alpha(0.75);
+                }
+            }
+
+            VerticalLayout {
+                spacing: 6px;
+                Heading { text: "Share"; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: "Full";
+                        primary: root.mode == 0;
+                        clicked => { root.set-mode(0); }
+                    }
+                    Button {
+                        text: "Proxy only";
+                        primary: root.mode == 1;
+                        clicked => { root.set-mode(1); }
+                    }
+                }
+                Text {
+                    text: root.mode == 0
+                        ? "All traffic of this computer goes through the phone."
+                        : "A SOCKS5 proxy on 127.0.0.1:1080. Only programs set to use it go through the phone.";
+                    wrap: word-wrap;
+                    font-size: 12px;
+                    color: Palette.foreground.with-alpha(0.75);
+                }
+                Switch {
+                    text: "Block traffic if the phone disconnects";
+                    enabled: root.mode == 0;
+                    checked: root.kill-switch;
+                    toggled => { root.set-kill-switch(self.checked); }
+                }
+            }
+
+            VerticalLayout {
+                spacing: 6px;
+                Heading { text: "Pairing"; }
+                if root.pair-step == 0: Button {
+                    text: "Pair a phone";
+                    enabled: root.pair-enabled;
+                    clicked => { root.pair-start(); }
+                }
+                if root.pair-step == 1: VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "This computer is " + root.fingerprint + ". Allow it on the phone if the phone shows the same, then type the 6-digit code the phone shows.";
+                        wrap: word-wrap;
+                        font-size: 13px;
+                        color: Palette.foreground;
+                    }
+                    code := LineEdit {
+                        placeholder-text: "6-digit code";
+                        input-type: number;
+                        accepted(text) => { root.pair-submit(text); }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Button {
+                            text: "Pair";
+                            primary: true;
+                            enabled: code.text.character-count == 6;
+                            clicked => { root.pair-submit(code.text); }
+                        }
+                        Button {
+                            text: "Cancel";
+                            clicked => { root.pair-cancel(); }
+                        }
+                    }
+                }
+                if root.pair-step == 2: Button {
+                    text: "Paired. Done";
+                    clicked => { root.pair-cancel(); }
+                }
+                if root.pair-note != "": Text {
+                    text: root.pair-note;
+                    wrap: word-wrap;
+                    font-size: 13px;
+                    color: Palette.foreground.with-alpha(0.75);
+                }
+            }
+        }
+    }
+}
+
+export component Tray inherits SystemTrayIcon {
+    in property <Kind> kind;
+    in property <string> tip: "Kite";
+    in property <string> toggle-label: "Connect";
+    in property <bool> toggle-enabled: true;
+    callback open();
+    callback toggle();
+    callback quit();
+
+    // The four states differ by shape as well as colour (docs/design/motion.md, static surfaces).
+    icon: root.kind == Kind.connected ? @image-url("../../../assets/brand/tray/connected.svg")
+        : root.kind == Kind.connecting ? @image-url("../../../assets/brand/tray/connecting.svg")
+        : root.kind == Kind.error ? @image-url("../../../assets/brand/tray/error.svg")
+        : @image-url("../../../assets/brand/tray/disconnected.svg");
+    tooltip: root.tip;
+    clicked => { root.open(); }
+
+    Menu {
+        MenuItem {
+            title: "Open Kite";
+            activated => { root.open(); }
+        }
+        MenuItem {
+            title: root.toggle-label;
+            enabled: root.toggle-enabled;
+            activated => { root.toggle(); }
+        }
+        MenuSeparator {}
+        MenuItem {
+            title: "Quit";
+            activated => { root.quit(); }
+        }
+    }
+}
