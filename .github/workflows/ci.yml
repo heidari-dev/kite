@@ -132,3 +132,65 @@ jobs:
           name: kite-debug-apk
           path: apps/android/app/build/outputs/apk/debug/*.apk
           retention-days: 14
+
+  # Built on the oldest Ubuntu we run so the binaries only need its glibc.
+  linux-packages:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sudo apt-get install -y --no-install-recommends libfontconfig1-dev squashfs-tools desktop-file-utils shellcheck
+      - run: shellcheck scripts/*.sh packaging/linux/deb/* packaging/linux/appimage/AppRun
+      - run: desktop-file-validate packaging/linux/kite.desktop packaging/linux/kite-autostart.desktop
+      - run: cargo build --release -p kite-cli -p kite-desktop
+      - name: Build the packages
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "kite-cli") | .version')
+          scripts/package-linux.sh "$version" dist
+      - name: The AppImage runs
+        run: |
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          dist/Kite-*.AppImage --cli --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kite-linux-packages
+          path: dist/
+          retention-days: 14
+
+  # On a machine with systemd: the daemon starts and stops with the package.
+  deb-systemd:
+    needs: linux-packages
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: kite-linux-packages
+          path: dist
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends desktop-file-utils
+      - run: sudo bash scripts/test-deb.sh dist/kite_*.deb
+
+  # On Debian, where the package must find every library it needs and the window must open.
+  deb-debian:
+    needs: linux-packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: kite-linux-packages
+          path: dist
+      - name: Install, check and remove in a Debian 12 container
+        run: |
+          docker run --rm -v "$PWD:/src:ro" -w /src debian:12@sha256:268fb24c39bca92d326dd83ea3abebe4a3f7751c804ffef23bb6d857dd343ff8 bash -c '
+            apt-get update &&
+            apt-get install -y --no-install-recommends xvfb xauth desktop-file-utils fonts-dejavu-core procps &&
+            bash scripts/test-deb.sh dist/kite_*.deb'
