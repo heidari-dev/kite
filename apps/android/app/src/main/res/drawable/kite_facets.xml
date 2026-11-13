@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Layer "kite": the two facets from assets/brand/kite.svg, drawn on the 64 unit stage. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="64dp"
+    android:height="64dp"
+    android:viewportWidth="64"
+    android:viewportHeight="64">
+    <path
+        android:fillColor="#E4572E"
+        android:pathData="M38,1 L21,17 L38,41 Z" />
+    <path
+        android:fillColor="#B63E1C"
+        android:pathData="M38,1 L55,17 L38,41 Z" />
+</vector>

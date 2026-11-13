@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Error badge, top right of the stage; its centre (53, 11) is the pivot of its pop. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="64dp"
+    android:height="64dp"
+    android:viewportWidth="64"
+    android:viewportHeight="64">
+    <path
+        android:fillColor="#E4572E"
+        android:pathData="M53,3 a8,8 0 1,0 0.001,0 Z" />
+    <path
+        android:pathData="M53,7 v5 M53,14.800 v0.100"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeWidth="2" />
+</vector>

@@ -1,4 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Semantic tokens for the light theme; values-night overrides them. Brand colours are in
+     assets/brand/README.md. Contrast: text 13.5:1, secondary 6.6:1, button text 5.7:1. -->
 <resources>
     <color name="paper">#F6F1E7</color>
+    <color name="kite_bg">@color/paper</color>
+    <color name="kite_text">#1F2630</color>
+    <color name="kite_text_secondary">#4F5662</color>
+    <color name="kite_button">#B63E1C</color>
+    <color name="kite_on_button">#FFFFFF</color>
+    <color name="kite_error">#B63E1C</color>
+    <color name="kite_ripple">#33FFFFFF</color>
+    <color name="kite_ripple_outline">#29B63E1C</color>
 </resources>

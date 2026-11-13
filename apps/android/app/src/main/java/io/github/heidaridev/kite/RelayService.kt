@@ -52,6 +52,8 @@ class RelayService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        serving = true
+        error = null
         try {
             startInForeground()
         } catch (e: RuntimeException) {
@@ -84,6 +86,7 @@ class RelayService : Service() {
     }
 
     override fun onDestroy() {
+        serving = false
         handler.removeCallbacks(tick)
         val context = applicationContext
         worker.execute {
@@ -197,6 +200,11 @@ class RelayService : Service() {
         var error: String? = null
             private set
 
+        /** The service was started and has not been destroyed; the relay may still be starting. */
+        @Volatile
+        var serving = false
+            private set
+
         /** The paired computers' keys as last known and written; the relay's list while it runs. */
         @Volatile
         var paired: List<ByteArray> = emptyList()
@@ -234,12 +242,15 @@ class RelayService : Service() {
             }
         }
 
-        /** A failed read or write of the stored computers must not end the process. */
+        /**
+         * A failed read or write of the stored computers must not end the process. It is not a
+         * start error, so the screen does not show it; the next save tries again.
+         */
         private fun guarded(block: () -> Unit) {
             try {
                 block()
             } catch (e: Exception) {
-                error = e.message ?: e.javaClass.simpleName
+                // shortcut: a disk that keeps failing is silent, when the app gets a log, report it there
             }
         }
 
