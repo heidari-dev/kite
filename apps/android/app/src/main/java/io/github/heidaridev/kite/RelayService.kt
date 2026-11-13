@@ -28,6 +28,7 @@ class RelayService : Service() {
     private var shown = ""
     private var previous: Stats? = null
     private var previousAt = 0L
+    private var wifiAt = 0L
 
     private val tick = object : Runnable {
         override fun run() {
@@ -76,6 +77,7 @@ class RelayService : Service() {
                 }
                 paired = peers
                 error = null
+                WifiShare.sync(context, relay)
             } catch (e: Exception) {
                 fail(e)
             } catch (e: LinkageError) {
@@ -93,6 +95,8 @@ class RelayService : Service() {
             guarded { save(context) }
             val running = relay
             relay = null
+            // The listeners go with the relay; this also ends the announcement.
+            WifiShare.sync(context, null)
             running?.close()
         }
         super.onDestroy()
@@ -141,6 +145,12 @@ class RelayService : Service() {
         }
         // A pairing that finished while the screen was off must reach the disk too.
         if (stats != null) savePeers(this)
+        // Networks come and go: follow them, so the listener ends with the network it is on.
+        val now = SystemClock.elapsedRealtime()
+        if (stats != null && now - wifiAt >= WIFI_MS && WifiShare.enabled(this)) {
+            wifiAt = now
+            syncWifi(this)
+        }
         return if (moved || stats == null) BUSY_MS else IDLE_MS
     }
 
@@ -186,6 +196,9 @@ class RelayService : Service() {
         private const val BUSY_MS = 1000L
         private const val IDLE_MS = 5000L
 
+        /** How often the phone's networks are looked at while WiFi sharing is on. */
+        private const val WIFI_MS = 4000L
+
         /**
          * Starts and stops run here one after another, off the main thread: stopping waits for the
          * relay thread, and a start must not race the socket name a stopping relay still holds.
@@ -222,6 +235,12 @@ class RelayService : Service() {
         fun savePeers(context: Context) {
             val app = context.applicationContext
             worker.execute { guarded { save(app) } }
+        }
+
+        /** Applies the WiFi switch and the current networks to the running relay. */
+        fun syncWifi(context: Context) {
+            val app = context.applicationContext
+            worker.execute { WifiShare.sync(app, relay) }
         }
 
         /** Unpairs a computer, running or not. A tunnel it has up keeps running until it closes. */

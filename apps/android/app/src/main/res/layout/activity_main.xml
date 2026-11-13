@@ -110,6 +110,28 @@
             android:textStyle="bold"
             android:visibility="gone" />
 
+        <Switch
+            android:id="@+id/wifi"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:minHeight="56dp"
+            android:saveEnabled="false"
+            android:text="@string/wifi_title"
+            android:textColor="@color/kite_text"
+            android:textSize="18sp" />
+
+        <TextView
+            android:id="@+id/wifi_line"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:accessibilityLiveRegion="polite"
+            android:fontFamily="monospace"
+            android:textColor="@color/kite_text_secondary"
+            android:textIsSelectable="true"
+            android:textSize="16sp"
+            android:visibility="gone" />
+
         <TextView
             android:id="@+id/computers_title"
             android:layout_width="match_parent"

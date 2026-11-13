@@ -20,6 +20,7 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.Switch
 import android.widget.TextView
 import io.github.heidaridev.kite.ffi.Relay
 import io.github.heidaridev.kite.ffi.Stats
@@ -36,6 +37,8 @@ class MainActivity : Activity() {
     private lateinit var pair: Button
     private lateinit var pairing: TextView
     private lateinit var codeView: TextView
+    private lateinit var wifi: Switch
+    private lateinit var wifiLine: TextView
     private lateinit var computersTitle: TextView
     private lateinit var computers: LinearLayout
     private var listed: List<ByteArray> = emptyList()
@@ -78,9 +81,17 @@ class MainActivity : Activity() {
         pair = findViewById(R.id.pair)
         pairing = findViewById(R.id.pairing)
         codeView = findViewById(R.id.code)
+        wifi = findViewById(R.id.wifi)
+        wifiLine = findViewById(R.id.wifi_line)
         computersTitle = findViewById(R.id.computers_title)
         computers = findViewById(R.id.computers)
         fitToScreen()
+        wifi.isChecked = WifiShare.enabled(this)
+        wifi.setOnCheckedChangeListener { _, on ->
+            WifiShare.setEnabled(this, on)
+            RelayService.syncWifi(this)
+            handler.postDelayed({ show() }, 200)
+        }
         toggle.setOnClickListener {
             if (RelayService.serving) stop() else start()
             handler.postDelayed({ show() }, 200)
@@ -266,6 +277,18 @@ class MainActivity : Activity() {
                 code != null -> getString(R.string.pairing_type)
                 open -> getString(R.string.pairing_open)
                 else -> ""
+            },
+        )
+        val wifiError = WifiShare.error
+        val wifiUp = WifiShare.listening
+        wifiLine.update(
+            when {
+                !wifi.isChecked -> ""
+                stats == null -> getString(R.string.wifi_after_start)
+                !WifiShare.synced -> ""
+                wifiError != null -> getString(R.string.wifi_error, wifiError)
+                wifiUp.isEmpty() -> getString(R.string.wifi_no_network)
+                else -> getString(R.string.wifi_listening, wifiUp.joinToString(", "))
             },
         )
         codeView.update(code?.chunked(3)?.joinToString(" ") ?: "")

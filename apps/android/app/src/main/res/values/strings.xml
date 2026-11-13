@@ -31,6 +31,11 @@
     <string name="allow">Allow</string>
     <string name="deny">Don\'t allow</string>
     <string name="not_now">Not now</string>
+    <string name="wifi_title">Share over WiFi</string>
+    <string name="wifi_after_start">Starts when sharing starts. Paired computers on the same WiFi or hotspot can connect.</string>
+    <string name="wifi_listening">Listening on %1$s</string>
+    <string name="wifi_no_network">No WiFi or hotspot network found. Join one or turn on the hotspot.</string>
+    <string name="wifi_error">Could not listen on WiFi: %1$s</string>
     <string name="computers">Paired computers</string>
     <string name="remove">Remove</string>
     <string name="remove_computer">Remove computer %1$s</string>

@@ -19,6 +19,7 @@ pub mod noise;
 pub mod pair;
 pub mod socks5;
 pub mod udpgw;
+pub mod wifi;
 
 /// Most concurrent streams (TCP connections plus UDP gateways) per tunnel. Yamux closes the
 /// whole tunnel when the peer opens more, so the desktop side must stay below this. Each stream

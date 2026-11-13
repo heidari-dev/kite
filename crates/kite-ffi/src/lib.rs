@@ -12,7 +12,10 @@
 
 use kite_relay::noise::{StaticKey, KEY_LEN};
 use kite_relay::pair::Pairing;
+use kite_relay::wifi::{self, Admission, Ticket};
+use std::collections::HashMap;
 use std::io;
+use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -20,7 +23,9 @@ use std::task::{Context, Poll};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::TcpStream;
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle as Task;
 
 uniffi::setup_scaffolding!();
 
@@ -34,6 +39,10 @@ pub struct Relay {
     thread: Mutex<Option<JoinHandle<()>>>,
     counters: Arc<Counters>,
     pairing: Arc<Pairing>,
+    shared: Shared,
+    handle: tokio::runtime::Handle,
+    /// The WiFi listeners. Dropping the runtime ends them as well.
+    wifi: Mutex<HashMap<SocketAddr, Task<()>>>,
 }
 
 /// A new private key for the relay. The app stores it and passes it to [`Relay::start`].
@@ -130,20 +139,38 @@ impl Relay {
             key: Arc::new(key),
             pairing: pairing.clone(),
             counters: counters.clone(),
+            admission: Admission::default(),
         };
-        let thread = std::thread::Builder::new()
-            .name("kite-relay".into())
-            .spawn(move || {
-                rt.block_on(accept(listener, shared, stopped));
-                // Lookups still running on blocking threads must not hold up the app.
-                rt.shutdown_timeout(Duration::from_secs(2));
-            })?;
+        let handle = rt.handle().clone();
+        let thread = {
+            let shared = shared.clone();
+            std::thread::Builder::new()
+                .name("kite-relay".into())
+                .spawn(move || {
+                    rt.block_on(accept(listener, shared, stopped));
+                    // Lookups still running on blocking threads must not hold up the app.
+                    rt.shutdown_timeout(Duration::from_secs(2));
+                })?
+        };
         Ok(Arc::new(Relay {
             stop: Mutex::new(Some(stop)),
             thread: Mutex::new(Some(thread)),
             counters,
             pairing,
+            shared,
+            handle,
+            wifi: Mutex::new(HashMap::new()),
         }))
+    }
+
+    /// Makes the relay listen for computers on exactly these addresses, the phone's own on WiFi,
+    /// hotspot or ethernet networks, and stops listening on any it listened on before. An empty
+    /// list stops all, and so does the end of the network the app saw: call it again when the
+    /// networks change. Private IPv4 addresses only; a cellular or VPN interface's address is the
+    /// app's to leave out. Returns the `address:port` pairs now listening. Computers that pair or
+    /// connect this way go through the same handshake and pairing as over USB.
+    pub fn share_wifi(&self, addresses: Vec<String>) -> Result<Vec<String>, RelayError> {
+        self.share_wifi_on(addresses, wifi::PORT)
     }
 
     /// Lets one more computer pair for two minutes. Call it only when the user asks to pair.
@@ -226,11 +253,119 @@ struct Counters {
     tunnels: AtomicU32,
 }
 
+impl Counters {
+    /// A place among the [`MAX_TUNNELS`] computers, for every transport together.
+    fn admit(self: &Arc<Self>) -> Option<TunnelSlot> {
+        let slot = TunnelSlot(self.clone());
+        // Past the limit the slot's drop gives the count back.
+        (self.tunnels.fetch_add(1, Ordering::Relaxed) < MAX_TUNNELS as u32).then_some(slot)
+    }
+}
+
+/// Counts a computer as connected until dropped.
+struct TunnelSlot(Arc<Counters>);
+
+impl Drop for TunnelSlot {
+    fn drop(&mut self) {
+        self.0.tunnels.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// What every tunnel needs.
+#[derive(Clone)]
 struct Shared {
     key: Arc<StaticKey>,
     pairing: Arc<Pairing>,
     counters: Arc<Counters>,
+    admission: Admission,
+}
+
+impl Shared {
+    /// One computer that reached a WiFi listener. The ticket is held until the handshake and any
+    /// pairing are over; only then does the computer count as a tunnel, so strangers cannot use up
+    /// the places of paired computers.
+    async fn wifi_tunnel(&self, stream: TcpStream, ticket: Ticket) {
+        let stream = Counted {
+            inner: stream,
+            counters: self.counters.clone(),
+        };
+        // Unknown computers stop here, unless pairing is open.
+        let session = kite_relay::pair::accept(stream, &self.key, &self.pairing).await;
+        drop(ticket);
+        let Ok(session) = session else {
+            return;
+        };
+        let Some(_slot) = self.counters.admit() else {
+            return;
+        };
+        let _ = kite_relay::serve(session, kite_relay::Config::default()).await;
+    }
+}
+
+impl Relay {
+    fn share_wifi_on(&self, addresses: Vec<String>, port: u16) -> Result<Vec<String>, RelayError> {
+        let want = addresses
+            .iter()
+            .map(|a| a.parse::<IpAddr>().map(|ip| SocketAddr::new(ip, port)))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "bad address"))?;
+        let mut live = self.wifi.lock().unwrap_or_else(PoisonError::into_inner);
+        live.retain(|addr, task| {
+            let keep = want.contains(addr) && !task.is_finished();
+            if !keep {
+                // Its sessions end with it.
+                task.abort();
+            }
+            keep
+        });
+        let mut failed = None;
+        for addr in want {
+            if live.contains_key(&addr) {
+                continue;
+            }
+            match self.listen_wifi(addr) {
+                Ok(task) => {
+                    live.insert(addr, task);
+                }
+                Err(e) => failed = Some(e),
+            }
+        }
+        match failed {
+            Some(e) if live.is_empty() => Err(e.into()),
+            _ => {
+                let mut up: Vec<_> = live.keys().map(|a| a.to_string()).collect();
+                up.sort();
+                Ok(up)
+            }
+        }
+    }
+
+    fn listen_wifi(&self, addr: SocketAddr) -> io::Result<Task<()>> {
+        // A listener stopped a moment ago closes its socket when the relay thread next runs, so
+        // the address may be busy for a few milliseconds. Called from the app's worker thread.
+        let mut tries = 0;
+        let std = loop {
+            match wifi::bind(addr.ip(), addr.port()) {
+                Err(e) if e.kind() == io::ErrorKind::AddrInUse && tries < 50 => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                bound => break bound?,
+            }
+        };
+        let _guard = self.handle.enter();
+        let listener = tokio::net::TcpListener::from_std(std)?;
+        let shared = self.shared.clone();
+        let admission = shared.admission.clone();
+        Ok(self.handle.spawn(wifi::accept_loop(
+            listener,
+            admission,
+            move |stream, ticket| {
+                let shared = shared.clone();
+                async move { shared.wifi_tunnel(stream, ticket).await }
+            },
+        )))
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -291,10 +426,12 @@ async fn accept(
                     // root on debug builds) and this app may use the relay; others would get
                     // network access they were not granted.
                     let peer = stream.peer_cred().map(|c| c.uid());
-                    if tunnels.len() < MAX_TUNNELS && peer.is_ok_and(|uid| allowed.contains(&uid)) {
+                    let slot = peer.is_ok_and(|uid| allowed.contains(&uid)).then(|| counters.admit()).flatten();
+                    if let Some(slot) = slot {
                         let stream = Counted { inner: stream, counters: counters.clone() };
                         let (key, pairing) = (shared.key.clone(), shared.pairing.clone());
                         tunnels.spawn(async move {
+                            let _slot = slot;
                             // Unpaired computers stop here, unless pairing is open.
                             let Ok(session) = kite_relay::pair::accept(stream, &key, &pairing).await else {
                                 return;
@@ -306,10 +443,6 @@ async fn accept(
                 Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
             },
         }
-        // Bounded by MAX_TUNNELS.
-        counters
-            .tunnels
-            .store(tunnels.len() as u32, Ordering::Relaxed);
     }
 }
 
@@ -391,8 +524,118 @@ mod tests {
         assert_eq!(counters.bytes_in.load(Ordering::Relaxed), 3);
     }
 
+    #[test]
+    fn tunnel_places_are_shared_and_given_back() {
+        let counters = Arc::new(Counters::default());
+        let held: Vec<_> = (0..MAX_TUNNELS)
+            .map(|_| counters.admit().unwrap())
+            .collect();
+        assert!(counters.admit().is_none());
+        assert_eq!(counters.tunnels.load(Ordering::Relaxed), MAX_TUNNELS as u32);
+        drop(held);
+        assert_eq!(counters.tunnels.load(Ordering::Relaxed), 0);
+        assert!(counters.admit().is_some());
+    }
+
     fn key() -> Vec<u8> {
         generate_key().unwrap()
+    }
+
+    /// A private IPv4 address of this machine, if it has one. The OS picks the source address of a
+    /// UDP socket "connected" to a TEST-NET address; nothing is sent.
+    #[cfg(target_os = "linux")]
+    fn private_address() -> Option<IpAddr> {
+        let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+        sock.connect("192.0.2.1:9").ok()?;
+        let ip = sock.local_addr().ok()?.ip();
+        wifi::shareable(ip).then_some(ip)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn serves_paired_computers_over_wifi_only_while_listening() {
+        let Some(ip) = private_address() else {
+            return; // no private address on this machine
+        };
+        let (computer, stranger) = (
+            StaticKey::generate().unwrap(),
+            StaticKey::generate().unwrap(),
+        );
+        let phone = key();
+        let phone_public = StaticKey::from_bytes(&mut phone.clone())
+            .unwrap()
+            .public()
+            .unwrap();
+        let relay = Relay::start(
+            name("wifi"),
+            phone,
+            vec![computer.public().unwrap().to_vec()],
+        )
+        .unwrap();
+        let port = free_port();
+
+        // Never a wildcard, loopback or public address.
+        for bad in ["0.0.0.0", "127.0.0.1", "8.8.8.8", "::", "nonsense"] {
+            assert!(
+                relay.share_wifi_on(vec![bad.into()], port).is_err(),
+                "{bad}"
+            );
+        }
+
+        assert_eq!(
+            relay.share_wifi_on(vec![ip.to_string()], port).unwrap(),
+            vec![format!("{ip}:{port}")]
+        );
+        // The same list again changes nothing.
+        assert_eq!(
+            relay
+                .share_wifi_on(vec![ip.to_string()], port)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let dial = || async { tokio::net::TcpStream::connect((ip, port)).await.unwrap() };
+        // A stranger gets no tunnel while pairing is closed; a paired computer does.
+        assert!(pair::start(dial().await, &stranger).await.is_err());
+        let session = pair::connect(dial().await, &computer, &[phone_public]).await;
+        assert!(session.is_ok(), "paired computer refused");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while relay.stats().tunnels != 1 {
+            assert!(std::time::Instant::now() < deadline, "tunnel not counted");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // The network went away: the listener and the tunnel it carried end.
+        assert!(relay.share_wifi_on(vec![], port).unwrap().is_empty());
+        loop {
+            let up = tokio::net::TcpStream::connect((ip, port)).await.is_ok();
+            if !up && relay.stats().tunnels == 0 {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "listener still up");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // The network came back right away: the address is free again.
+        assert_eq!(
+            relay
+                .share_wifi_on(vec![ip.to_string()], port)
+                .unwrap()
+                .len(),
+            1
+        );
+        relay.share_wifi_on(vec![], port).unwrap();
+        relay.share_wifi_on(vec![ip.to_string()], port).unwrap();
+        drop(session);
     }
 
     #[test]
