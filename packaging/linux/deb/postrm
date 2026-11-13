@@ -1,0 +1,13 @@
+#!/bin/sh
+# Kite keeps nothing after it is removed: the key and paired phones in /var/lib/kite go with the
+# user and group. Phones are paired again after a reinstall.
+set -e
+
+case "$1" in
+remove | purge)
+  rm -rf /var/lib/kite
+  if getent passwd kite >/dev/null; then userdel kite; fi
+  if getent group kite >/dev/null; then groupdel kite; fi
+  if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
+  ;;
+esac
