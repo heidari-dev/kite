@@ -195,8 +195,8 @@ stopping a `--foreground` kite with Ctrl+C) is the only way out, and it restores
 
 The kill switch also holds if kite itself dies: table 5300 then gets a blackhole default route that
 outlives the device, so traffic stays blocked after a crash or SIGKILL until `kite restore` or the
-next `kite connect`. The desktop app turns the kill switch on by default; on the command line it is
-off unless asked for.
+next `kite connect`. It is opt-in everywhere: off on the command line unless `--kill-switch` is
+given, and off in the desktop app until the user turns it on.
 
 ## kite status
 
