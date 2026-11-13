@@ -142,6 +142,10 @@ jobs:
       - name: Build the debug APK
         working-directory: apps/android
         run: gradle --no-daemon assembleDebug
+      # Without a signing key this is an unsigned APK; the release workflow signs it.
+      - name: Build the release APK
+        working-directory: apps/android
+        run: gradle --no-daemon assembleRelease
       - name: Sizes
         run: ls -l apps/android/app/src/main/jniLibs/*/libkite_ffi.so apps/android/app/build/outputs/apk/debug/*.apk
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
