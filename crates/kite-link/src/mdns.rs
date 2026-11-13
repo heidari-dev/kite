@@ -51,7 +51,10 @@ async fn discover_at(group: SocketAddr, wait: Duration) -> io::Result<Vec<Socket
         if let (IpAddr::V4(ip), Some(port)) = (from.ip(), response_port(&buf[..n])) {
             let at = SocketAddr::new(ip.into(), port);
             // Loopback only so the tests can answer from there.
-            if (ip.is_private() || cfg!(test) && ip.is_loopback()) && !found.contains(&at) {
+            // One entry per address: a device that answers with many ports must not fill the list.
+            if (ip.is_private() || cfg!(test) && ip.is_loopback())
+                && !found.iter().any(|f: &SocketAddr| f.ip() == at.ip())
+            {
                 found.push(at);
             }
         }

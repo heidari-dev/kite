@@ -243,7 +243,7 @@ fn with_default_port(addr: &str) -> String {
     let port = kite_relay::wifi::PORT;
     if addr.parse::<SocketAddr>().is_ok() {
         addr.into()
-    } else if let Ok(ip) = addr.parse::<std::net::IpAddr>() {
+    } else if let Ok(ip) = addr.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
         SocketAddr::new(ip, port).to_string()
     } else if addr.contains(':') {
         addr.into()
@@ -345,8 +345,13 @@ fn parse_connect(args: &[String]) -> io::Result<Connect> {
         return Err(usage("--kill-switch needs --tun"));
     }
     if kill_switch
-        && matches!(&transport, Transport::Tcp(a) | Transport::Wifi(Some(a))
-            if a.parse::<SocketAddr>().is_err() && a.parse::<std::net::IpAddr>().is_err())
+        && match &transport {
+            Transport::Tcp(a) => a.parse::<SocketAddr>().is_err(),
+            Transport::Wifi(Some(a)) => {
+                a.parse::<SocketAddr>().is_err() && a.parse::<std::net::IpAddr>().is_err()
+            }
+            _ => false,
+        }
     {
         return Err(usage(
             "--kill-switch needs an IP address, not a name, for --tcp and --wifi",
@@ -588,6 +593,7 @@ mod tests {
             parse_connect(&args("--wifi --tun --kill-switch")).is_ok() == cfg!(target_os = "linux")
         );
         for bad in [
+            "--tcp 10.0.0.2 --tun --kill-switch",
             "--wifi --usb",
             "--wifi a:1 --tcp b:2",
             "--wifi --serial X",
@@ -604,6 +610,8 @@ mod tests {
         assert_eq!(port("192.168.43.1:9"), "192.168.43.1:9");
         assert_eq!(port("phone.local"), "phone.local:47810");
         assert_eq!(port("phone.local:9"), "phone.local:9");
+        assert_eq!(port("[fd00::1]"), "[fd00::1]:47810");
+        assert_eq!(port("fd00::1"), "[fd00::1]:47810");
     }
 
     #[test]

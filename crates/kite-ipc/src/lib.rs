@@ -110,12 +110,13 @@ impl Request {
                 }
                 // A name would be looked up again at every redial, and with the link down that
                 // lookup goes into the block.
-                if let (true, Transport::Tcp { addr } | Transport::Wifi { addr: Some(addr) }) =
-                    (*kill_switch, transport)
-                {
-                    if !is_ip(addr) {
-                        return Err("kill_switch needs an IP address as the relay".into());
-                    }
+                let named = match transport {
+                    Transport::Tcp { addr } => addr.parse::<SocketAddr>().is_err(),
+                    Transport::Wifi { addr: Some(addr) } => !is_ip(addr),
+                    _ => false,
+                };
+                if *kill_switch && named {
+                    return Err("kill_switch needs an IP address as the relay".into());
                 }
                 if let Some(listen) = listen {
                     if *mode != Mode::Proxy || !listen.ip().is_loopback() {
@@ -374,6 +375,8 @@ mod tests {
         assert!(wifi(r#""192.168.43.1:9""#, kill).is_ok());
         assert!(wifi(r#""phone.local""#, kill).is_err());
         assert!(wifi(r#""phone.local""#, "").is_ok());
+        let tcp_bare = r#"{"cmd":"connect","transport":{"type":"tcp","addr":"10.0.0.2"},"mode":"tun","kill_switch":true}"#;
+        assert!(parse(tcp_bare).is_err(), "--tcp needs the port");
         assert!(wifi(r#""""#, "").is_err());
         assert!(wifi(r#""a\nb""#, "").is_err());
         assert!(parse(r#"{"cmd":"pair_start","transport":{"type":"wifi","addr":null}}"#).is_ok());
