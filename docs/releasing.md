@@ -69,12 +69,25 @@ is missing or the keystore, password or alias does not match.
 4. Open the draft under Releases, read the notes (they list the `feat`, `fix` and `perf` commits since
    the last tag), install the APK and a package once, and press Publish.
 
+## Trying it first
+
+- **Without a tag:** Actions, Release, Run workflow. It builds, signs and attests everything the same
+  way, keeps the files as the `release-files` artifact and makes no release. When the four secrets are
+  not set yet, the APK is built unsigned and the log says so; a tag run stops instead, so a release
+  can never contain an unsigned APK.
+- **A release candidate:** set the version to `0.1.0-rc.1` as in step 1 above and tag `v0.1.0-rc.1`.
+  A tag with a hyphen makes a draft marked pre-release; look at it, and delete it when done
+  (`gh release delete v0.1.0-rc.1 --cleanup-tag`). Then do it again for `0.1.0`.
+
+Check a candidate the way users check a release, with `gh attestation verify` (see below).
+
 ## What a release holds
 
 | File | What it is |
 |------|------------|
 | `kite_VERSION_amd64.deb` | Debian 12 and Ubuntu 22.04 or newer: command, desktop app, daemon, tray |
 | `Kite-VERSION-x86_64.AppImage` | Desktop app and command, without the daemon |
+| `kite-VERSION-x86_64-linux.tar.gz` | The `kite` command alone, for any x86-64 Linux with a glibc as new as Ubuntu 22.04's |
 | `kite-VERSION.apk` | The phone app, signed with the release key |
 | `kite-cli.cdx.json`, `kite-desktop.cdx.json`, `kite-ffi.cdx.json` | CycloneDX SBOMs of the Rust programs |
 | `SHA256SUMS` | SHA-256 of every file above |

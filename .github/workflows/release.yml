@@ -1,10 +1,12 @@
 name: Release
 
-# Runs only when a v* tag is pushed. Everything is built here from the tagged commit; nothing is
-# uploaded by hand. It ends in a draft release that you look at and publish. See docs/releasing.md.
+# A release is made here from a v* tag and by nothing else: everything is built from the tagged commit
+# and ends in a draft release that you look at and publish. "Run workflow" does the same without a
+# tag, keeps the files as a build artifact and makes no release. See docs/releasing.md.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -26,16 +28,20 @@ jobs:
       - id: v
         env:
           TAG: ${{ github.ref_name }}
+          TAGGED: ${{ github.ref_type == 'tag' }}
         run: |
           fail() { echo "::error::$1"; exit 1; }
-          [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || fail "The tag $TAG is not vMAJOR.MINOR.PATCH."
-          version=${TAG#v}
           cargo=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "kite-cli") | .version')
           android=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' apps/android/app/build.gradle.kts)
-          [[ $cargo == "$version" ]] || fail "The tag says $version but Cargo.toml says $cargo. Bump the version, merge it, and tag again."
-          [[ $android == "$version" ]] || fail "The tag says $version but the Android versionName says $android."
-          git branch -r --contains "$GITHUB_SHA" | grep -qx '  origin/main' || fail "The tagged commit is not on main."
-          echo "version=$version" >>"$GITHUB_OUTPUT"
+          [[ $cargo == "$android" ]] || fail "Cargo.toml says $cargo but the Android versionName says $android."
+          if [[ $TAGGED == true ]]; then
+            [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || fail "The tag $TAG is not vMAJOR.MINOR.PATCH."
+            [[ $cargo == "${TAG#v}" ]] || fail "The tag says ${TAG#v} but Cargo.toml says $cargo. Bump the version, merge it, and tag again."
+            git branch -r --contains "$GITHUB_SHA" | grep -qx '  origin/main' || fail "The tagged commit is not on main."
+          else
+            echo "::notice::Dry run: no tag, so no release will be made."
+          fi
+          echo "version=$cargo" >>"$GITHUB_OUTPUT"
 
   linux:
     needs: check
@@ -48,13 +54,18 @@ jobs:
           persist-credentials: false
       - run: sudo apt-get install -y --no-install-recommends libfontconfig1-dev squashfs-tools
       - run: cargo build --release --locked -p kite-cli -p kite-desktop
-      - name: Build the packages
+      - name: Build the packages and the command line tarball
         env:
           VERSION: ${{ needs.check.outputs.version }}
         run: |
           # In a Debian version a hyphen starts the revision, so 0.2.0-rc.1 would sort after 0.2.0.
           scripts/package-linux.sh "${VERSION/-/\~}" dist
           for f in dist/*; do n=${f//\~/-}; [[ $f == "$n" ]] || mv "$f" "$n"; done
+
+          d=kite-$VERSION-x86_64-linux
+          mkdir "$d"
+          cp target/release/kite LICENSE docs/cli.md "$d/"
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$(git log -1 --format=%ct)" -czf "dist/$d.tar.gz" "$d"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux
@@ -76,41 +87,53 @@ jobs:
       - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
           gradle-version: "9.9.1"
-      - name: Build the signed APK
+      - name: Build the APK, signed when the secrets are there
         working-directory: apps/android
         env:
           VERSION: ${{ needs.check.outputs.version }}
+          TAGGED: ${{ github.ref_type == 'tag' }}
           KITE_KEYSTORE_B64: ${{ secrets.KITE_KEYSTORE_B64 }}
           KITE_KEYSTORE_PASSWORD: ${{ secrets.KITE_KEYSTORE_PASSWORD }}
           KITE_KEY_ALIAS: ${{ secrets.KITE_KEY_ALIAS }}
           KITE_KEY_PASSWORD: ${{ secrets.KITE_KEY_PASSWORD }}
         run: |
-          missing=0
+          missing=()
           for name in KITE_KEYSTORE_B64 KITE_KEYSTORE_PASSWORD KITE_KEY_ALIAS KITE_KEY_PASSWORD; do
-            if [[ -z ${!name} ]]; then
-              echo "::error::The secret $name is not set. See docs/releasing.md."
-              missing=1
-            fi
+            if [[ -z ${!name} ]]; then missing+=("$name"); fi
           done
-          [[ $missing == 0 ]] || exit 1
+          signed=true
+          if (( ${#missing[@]} )); then
+            # A release must never ship an unsigned APK; a dry run may.
+            if [[ $TAGGED == true ]]; then
+              echo "::error::The secrets ${missing[*]} are not set. See docs/releasing.md."
+              exit 1
+            fi
+            echo "::warning::Signing skipped: the secrets ${missing[*]} are not set, so this APK is unsigned."
+            signed=false
+          fi
 
-          umask 077
-          export KITE_KEYSTORE_FILE=$RUNNER_TEMP/kite-release.jks
-          trap 'rm -f "$KITE_KEYSTORE_FILE"' EXIT
-          printf '%s' "$KITE_KEYSTORE_B64" | base64 -d >"$KITE_KEYSTORE_FILE" ||
-            { echo "::error::KITE_KEYSTORE_B64 is not base64. See docs/releasing.md."; exit 1; }
-          keytool -list -keystore "$KITE_KEYSTORE_FILE" -storepass:env KITE_KEYSTORE_PASSWORD \
-            -alias "$KITE_KEY_ALIAS" >/dev/null 2>&1 ||
-            { echo "::error::The keystore, its password or the key alias is wrong. See docs/releasing.md."; exit 1; }
+          if [[ $signed == true ]]; then
+            umask 077
+            export KITE_KEYSTORE_FILE=$RUNNER_TEMP/kite-release.jks
+            trap 'rm -f "$KITE_KEYSTORE_FILE"' EXIT
+            printf '%s' "$KITE_KEYSTORE_B64" | base64 -d >"$KITE_KEYSTORE_FILE" ||
+              { echo "::error::KITE_KEYSTORE_B64 is not base64. See docs/releasing.md."; exit 1; }
+            keytool -list -keystore "$KITE_KEYSTORE_FILE" -storepass:env KITE_KEYSTORE_PASSWORD \
+              -alias "$KITE_KEY_ALIAS" >/dev/null 2>&1 ||
+              { echo "::error::The keystore, its password or the key alias is wrong. See docs/releasing.md."; exit 1; }
+          fi
 
           gradle --no-daemon assembleRelease
 
-          apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n 1)
-          apk=app/build/outputs/apk/release/app-release.apk
-          # Prints the signer's certificate digest, which is public; the key itself never leaves the keystore.
-          "$apksigner" verify --verbose --print-certs "$apk"
           mkdir -p ../../dist
-          cp "$apk" "../../dist/kite-$VERSION.apk"
+          if [[ $signed == true ]]; then
+            apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n 1)
+            # Prints the signer's certificate digest, which is public; the key never leaves the keystore.
+            "$apksigner" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
+            cp app/build/outputs/apk/release/app-release.apk "../../dist/kite-$VERSION.apk"
+          else
+            cp app/build/outputs/apk/release/app-release-unsigned.apk "../../dist/kite-$VERSION-unsigned.apk"
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: android
@@ -137,19 +160,16 @@ jobs:
           path: dist/
           retention-days: 7
 
-  release:
-    needs: [check, linux, android, sbom]
+  # Checksums, attestations and signatures. It holds the signing identity but cannot touch the repository.
+  sign:
+    needs: [linux, android, sbom]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write # the draft release
+      contents: read
       id-token: write # keyless signing
       attestations: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
@@ -165,6 +185,29 @@ jobs:
           cosign-release: v3.1.4
       - name: A Sigstore bundle for each file
         run: for f in dist/*; do cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"; done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: dist/
+          retention-days: 14
+
+  # The only job that can write to the repository, and only for a tag.
+  publish:
+    needs: sign
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # the draft release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: dist
       - name: Draft the release
         env:
           GH_TOKEN: ${{ github.token }}
