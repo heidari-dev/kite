@@ -88,11 +88,37 @@ jobs:
       - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
         with:
           gradle-version: "9.9.1"
-      - name: Build the APK, signed when the secrets are there
+      - name: Build the unsigned APK
         working-directory: apps/android
         env:
           VERSION: ${{ needs.check.outputs.version }}
-          TAGGED: ${{ github.ref_type == 'tag' }}
+        run: |
+          gradle --no-daemon assembleRelease
+          mkdir -p ../../dist
+          cp app/build/outputs/apk/release/app-release-unsigned.apk "../../dist/kite-$VERSION-unsigned.apk"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-unsigned
+          path: dist/
+          retention-days: 7
+
+  # The only job that sees the signing key. It runs for a tag only, in the protected "release"
+  # environment (docs/releasing.md), and has no checkout and installs nothing, so no code but the
+  # runner's own apksigner runs next to the key. A dry run never reaches it and ships the unsigned APK.
+  sign-apk:
+    needs: [check, android]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: android-unsigned
+          path: in
+      - name: Sign the APK
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
           KITE_KEYSTORE_B64: ${{ secrets.KITE_KEYSTORE_B64 }}
           KITE_KEYSTORE_PASSWORD: ${{ secrets.KITE_KEYSTORE_PASSWORD }}
           KITE_KEY_ALIAS: ${{ secrets.KITE_KEY_ALIAS }}
@@ -102,43 +128,32 @@ jobs:
           for name in KITE_KEYSTORE_B64 KITE_KEYSTORE_PASSWORD KITE_KEY_ALIAS KITE_KEY_PASSWORD; do
             if [[ -z ${!name} ]]; then missing+=("$name"); fi
           done
-          signed=true
           if (( ${#missing[@]} )); then
-            # A release must never ship an unsigned APK; a dry run may.
-            if [[ $TAGGED == true ]]; then
-              echo "::error::The secrets ${missing[*]} are not set. See docs/releasing.md."
-              exit 1
-            fi
-            echo "::warning::Signing skipped: the secrets ${missing[*]} are not set, so this APK is unsigned."
-            signed=false
+            echo "::error::The secrets ${missing[*]} are not set. See docs/releasing.md."
+            exit 1
           fi
 
-          if [[ $signed == true ]]; then
-            umask 077
-            export KITE_KEYSTORE_FILE=$RUNNER_TEMP/kite-release.jks
-            trap 'rm -f "$KITE_KEYSTORE_FILE"' EXIT
-            printf '%s' "$KITE_KEYSTORE_B64" | base64 -d >"$KITE_KEYSTORE_FILE" ||
-              { echo "::error::KITE_KEYSTORE_B64 is not base64. See docs/releasing.md."; exit 1; }
-            keytool -list -keystore "$KITE_KEYSTORE_FILE" -storepass:env KITE_KEYSTORE_PASSWORD \
-              -alias "$KITE_KEY_ALIAS" >/dev/null 2>&1 ||
-              { echo "::error::The keystore, its password or the key alias is wrong. See docs/releasing.md."; exit 1; }
-          fi
+          umask 077
+          keystore=$RUNNER_TEMP/kite-release.jks
+          trap 'rm -f "$keystore"' EXIT
+          printf '%s' "$KITE_KEYSTORE_B64" | base64 -d >"$keystore" ||
+            { echo "::error::KITE_KEYSTORE_B64 is not base64. See docs/releasing.md."; exit 1; }
+          keytool -list -keystore "$keystore" -storepass:env KITE_KEYSTORE_PASSWORD -alias "$KITE_KEY_ALIAS" >/dev/null 2>&1 ||
+            { echo "::error::The keystore, its password or the key alias is wrong. See docs/releasing.md."; exit 1; }
 
-          gradle --no-daemon assembleRelease
-
-          mkdir -p ../../dist
-          if [[ $signed == true ]]; then
-            apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n 1)
-            # Prints the signer's certificate digest, which is public; the key never leaves the keystore.
-            "$apksigner" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
-            cp app/build/outputs/apk/release/app-release.apk "../../dist/kite-$VERSION.apk"
-          else
-            cp app/build/outputs/apk/release/app-release-unsigned.apk "../../dist/kite-$VERSION-unsigned.apk"
-          fi
+          tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)
+          unsigned=in/kite-$VERSION-unsigned.apk
+          "$tools/zipalign" -c 4 "$unsigned"
+          mkdir out
+          "$tools/apksigner" sign --ks "$keystore" --ks-key-alias "$KITE_KEY_ALIAS" \
+            --ks-pass env:KITE_KEYSTORE_PASSWORD --key-pass env:KITE_KEY_PASSWORD \
+            --out "out/kite-$VERSION.apk" "$unsigned"
+          # Prints the signer's certificate digest, which is public; the key never leaves the keystore.
+          "$tools/apksigner" verify --verbose --print-certs "out/kite-$VERSION.apk"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: android
-          path: dist/
+          path: out/
           retention-days: 7
 
   sbom:
@@ -163,7 +178,9 @@ jobs:
 
   # Checksums, attestations and signatures. It holds the signing identity but cannot touch the repository.
   sign:
-    needs: [linux, android, sbom]
+    needs: [linux, android, sbom, sign-apk]
+    # sign-apk is skipped in a dry run.
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -175,6 +192,9 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: A release holds the signed APK only
+        if: github.ref_type == 'tag'
+        run: rm -f dist/*-unsigned.apk
       - name: Checksums
         working-directory: dist
         run: find . -type f ! -name SHA256SUMS -printf '%P\n' | LC_ALL=C sort | xargs sha256sum >SHA256SUMS && cat SHA256SUMS
