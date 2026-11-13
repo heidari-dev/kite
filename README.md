@@ -19,6 +19,13 @@ supported, and USB (`--usb`, through adb) is only tested against a fake adb serv
 encrypted with Noise and both sides are paired once with a 6-digit code. See
 the open issues and milestones for the roadmap.
 
+## Install on Linux
+
+Download the `.deb` from the [releases page](https://github.com/heidari-dev/kite/releases) and open it
+with your software centre, or run `sudo apt install ./kite_*.deb`. It starts the daemon and puts Kite in
+your menu and tray; log out and in once so your account can use it. The AppImage is the desktop app and
+the command line without the daemon (no TUN mode). Details: [packaging/linux](packaging/linux/README.md).
+
 ## Try it from source
 
 You need a Rust toolchain (see `rust-toolchain.toml`). On one machine, in two terminals:
