@@ -6,19 +6,22 @@
 #![deny(unsafe_code)]
 
 mod daemon;
+mod kite;
 mod present;
 mod settings;
 mod worker;
 
+use kite::Kite;
 use kite_ipc::{Mode, State as Tunnel};
 use present::Action;
 use settings::Settings;
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use std::cell::RefCell;
+use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use worker::{format_rate, Cmd, Icon, Pair, View};
 
@@ -26,7 +29,7 @@ use worker::{format_rate, Cmd, Icon, Pair, View};
 mod ui {
     slint::include_modules!();
 }
-use ui::{AppWindow, Kind, PhoneRow, Tray};
+use ui::{AppWindow, Kind, KiteFrame, PhoneRow, Theme, Tray};
 
 /// What the UI thread knows between events.
 struct State {
@@ -37,10 +40,162 @@ struct State {
     view: View,
     /// The rows in the window; kept, so a redraw does not replace the rows under a click.
     phones: Rc<VecModel<PhoneRow>>,
+    kite: Kite,
+    /// The window is open; the kite only gets frames then.
+    open: bool,
+    /// When the last frame was drawn.
+    last: Instant,
+    /// `--reduced-motion`: the reduced variant whatever the system says.
+    reduced: bool,
 }
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+    static TICK: Timer = Timer::default();
+    /// A look at the minimised window is already scheduled.
+    static WATCHING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// 30 frames a second is all the kite's loops need.
+const FRAME: Duration = Duration::from_millis(33);
+
+/// The kite's frames go to the window only while it is open and something moves; at rest and
+/// with the window closed no timer runs and nothing wakes up.
+fn pace(ui: &AppWindow) {
+    let run = with_state(|s| s.open && s.kite.animating());
+    if !run {
+        TICK.with(Timer::stop);
+        return;
+    }
+    // A minimised window cannot be seen: no frames, only a slow look at whether it came back.
+    if ui.window().is_minimized() {
+        TICK.with(Timer::stop);
+        if !WATCHING.replace(true) {
+            let ui = ui.as_weak();
+            Timer::single_shot(Duration::from_millis(500), move || {
+                WATCHING.set(false);
+                if let Some(ui) = ui.upgrade() {
+                    pace(&ui);
+                }
+            });
+        }
+        return;
+    }
+    TICK.with(|t| {
+        if !t.running() {
+            with_state(|s| s.last = Instant::now());
+            let ui = ui.as_weak();
+            t.start(TimerMode::Repeated, FRAME, move || {
+                if let Some(ui) = ui.upgrade() {
+                    if ui.window().is_minimized() {
+                        pace(&ui);
+                        return;
+                    }
+                    let more = with_state(|s| {
+                        let now = Instant::now();
+                        let ms = now.duration_since(s.last).as_secs_f32() * 1000.0;
+                        s.last = now;
+                        s.kite.tick(ms);
+                        s.kite.animating()
+                    });
+                    draw_kite(&ui);
+                    if !more {
+                        TICK.with(Timer::stop);
+                    }
+                }
+            });
+        }
+    });
+}
+
+fn draw_kite(ui: &AppWindow) {
+    let f = with_state(|s| s.kite.frame());
+    let p = f.points;
+    ui.set_kite(KiteFrame {
+        x0: p[0].0,
+        y0: p[0].1,
+        x1: p[1].0,
+        y1: p[1].1,
+        x2: p[2].0,
+        y2: p[2].1,
+        x3: p[3].0,
+        y3: p[3].1,
+        x4: p[4].0,
+        y4: p[4].1,
+        x5: p[5].0,
+        y5: p[5].1,
+        x6: p[6].0,
+        y6: p[6].1,
+        x7: p[7].0,
+        y7: p[7].1,
+        x8: p[8].0,
+        y8: p[8].1,
+        taut: f.taut,
+        slack: f.slack,
+        snapped: f.snapped,
+        badge: f.badge,
+        badge_scale: f.badge_scale,
+        art: f.art,
+    });
+}
+
+static READING: AtomicBool = AtomicBool::new(false);
+
+/// Asks for the system's motion and text size choices each time the window opens, off the UI
+/// thread: `gsettings` can hang when the session bus is gone, and the window must not wait for
+/// it. One question at a time; the answer is applied when it comes.
+fn read_system_prefs(ui: &AppWindow) {
+    if READING.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let ui = ui.as_weak();
+    let spawned = std::thread::Builder::new()
+        .name("kite-prefs".into())
+        .spawn(move || {
+            let (reduced, scale) = system_prefs();
+            READING.store(false, Ordering::Relaxed);
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui.upgrade() {
+                    let reduced = with_state(|s| {
+                        let reduced = s.reduced || reduced;
+                        s.kite.set_reduced(reduced);
+                        reduced
+                    });
+                    let theme = ui.global::<Theme>();
+                    theme.set_reduced_motion(reduced);
+                    theme.set_text_scale(scale);
+                    pace(&ui);
+                    draw_kite(&ui);
+                }
+            });
+        });
+    if spawned.is_err() {
+        READING.store(false, Ordering::Relaxed);
+    }
+}
+
+fn gsettings(key: &str) -> Option<String> {
+    let out = std::process::Command::new("/usr/bin/gsettings")
+        .args(["get", "org.gnome.desktop.interface", key])
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8(out.stdout).ok())?
+}
+
+/// Whether to reduce motion, and by what factor to scale text (never below the designed size).
+/// shortcut: GNOME's settings only; read KDE's and the desktop portal's when they are asked for.
+fn system_prefs() -> (bool, f32) {
+    if !cfg!(target_os = "linux") {
+        return (false, 1.0);
+    }
+    let reduced = gsettings("enable-animations").is_some_and(|v| v.trim() == "false");
+    let scale = gsettings("text-scaling-factor")
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|s| s.is_finite())
+        .map_or(1.0, |s| s.clamp(1.0, 3.0));
+    (reduced, scale)
 }
 
 fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
@@ -58,6 +213,7 @@ fn main() -> Result<(), slint::PlatformError> {
         Lock::Unavailable => None,
     };
     let hidden = std::env::args().any(|a| a == "--hidden");
+    let reduced = std::env::args().any(|a| a == "--reduced-motion");
     let settings_path = Settings::path();
     let phones = Rc::new(VecModel::default());
     STATE.set(Some(State {
@@ -69,6 +225,10 @@ fn main() -> Result<(), slint::PlatformError> {
         picked: None,
         view: View::default(),
         phones: phones.clone(),
+        kite: Kite::new(),
+        open: false,
+        last: Instant::now(),
+        reduced,
     }));
 
     let ui = AppWindow::new()?;
@@ -96,12 +256,12 @@ fn main() -> Result<(), slint::PlatformError> {
                     }
                 });
             };
-            rt.block_on(worker::run(
-                PathBuf::from(kite_ipc::DEFAULT_SOCKET),
-                rx,
-                seen,
-                publish,
-            ));
+            // A debug build can talk to the fake daemon of the examples; a release build never
+            // takes the socket from the environment.
+            let socket = PathBuf::from(kite_ipc::DEFAULT_SOCKET);
+            #[cfg(debug_assertions)]
+            let socket = std::env::var_os("KITE_SOCKET").map_or(socket, PathBuf::from);
+            rt.block_on(worker::run(socket, rx, seen, publish));
         })
         .map_err(|e| slint::PlatformError::Other(e.to_string()))?;
 
@@ -120,7 +280,26 @@ fn show(
 ) -> Result<(), slint::PlatformError> {
     visible.store(true, Ordering::Relaxed);
     let _ = cmds.send(Cmd::Refresh);
-    ui.show()
+    // Opening a window that is already open changes nothing. One that was closed opens at rest in
+    // the state it is in: what changed meanwhile is not replayed, and the loops start from there.
+    let was_open = with_state(|s| std::mem::replace(&mut s.open, true));
+    if !was_open {
+        with_state(|s| {
+            s.kite.set_reduced(s.reduced);
+            s.kite.settle();
+        });
+        ui.global::<Theme>()
+            .set_reduced_motion(with_state(|s| s.reduced));
+        draw_kite(ui);
+        pace(ui);
+        read_system_prefs(ui);
+    }
+    let shown = ui.show();
+    if shown.is_err() {
+        with_state(|s| s.open = false);
+        TICK.with(Timer::stop);
+    }
+    shown
 }
 
 fn wire(ui: &AppWindow, tray: &Tray, cmds: &UnboundedSender<Cmd>, visible: &Arc<AtomicBool>) {
@@ -128,6 +307,8 @@ fn wire(ui: &AppWindow, tray: &Tray, cmds: &UnboundedSender<Cmd>, visible: &Arc<
     let v = visible.clone();
     ui.window().on_close_requested(move || {
         v.store(false, Ordering::Relaxed);
+        with_state(|s| s.open = false);
+        TICK.with(Timer::stop);
         slint::CloseRequestResponse::HideWindow
     });
 
@@ -302,7 +483,18 @@ fn render(ui: &AppWindow, tray: &Tray) {
             .into(),
         );
         tray.set_toggle_enabled(card.enabled);
+
+        s.kite.show(present::kite_state(v));
+        if card.icon == Icon::Connected {
+            s.kite
+                .throughput(v.up.saturating_add(v.down) as f32 * 8.0 / 1e6);
+        }
     });
+    pace(ui);
+    // At rest no frames come, so the picture is set here.
+    if !TICK.with(Timer::running) {
+        draw_kite(ui);
+    }
 }
 
 enum Lock {

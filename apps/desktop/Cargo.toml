@@ -25,6 +25,8 @@ slint = { version = "1.18", default-features = false, features = [
   "renderer-software",
   "software-renderer-systemfonts",
   "system-tray",
+  "software-renderer-path",
+  "accessibility",
 ] }
 tokio = { version = "1.53", features = ["io-util", "net", "rt", "sync", "time", "macros"] }
 

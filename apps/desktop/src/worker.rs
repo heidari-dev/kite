@@ -110,8 +110,9 @@ impl View {
         }
         match self.state() {
             Some(State::Connected) => Icon::Connected,
-            // With the kill switch a lost link is retried; the string is being drawn taut again.
-            Some(State::Connecting | State::Reconnecting) => Icon::Connecting,
+            Some(State::Connecting) => Icon::Connecting,
+            // The spec: the icon switches to Disconnected when the link is lost, even though the
+            // kill switch keeps retrying (the window says so).
             _ => Icon::Disconnected,
         }
     }
@@ -152,7 +153,7 @@ pub fn format_rate(bytes_per_sec: u64) -> String {
         unit += 1;
     }
     let unit = ["B/s", "kB/s", "MB/s", "GB/s"][unit];
-    if unit == "B/s" || value >= 10.0 {
+    if unit == "B/s" || value >= 9.95 {
         format!("{value:.0} {unit}")
     } else {
         format!("{value:.1} {unit}")
@@ -608,7 +609,7 @@ mod tests {
         assert_eq!(view(State::Connecting, None).icon(), Icon::Connecting);
         assert_eq!(
             view(State::Reconnecting, Some("lost")).icon(),
-            Icon::Connecting
+            Icon::Disconnected
         );
         assert_eq!(view(State::Connected, None).icon(), Icon::Connected);
         assert_eq!(view(State::Idle, Some("not paired")).icon(), Icon::Error);
@@ -639,6 +640,7 @@ mod tests {
             (1_200, "1.2 kB/s"),
             (35_000_000, "35 MB/s"),
             (1_240_000, "1.2 MB/s"),
+            (9_996_000_000, "10 GB/s"),
             (u64::MAX, "18446744074 GB/s"),
         ] {
             assert_eq!(format_rate(n), text);
