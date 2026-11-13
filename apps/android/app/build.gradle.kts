@@ -16,6 +16,25 @@ android {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
     }
+
+    // The release workflow signs with a key from GitHub secrets (docs/releasing.md). Without
+    // KITE_KEYSTORE_FILE, assembleRelease makes an unsigned APK.
+    val keystore = System.getenv("KITE_KEYSTORE_FILE")
+    signingConfigs {
+        if (keystore != null) {
+            create("release") {
+                storeFile = file(keystore)
+                storePassword = System.getenv("KITE_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KITE_KEY_ALIAS")
+                keyPassword = System.getenv("KITE_KEY_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            if (keystore != null) signingConfig = signingConfigs.getByName("release")
+        }
+    }
 }
 
 dependencies {
