@@ -150,7 +150,8 @@ pub async fn start(p: &Params, store: &Store) -> io::Result<Started> {
     };
     let listener = TcpListener::bind(listen).await?;
     let link = Link {
-        transport: p.transport.clone(),
+        // Once, before the tunnel exists: a redial with the link down must not need a lookup.
+        transport: crate::resolve(&p.transport).await?,
         tun: p.tun,
         key: store.key()?,
         phones,

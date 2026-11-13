@@ -28,15 +28,17 @@ const USAGE: &str = "usage:
   kite daemon [--state-dir DIR]
       Run the background service that owns the tunnel (Linux). The commands below
       talk to it on /run/kite/kite.sock.
-  kite pair (--tcp HOST:PORT | --usb [--serial SERIAL])
+  kite pair (--tcp HOST:PORT | --wifi [ADDR[:PORT]] | --usb [--serial SERIAL])
       Pair this computer with the phone: type the 6-digit code it shows.
   kite peers [remove KEY]
       List the paired phones, or forget the one whose key starts with KEY.
-  kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) [--listen ADDR]
-      Tunnel through the relay at HOST:PORT, or through a phone connected by USB
+  kite connect (--tcp HOST:PORT | --wifi [ADDR[:PORT]] | --usb [--serial SERIAL]) [--listen ADDR]
+      Tunnel through the relay at HOST:PORT, through the phone on the same WiFi or
+      hotspot (its address, port 47810 unless given, or found with mDNS if left
+      out; turn on Share over WiFi in the app), or through a phone connected by USB
       (needs a running adb server), and serve a SOCKS5 proxy on ADDR
       (a loopback address, default 127.0.0.1:1080).
-  kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) --tun [--kill-switch]
+  kite connect (--tcp HOST:PORT | --wifi [ADDR[:PORT]] | --usb [--serial SERIAL]) --tun [--kill-switch]
       Send all traffic and DNS of this computer through the relay (Linux, needs
       CAP_NET_ADMIN). With --kill-switch, block everything while the link is down
       and reconnect when the phone is back, until kite disconnect.
@@ -109,7 +111,7 @@ fn run(args: &[String], socket: &Path, foreground: bool) -> io::Result<()> {
         }),
         Some("pair") => parse_connect(&args[1..]).and_then(|c| {
             if c.tun || c.kill_switch || c.listen != DEFAULT_LISTEN {
-                return Err(usage("pair takes only --tcp, --usb and --serial"));
+                return Err(usage("pair takes only --tcp, --wifi, --usb and --serial"));
             }
             #[cfg(unix)]
             if !foreground {
@@ -211,14 +213,65 @@ enum Transport {
     Tcp(String),
     /// A phone connected by USB, found through the adb server; the serial picks one of several.
     Usb(Option<String>),
+    /// The phone on the same WiFi or hotspot: its address (port 47810 if left out), or None to
+    /// find it with mDNS. Becomes a `Tcp` one in [`resolve`].
+    Wifi(Option<String>),
 }
 
 impl std::fmt::Display for Transport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Transport::Tcp(addr) => f.write_str(addr),
+            Transport::Tcp(addr) | Transport::Wifi(Some(addr)) => f.write_str(addr),
             Transport::Usb(_) => f.write_str("usb"),
+            Transport::Wifi(None) => f.write_str("wifi"),
         }
+    }
+}
+
+/// An address that dials: a `Wifi` transport becomes the phone's `HOST:PORT`, found with mDNS if
+/// none was given. A name is looked up and an mDNS question is asked once, here, so a link that is
+/// down later (with the kill switch) never waits on either.
+async fn resolve(t: &Transport) -> io::Result<Transport> {
+    Ok(match t {
+        Transport::Wifi(Some(addr)) => Transport::Tcp(with_default_port(addr)),
+        Transport::Wifi(None) => Transport::Tcp(find_phone().await?.to_string()),
+        t => t.clone(),
+    })
+}
+
+fn with_default_port(addr: &str) -> String {
+    let port = kite_relay::wifi::PORT;
+    if addr.parse::<SocketAddr>().is_ok() {
+        addr.into()
+    } else if let Ok(ip) = addr.parse::<std::net::IpAddr>() {
+        SocketAddr::new(ip, port).to_string()
+    } else if addr.contains(':') {
+        addr.into()
+    } else {
+        format!("{addr}:{port}")
+    }
+}
+
+async fn find_phone() -> io::Result<SocketAddr> {
+    let found = kite_link::mdns::discover().await?;
+    let list = || {
+        found
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match found.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no phone answered on this network: is Share over WiFi on, and are both on the same WiFi? \
+             Or give the phone's address: --wifi ADDRESS",
+        )),
+        _ => Err(io::Error::other(format!(
+            "several phones answered ({}); pick one with --wifi ADDRESS",
+            list()
+        ))),
     }
 }
 
@@ -233,11 +286,12 @@ struct Connect {
 fn parse_connect(args: &[String]) -> io::Result<Connect> {
     let mut relay = None;
     let mut usb = false;
+    let mut wifi: Option<Option<String>> = None;
     let mut serial = None;
     let mut listen = DEFAULT_LISTEN;
     let mut tun = false;
     let mut kill_switch = false;
-    let mut it = args.iter();
+    let mut it = args.iter().peekable();
     while let Some(flag) = it.next() {
         if flag == "--kill-switch" {
             kill_switch = true;
@@ -252,6 +306,11 @@ fn parse_connect(args: &[String]) -> io::Result<Connect> {
         }
         if flag == "--usb" {
             usb = true;
+            continue;
+        }
+        if flag == "--wifi" {
+            // The address is optional: it is whatever follows that is not another option.
+            wifi = Some(it.next_if(|a| !a.starts_with("--")).cloned());
             continue;
         }
         let value = it
@@ -270,12 +329,14 @@ fn parse_connect(args: &[String]) -> io::Result<Connect> {
     if !listen.ip().is_loopback() {
         return Err(usage("--listen must be a loopback address"));
     }
-    let transport = match (relay, usb) {
-        (Some(addr), false) if serial.is_none() => Transport::Tcp(addr),
-        (None, true) => Transport::Usb(serial),
-        (None, false) => return Err(usage("connect needs --tcp HOST:PORT or --usb")),
-        (Some(_), true) => return Err(usage("use either --tcp or --usb")),
-        (Some(_), false) => return Err(usage("--serial only applies to --usb")),
+    let transport = match (relay, usb, wifi) {
+        (Some(addr), false, None) if serial.is_none() => Transport::Tcp(addr),
+        (None, true, None) => Transport::Usb(serial),
+        (None, false, Some(addr)) if serial.is_none() => Transport::Wifi(addr),
+        (None, false, None) => return Err(usage("connect needs --tcp HOST:PORT, --wifi or --usb")),
+        (Some(_), false, None) => return Err(usage("--serial only applies to --usb")),
+        (None, false, Some(_)) => return Err(usage("--serial only applies to --usb")),
+        _ => return Err(usage("use only one of --tcp, --wifi and --usb")),
     };
     if tun && listen != DEFAULT_LISTEN {
         return Err(usage("--listen does not apply to --tun"));
@@ -283,9 +344,12 @@ fn parse_connect(args: &[String]) -> io::Result<Connect> {
     if kill_switch && !tun {
         return Err(usage("--kill-switch needs --tun"));
     }
-    if kill_switch && matches!(&transport, Transport::Tcp(a) if a.parse::<SocketAddr>().is_err()) {
+    if kill_switch
+        && matches!(&transport, Transport::Tcp(a) | Transport::Wifi(Some(a))
+            if a.parse::<SocketAddr>().is_err() && a.parse::<std::net::IpAddr>().is_err())
+    {
         return Err(usage(
-            "--kill-switch needs an IP address, not a name, for --tcp",
+            "--kill-switch needs an IP address, not a name, for --tcp and --wifi",
         ));
     }
     Ok(Connect {
@@ -328,7 +392,8 @@ async fn connect(c: Connect) -> io::Result<()> {
 
 /// Connects to the relay. Over TCP, keepalive notices a peer that vanished without closing.
 async fn dial(transport: &Transport, tun: bool) -> io::Result<TcpStream> {
-    let s = match transport {
+    let s = match &resolve(transport).await? {
+        Transport::Wifi(_) => return Err(io::Error::other("the WiFi address was not resolved")),
         Transport::Tcp(relay) => {
             let s = dial_tcp(relay, tun).await?;
             let keepalive = socket2::TcpKeepalive::new()
@@ -505,6 +570,40 @@ mod tests {
         assert_eq!(c.transport, Transport::Usb(None));
         let c = parse_connect(&args("--usb --serial R5CT1234")).unwrap();
         assert_eq!(c.transport, Transport::Usb(Some("R5CT1234".into())));
+    }
+
+    #[test]
+    fn parses_wifi() {
+        let wifi = |s: &str| parse_connect(&args(s)).map(|c| c.transport);
+        assert_eq!(wifi("--wifi").unwrap(), Transport::Wifi(None));
+        assert_eq!(
+            wifi("--wifi 192.168.43.1").unwrap(),
+            Transport::Wifi(Some("192.168.43.1".into()))
+        );
+        // The address is only what is not another option.
+        let c = parse_connect(&args("--wifi --listen 127.0.0.1:9050")).unwrap();
+        assert_eq!(c.transport, Transport::Wifi(None));
+        assert_eq!(c.listen, "127.0.0.1:9050".parse().unwrap());
+        assert!(
+            parse_connect(&args("--wifi --tun --kill-switch")).is_ok() == cfg!(target_os = "linux")
+        );
+        for bad in [
+            "--wifi --usb",
+            "--wifi a:1 --tcp b:2",
+            "--wifi --serial X",
+            "--wifi phone.local --tun --kill-switch",
+        ] {
+            assert!(parse_connect(&args(bad)).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn gives_the_wifi_address_the_default_port() {
+        use super::with_default_port as port;
+        assert_eq!(port("192.168.43.1"), "192.168.43.1:47810");
+        assert_eq!(port("192.168.43.1:9"), "192.168.43.1:9");
+        assert_eq!(port("phone.local"), "phone.local:47810");
+        assert_eq!(port("phone.local:9"), "phone.local:9");
     }
 
     #[test]
