@@ -450,6 +450,10 @@ export component AppWindow inherits Window {
     in property <bool> action-enabled;
     in property <[PhoneRow]> phones;
     in property <string> phones-note;
+    // Reach the phone over WiFi instead of USB, and the address typed for it.
+    in property <bool> wifi;
+    in property <string> wifi-addr;
+    in property <string> wifi-error;
     in property <int> mode;
     in property <bool> kill-switch;
     // A tunnel is up: mode and kill switch show what runs and cannot change until it stops.
@@ -465,6 +469,8 @@ export component AppWindow inherits Window {
 
     callback action();
     callback select-phone(int);
+    callback set-wifi(bool);
+    callback set-wifi-addr(string);
     callback set-mode(int);
     callback set-kill-switch(bool);
     callback pair-start();
@@ -473,6 +479,7 @@ export component AppWindow inherits Window {
 
     // Set when a pairing button goes away under the keyboard, so the next one takes the focus.
     property <bool> refocus: false;
+    property <string> wifi-hint: "Share over WiFi must be on in the Kite app on the phone. The phone and this computer must be on the same WiFi or hotspot.";
     property <string> pair-text: "This computer is " + root.fingerprint + ". Allow it on the phone if the phone shows the same, then type the 6-digit code the phone shows.";
 
     // Scrolls the content so the control at `y` (in the window) with height `h` is in view.
@@ -557,12 +564,80 @@ export component AppWindow inherits Window {
                 if root.pair-step == 0: VerticalLayout {
                     spacing: 8px;
                     Heading { text: "Phone"; }
-                    for item[i] in root.phones: Phone {
-                        phone: item;
-                        picked => { root.select-phone(i); }
-                        revealed(y, h) => { root.reveal(y, h); }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Choice {
+                            text: "USB";
+                            selected: !root.wifi;
+                            enabled: !root.locked;
+                            clicked => { root.set-wifi(false); }
+                            revealed(y, h) => { root.reveal(y, h); }
+                        }
+                        Choice {
+                            text: "WiFi";
+                            selected: root.wifi;
+                            enabled: !root.locked;
+                            clicked => { root.set-wifi(true); }
+                            revealed(y, h) => { root.reveal(y, h); }
+                        }
                     }
-                    if root.phones-note != "": Note { text: root.phones-note; }
+                    if !root.wifi: VerticalLayout {
+                        spacing: 8px;
+                        for item[i] in root.phones: Phone {
+                            phone: item;
+                            picked => { root.select-phone(i); }
+                            revealed(y, h) => { root.reveal(y, h); }
+                        }
+                        if root.phones-note != "": Note { text: root.phones-note; }
+                    }
+                    if root.wifi: VerticalLayout {
+                        spacing: 8px;
+                        Rectangle {
+                            min-height: 44px;
+                            clip: true;
+                            border-radius: 8px;
+                            border-width: addr.has-focus ? 2px : 1px;
+                            border-color: addr.has-focus ? Theme.focus : (root.wifi-error != "" ? Theme.primary : Theme.line);
+                            background: Theme.surface;
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                addr := TextInput {
+                                    min-width: 0px;
+                                    text: root.wifi-addr;
+                                    font-size: 16px * Theme.text-scale;
+                                    color: Theme.text;
+                                    single-line: true;
+                                    vertical-alignment: center;
+                                    enabled: !root.locked;
+                                    accessible-label: "Phone address";
+                                    accessible-description: root.wifi-error != "" ? root.wifi-error : "Leave it empty to find the phone automatically. " + root.wifi-hint;
+                                    changed has-focus => {
+                                        if self.has-focus {
+                                            root.reveal(self.absolute-position.y, self.height);
+                                        }
+                                    }
+                                    edited => { root.set-wifi-addr(self.text); }
+                                }
+                            }
+                            if addr.text == "": Text {
+                                x: 12px;
+                                text: "Find it automatically";
+                                font-size: 16px * Theme.text-scale;
+                                color: Theme.muted;
+                                vertical-alignment: center;
+                                height: parent.height;
+                            }
+                        }
+                        if root.wifi-error != "": Text {
+                            text: root.wifi-error;
+                            wrap: word-wrap;
+                            font-size: 13px * Theme.text-scale;
+                            font-weight: 600;
+                            color: Theme.text;
+                        }
+                        Note { text: root.wifi-hint; }
+                    }
                 }
 
                 if root.pair-step == 0: VerticalLayout {

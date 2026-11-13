@@ -14,6 +14,22 @@ pub enum Action {
     Disconnect,
 }
 
+/// How the phone is reached, and whether that choice can be used now: a ready phone on USB, a
+/// usable address on WiFi (an empty one is usable: the daemon looks for the phone).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Link {
+    Usb { phone: bool },
+    Wifi { addr_ok: bool },
+}
+
+impl Link {
+    pub fn ready(self) -> bool {
+        match self {
+            Self::Usb { phone: ok } | Self::Wifi { addr_ok: ok } => ok,
+        }
+    }
+}
+
 pub struct Card {
     pub icon: Icon,
     pub headline: &'static str,
@@ -68,8 +84,7 @@ pub fn kite_state(v: &View) -> Show {
     }
 }
 
-/// `phone` says whether a ready phone is picked.
-pub fn card(v: &View, mode: Mode, phone: bool) -> Card {
+pub fn card(v: &View, mode: Mode, link: Link) -> Card {
     let busy = |headline, detail: &str| Card {
         icon: v.icon(),
         headline,
@@ -98,8 +113,12 @@ pub fn card(v: &View, mode: Mode, phone: bool) -> Card {
         _ => {
             let hint = if let Some(failure) = v.failure() {
                 failure.to_string()
-            } else if !phone {
-                "Plug in a phone to start.".into()
+            } else if !link.ready() {
+                match link {
+                    Link::Usb { .. } => "Plug in a phone to start.",
+                    Link::Wifi { .. } => "Fix the phone's address to start.",
+                }
+                .into()
             } else if v.paired == 0 {
                 "Pair this computer with the phone first.".into()
             } else {
@@ -115,7 +134,7 @@ pub fn card(v: &View, mode: Mode, phone: bool) -> Card {
                 detail: v.message.clone().unwrap_or(hint),
                 action: Action::Connect,
                 label: "Connect",
-                enabled: phone && v.paired > 0,
+                enabled: link.ready() && v.paired > 0,
             }
         }
     }
@@ -132,6 +151,9 @@ mod tests {
             state: state.into(),
         }
     }
+
+    const USB: Link = Link::Usb { phone: true };
+    const NO_PHONE: Link = Link::Usb { phone: false };
 
     fn view(state: Option<State>, error: Option<&str>) -> View {
         View {
@@ -174,25 +196,25 @@ mod tests {
 
     #[test]
     fn the_button_follows_the_state() {
-        let c = card(&view(Some(State::Idle), None), Mode::Tun, true);
+        let c = card(&view(Some(State::Idle), None), Mode::Tun, USB);
         assert_eq!(
             (c.action, c.label, c.enabled),
             (Action::Connect, "Connect", true)
         );
         assert_eq!(c.icon, Icon::Disconnected);
 
-        let c = card(&view(Some(State::Connecting), None), Mode::Tun, true);
+        let c = card(&view(Some(State::Connecting), None), Mode::Tun, USB);
         assert_eq!((c.action, c.label), (Action::Disconnect, "Cancel"));
 
         // The daemon runs full mode (see `view`), whatever the window's choice says.
-        let c = card(&view(Some(State::Connected), None), Mode::Proxy, true);
+        let c = card(&view(Some(State::Connected), None), Mode::Proxy, USB);
         assert_eq!((c.headline, c.action), ("Connected", Action::Disconnect));
         assert!(c.detail.contains("All traffic"));
 
         let c = card(
             &view(Some(State::Reconnecting), Some("lost")),
             Mode::Tun,
-            true,
+            USB,
         );
         assert_eq!(c.headline, "Phone disconnected");
         assert_eq!(c.action, Action::Disconnect);
@@ -217,12 +239,31 @@ mod tests {
 
     #[test]
     fn connect_waits_for_a_phone_and_a_pairing() {
-        let c = card(&view(Some(State::Idle), None), Mode::Tun, false);
+        let c = card(&view(Some(State::Idle), None), Mode::Tun, NO_PHONE);
         assert!(!c.enabled && c.detail.contains("Plug in"));
         let mut v = view(Some(State::Idle), None);
         v.paired = 0;
-        let c = card(&v, Mode::Tun, true);
+        let c = card(&v, Mode::Tun, USB);
         assert!(!c.enabled && c.detail.contains("Pair"));
+    }
+
+    #[test]
+    fn wifi_connects_with_no_phone_on_usb() {
+        let idle = view(Some(State::Idle), None);
+        // The adb error belongs to USB; a WiFi card never shows it.
+        let mut v = View {
+            devices_error: Some("the adb server is not running".into()),
+            ..idle
+        };
+        let c = card(&v, Mode::Tun, Link::Wifi { addr_ok: true });
+        assert!(c.enabled);
+        assert_eq!(c.detail, "");
+        let c = card(&v, Mode::Tun, Link::Wifi { addr_ok: false });
+        assert!(!c.enabled && c.detail.contains("address"));
+        v.paired = 0;
+        let c = card(&v, Mode::Tun, Link::Wifi { addr_ok: true });
+        assert!(!c.enabled && c.detail.contains("Pair"));
+        assert!(Link::Wifi { addr_ok: true }.ready() && !NO_PHONE.ready());
     }
 
     #[test]
@@ -230,7 +271,7 @@ mod tests {
         let c = card(
             &view(Some(State::Idle), Some("not paired with a phone yet")),
             Mode::Tun,
-            true,
+            USB,
         );
         assert_eq!(c.icon, Icon::Error);
         assert_eq!(c.headline, "Not connected");
@@ -238,7 +279,7 @@ mod tests {
         let mut v = view(Some(State::Idle), None);
         v.message = Some("already connected; disconnect first".into());
         assert_eq!(
-            card(&v, Mode::Tun, true).detail,
+            card(&v, Mode::Tun, USB).detail,
             "already connected; disconnect first"
         );
     }
