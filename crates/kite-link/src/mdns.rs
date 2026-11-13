@@ -28,16 +28,20 @@ const SRV: u16 = 33;
 // shortcut: the question leaves on the default route's interface only; a computer on several
 // networks may need `--wifi ADDRESS`. Enumerate the interfaces when that turns out to matter.
 pub async fn discover() -> io::Result<Vec<SocketAddr>> {
+    discover_at(GROUP, WAIT).await
+}
+
+async fn discover_at(group: SocketAddr, wait: Duration) -> io::Result<Vec<SocketAddr>> {
     let sock = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
     let query = query();
-    let end = Instant::now() + WAIT;
+    let end = Instant::now() + wait;
     let mut found = Vec::new();
     let mut buf = [0u8; 1500];
     // Asked again after a second: a datagram can be lost, and a phone may join in the meantime.
     let mut ask = Instant::now();
     while Instant::now() < end && found.len() < MAX_FOUND {
         if Instant::now() >= ask {
-            sock.send_to(&query, GROUP).await?;
+            sock.send_to(&query, group).await?;
             ask = Instant::now() + Duration::from_secs(1);
         }
         let Ok(got) = tokio::time::timeout_at(ask.min(end), sock.recv_from(&mut buf)).await else {
@@ -46,7 +50,8 @@ pub async fn discover() -> io::Result<Vec<SocketAddr>> {
         let (n, from) = got?;
         if let (IpAddr::V4(ip), Some(port)) = (from.ip(), response_port(&buf[..n])) {
             let at = SocketAddr::new(ip.into(), port);
-            if ip.is_private() && !found.contains(&at) {
+            // Loopback only so the tests can answer from there.
+            if (ip.is_private() || cfg!(test) && ip.is_loopback()) && !found.contains(&at) {
                 found.push(at);
             }
         }
@@ -206,6 +211,23 @@ mod tests {
             response_port(&[0, 0, 0x84, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn collects_each_phone_once_and_skips_junk() {
+        let phone = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let at = phone.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            // It answers every question, as a phone does when asked twice.
+            while let Ok((n, from)) = phone.recv_from(&mut buf).await {
+                assert_eq!(&buf[..n], &query()[..]);
+                phone.send_to(b"junk", from).await.unwrap();
+                phone.send_to(&response("Kite", 47810), from).await.unwrap();
+            }
+        });
+        let found = discover_at(at, Duration::from_millis(1500)).await.unwrap();
+        assert_eq!(found, vec!["127.0.0.1:47810".parse().unwrap()]);
     }
 
     #[test]
