@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Layer "tail": starts at the kite's bottom vertex B (38, 41), the pivot of the flutter. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="64dp"
+    android:height="64dp"
+    android:viewportWidth="64"
+    android:viewportHeight="64">
+    <path
+        android:pathData="M38,41 c4,3 -2,6 3,11"
+        android:strokeColor="#B63E1C"
+        android:strokeLineCap="round"
+        android:strokeWidth="2" />
+</vector>

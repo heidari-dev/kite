@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The layers of docs/design/motion.md, each the size of the stage, so one pivot in pixels fits all:
+    art (fade) > slack, snapped, rig (sway about the hand) > taut, pose (lift about B) > rock > kite, tail.
+    The badge sits outside art.
+-->
+<merge xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <FrameLayout
+        android:id="@+id/art"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clipChildren="false">
+
+        <ImageView
+            android:id="@+id/slack"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:importantForAccessibility="no"
+            android:scaleType="fitXY"
+            android:src="@drawable/kite_string_slack" />
+
+        <ImageView
+            android:id="@+id/snapped"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:alpha="0"
+            android:importantForAccessibility="no"
+            android:scaleType="fitXY"
+            android:src="@drawable/kite_string_snapped" />
+
+        <FrameLayout
+            android:id="@+id/rig"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipChildren="false">
+
+            <ImageView
+                android:id="@+id/taut"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:alpha="0"
+                android:importantForAccessibility="no"
+                android:scaleType="fitXY"
+                android:src="@drawable/kite_string_taut" />
+
+            <FrameLayout
+                android:id="@+id/pose"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipChildren="false">
+
+                <FrameLayout
+                    android:id="@+id/rock"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:clipChildren="false">
+
+                    <ImageView
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:importantForAccessibility="no"
+                        android:scaleType="fitXY"
+                        android:src="@drawable/kite_facets" />
+
+                    <ImageView
+                        android:id="@+id/tail"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:importantForAccessibility="no"
+                        android:scaleType="fitXY"
+                        android:src="@drawable/kite_tail" />
+                </FrameLayout>
+            </FrameLayout>
+        </FrameLayout>
+    </FrameLayout>
+
+    <ImageView
+        android:id="@+id/badge"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:alpha="0"
+        android:importantForAccessibility="no"
+        android:scaleType="fitXY"
+        android:scaleX="0.9"
+        android:scaleY="0.9"
+        android:src="@drawable/kite_badge" />
+</merge>
