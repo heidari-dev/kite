@@ -30,9 +30,9 @@ pub const WINDOW: Duration = Duration::from_secs(10);
 const MAX_TRACKED: usize = 256;
 
 /// Whether the phone may listen on `ip`. Private IPv4 only: that is what a WiFi network, a hotspot,
-/// WiFi Direct and USB tethering hand out, and it keeps the listener off a public or carrier
-/// address that a cellular interface might carry. The app also leaves out cellular and VPN
-/// interfaces; this is the second check.
+/// WiFi Direct and USB tethering hand out, and it keeps the listener off a public address. Some
+/// carriers hand out private addresses too, so this is only the second check: the app picks
+/// the interfaces and takes only WiFi, hotspot and ethernet ones.
 // shortcut: IPv6 networks are not served; add it when a user needs it.
 pub fn shareable(ip: IpAddr) -> bool {
     matches!(ip, IpAddr::V4(v4) if v4.is_private())

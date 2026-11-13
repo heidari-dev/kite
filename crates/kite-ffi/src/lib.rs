@@ -43,7 +43,6 @@ pub struct Relay {
     handle: tokio::runtime::Handle,
     /// The WiFi listeners. Dropping the runtime ends them as well.
     wifi: Mutex<HashMap<SocketAddr, Task<()>>>,
-    own_fingerprint: Option<String>,
 }
 
 /// A new private key for the relay. The app stores it and passes it to [`Relay::start`].
@@ -107,10 +106,6 @@ impl Relay {
         peers: Vec<Vec<u8>>,
     ) -> Result<Arc<Self>, RelayError> {
         let key = StaticKey::from_bytes(&mut key)?;
-        let own_fingerprint = key
-            .public()
-            .ok()
-            .and_then(|k| kite_relay::pair::fingerprint(&k));
         if socket_name.is_empty() || socket_name.len() > 100 {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "bad socket name").into());
         }
@@ -165,7 +160,6 @@ impl Relay {
             shared,
             handle,
             wifi: Mutex::new(HashMap::new()),
-            own_fingerprint,
         }))
     }
 
@@ -177,12 +171,6 @@ impl Relay {
     /// connect this way go through the same handshake and pairing as over USB.
     pub fn share_wifi(&self, addresses: Vec<String>) -> Result<Vec<String>, RelayError> {
         self.share_wifi_on(addresses, wifi::PORT)
-    }
-
-    /// A short name for this phone's key, the one `kite` shows for it. None only if the key
-    /// cannot give a public key.
-    pub fn own_fingerprint(&self) -> Option<String> {
-        self.own_fingerprint.clone()
     }
 
     /// Lets one more computer pair for two minutes. Call it only when the user asks to pair.
@@ -353,7 +341,18 @@ impl Relay {
     }
 
     fn listen_wifi(&self, addr: SocketAddr) -> io::Result<Task<()>> {
-        let std = wifi::bind(addr.ip(), addr.port())?;
+        // A listener stopped a moment ago closes its socket when the relay thread next runs, so
+        // the address may be busy for a few milliseconds. Called from the app's worker thread.
+        let mut tries = 0;
+        let std = loop {
+            match wifi::bind(addr.ip(), addr.port()) {
+                Err(e) if e.kind() == io::ErrorKind::AddrInUse && tries < 50 => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                bound => break bound?,
+            }
+        };
         let _guard = self.handle.enter();
         let listener = tokio::net::TcpListener::from_std(std)?;
         let shared = self.shared.clone();
@@ -626,6 +625,16 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "listener still up");
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        // The network came back right away: the address is free again.
+        assert_eq!(
+            relay
+                .share_wifi_on(vec![ip.to_string()], port)
+                .unwrap()
+                .len(),
+            1
+        );
+        relay.share_wifi_on(vec![], port).unwrap();
+        relay.share_wifi_on(vec![ip.to_string()], port).unwrap();
         drop(session);
     }
 
