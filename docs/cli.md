@@ -6,10 +6,10 @@ relay is the `relay-dev` example (see the README) and the phone app does not exi
 
 ```
 kite daemon [--state-dir DIR]
-kite pair (--tcp HOST:PORT | --usb [--serial SERIAL])
+kite pair (--tcp HOST:PORT | --wifi [ADDR[:PORT]] | --usb [--serial SERIAL])
 kite peers [remove KEY]
-kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) [--listen ADDR]
-kite connect (--tcp HOST:PORT | --usb [--serial SERIAL]) --tun [--kill-switch]
+kite connect (--tcp HOST:PORT | --wifi [ADDR[:PORT]] | --usb [--serial SERIAL]) [--listen ADDR]
+kite connect (--tcp HOST:PORT | --wifi [ADDR[:PORT]] | --usb [--serial SERIAL]) --tun [--kill-switch]
 kite disconnect
 kite devices
 kite status
@@ -98,11 +98,12 @@ could not come up) and the tunnel lives on in the daemon until `kite disconnect`
 | Option | Meaning | Default |
 |--------|---------|---------|
 | `--tcp HOST:PORT` | Relay to connect to over the network. A name is resolved once; every address is tried for up to 10 s in total. One of `--tcp` and `--usb` is required. | none |
+| `--wifi [ADDR[:PORT]]` | Reach the phone on the same WiFi or on its hotspot. Without an address kite looks for the phone with mDNS. See [WiFi](#wifi). | off |
 | `--usb` | Reach the relay on a phone connected by USB, through a running adb server. | off |
 | `--serial SERIAL` | With `--usb`: the phone to use when several are connected. | the only phone |
 | `--listen ADDR` | Proxy mode only. `IP:PORT` of the local SOCKS5 proxy. It must be a loopback address. | `127.0.0.1:1080` |
 | `--tun` | TUN mode (Linux only): send all traffic and DNS of this computer through the relay. Cannot be combined with `--listen`. | off |
-| `--kill-switch` | With `--tun`: while the link to the phone is down, block all traffic and reconnect, until `kite disconnect`. With `--tcp` the relay must be an IP address: a name would be looked up again at every redial, into the block. See [Kill switch](#kill-switch). | off |
+| `--kill-switch` | With `--tun`: while the link to the phone is down, block all traffic and reconnect, until `kite disconnect`. With `--tcp` or `--wifi ADDR` the relay must be an IP address: a name would be looked up again at every redial, into the block. See [Kill switch](#kill-switch). | off |
 
 Without `--tun` kite runs in proxy mode: it serves a SOCKS5 proxy on `--listen`, needs no special
 privileges, and only programs that use the proxy go through the phone. Use `socks5h://` (proxy
@@ -139,6 +140,32 @@ Every link, TCP or USB, is encrypted with Noise and kite checks the phone's key 
 phones before sending its own, so a program that pretends to be the relay, such as a fake adb
 server started by another local user, gets nothing.
 Without `--tun` nothing needs special privileges.
+
+### WiFi
+
+Turn on Share over WiFi in the phone app, put the computer on the same WiFi or on the phone's
+hotspot, and run:
+
+```
+kite pair --wifi            # once; the phone shows a code, as with --usb
+kite connect --wifi         # finds the phone with mDNS
+kite connect --wifi 192.168.43.1 --tun --kill-switch
+```
+
+The phone listens on port 47810, so `--wifi ADDR` is `--tcp ADDR:47810`. Without an address kite
+sends one mDNS question for `_kite._tcp.local` from an ephemeral port and waits 3 s for answers;
+the phone's address is the one the answer came from. If several phones answer, kite lists them
+and asks for `--wifi ADDRESS`; if none does, check that the switch is on and that both devices are
+on the same network (some routers block multicast between clients; give the address then). The
+question leaves on the default route's interface only. The address is looked up once, when the
+tunnel starts, so the kill switch never waits for a lookup; if the phone's address changes
+while connected, run `kite connect` again.
+
+Over WiFi the tunnel is the same Noise session as over USB and kite checks the phone's key before
+sending its own, so another device that answers the question or takes the phone's address gets
+nothing. In TUN mode the socket to the phone carries the same firewall mark as `--tcp`: the
+policy rules leave it out of the tunnel, so the tunnel does not carry itself, and no route is
+added that `kite restore` would have to remove.
 
 ### TUN mode
 

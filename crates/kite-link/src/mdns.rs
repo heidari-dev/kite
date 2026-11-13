@@ -187,6 +187,14 @@ mod tests {
         for cut in 0..good.len() {
             assert_eq!(response_port(&good[..cut]), None, "cut at {cut}");
         }
+        // Every single-byte change either still parses or gives None; it never panics.
+        for at in 0..good.len() {
+            for byte in 0..=255u8 {
+                let mut bad = good.clone();
+                bad[at] = byte;
+                let _ = response_port(&bad);
+            }
+        }
         // A name pointing at itself, or forward, ends the name, not the program.
         let mut looped = vec![0, 0, 0x84, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0xC0, 12, 0, 33, 0, 1];
         looped.extend_from_slice(&[0; 20]);

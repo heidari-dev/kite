@@ -99,6 +99,9 @@ jobs:
       - name: Fuzz the IPC request parser for 10 seconds
         working-directory: crates/kite-ipc
         run: cargo +nightly fuzz run ipc_request -- -max_total_time=10
+      - name: Fuzz the mDNS response parser for 10 seconds
+        working-directory: crates/kite-link
+        run: cargo +nightly fuzz run mdns_response -- -max_total_time=10
 
   systemd:
     runs-on: ubuntu-latest
