@@ -5,9 +5,13 @@ set -e
 
 case "$1" in
 remove | purge)
-  rm -rf /var/lib/kite
-  if getent passwd kite >/dev/null; then userdel kite; fi
-  if getent group kite >/dev/null; then groupdel kite; fi
+  # Only what the package made: a person's own account called kite is left alone.
+  home=$(getent passwd kite | cut -d: -f6)
+  if [ -z "$home" ] || [ "$home" = /var/lib/kite ]; then
+    rm -rf /var/lib/kite
+    if [ -n "$home" ]; then userdel kite || echo "kite: could not delete the kite user" >&2; fi
+    if getent group kite >/dev/null; then groupdel kite || true; fi
+  fi
   if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
   ;;
 esac

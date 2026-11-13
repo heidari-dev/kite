@@ -28,15 +28,23 @@ configure)
   if [ -z "$2" ]; then
     user=$(installer | head -n 1)
     if [ -n "$user" ] && uid=$(id -u -- "$user" 2>/dev/null) && [ "$uid" -ge 1000 ] && [ "$uid" -lt 60000 ]; then
-      usermod -aG kite -- "$user"
-      echo "kite: added $user to the kite group; log out and in once to use it." >&2
+      if usermod -aG kite -- "$user"; then
+        echo "kite: added $user to the kite group; log out and in once to use it." >&2
+      else
+        echo "kite: could not add $user to the kite group; do it with: usermod -aG kite $user" >&2
+      fi
     fi
   fi
 
   if [ -d /run/systemd/system ]; then
     systemctl daemon-reload
-    systemctl enable kite.service
-    systemctl restart kite.service || echo "kite: the daemon did not start; see: systemctl status kite" >&2
+    if [ -z "$2" ]; then
+      systemctl enable kite.service
+      systemctl restart kite.service || echo "kite: the daemon did not start; see: systemctl status kite" >&2
+    else
+      # An upgrade runs the new binary but leaves a daemon the administrator stopped or disabled alone.
+      systemctl try-restart kite.service || true
+    fi
   fi
   ;;
 esac

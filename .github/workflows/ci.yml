@@ -144,7 +144,7 @@ jobs:
       - run: sudo apt-get install -y --no-install-recommends libfontconfig1-dev squashfs-tools desktop-file-utils shellcheck
       - run: shellcheck scripts/*.sh packaging/linux/deb/* packaging/linux/appimage/AppRun
       - run: desktop-file-validate packaging/linux/kite.desktop packaging/linux/kite-autostart.desktop
-      - run: cargo build --release -p kite-cli -p kite-desktop
+      - run: cargo build --release --locked -p kite-cli -p kite-desktop
       - name: Build the packages
         run: |
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "kite-cli") | .version')
