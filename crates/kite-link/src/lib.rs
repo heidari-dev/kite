@@ -3,3 +3,4 @@
 #![forbid(unsafe_code)]
 
 pub mod adb;
+pub mod mdns;
