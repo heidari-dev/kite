@@ -220,12 +220,15 @@ outline with a badge.
 Same layers, same numbers. Put the curves and durations in one constants file or object.
 
 **Slint (desktop).** Facets and strings are `Path` elements with the SVG path data from the brand
-files. Poses are `states` with `animate` on `x`, `y`, `rotation-angle` and `opacity`, using
-`easing: cubic-bezier(...)` from the table. Slint retargets a property from its current value. The
-wobble and sway are `animate rotation-angle` with `iteration-count: -1` and `direction: alternate`
-between the two amplitudes, using the `sine` curve. The tail needs a changing rate, so it is driven
-by a 33 ms `Timer` that accumulates phase. Stop the timer and the loops when the window is hidden to
-the tray.
+files. The app uses Slint's software renderer for its small memory, and that renderer ignores
+rotation and scale, so `states` and `animate` cannot move the rig. `apps/desktop/src/kite.rs` keeps
+this spec instead: a small engine with no UI types that holds each animated value, moves it from
+where it is with the curves and timings above, runs the loops as sines, and applies the rig (rig,
+pose, rock, tail) to the points of the drawing. One struct of points and opacities is bound to the
+`Path` elements. A 33 ms `Timer` calls it only while the window is open and something moves; at
+rest, in reduced motion and with the window closed to the tray nothing is scheduled. The engine
+takes the time that passed as an argument, so its tests are exact. Reduced motion is read from
+GNOME's `enable-animations` when the window opens, or forced with `--reduced-motion`.
 
 **Android.** Each layer is a plain `VectorDrawable` in its own `ImageView`. Pose, string and badge
 use `ViewPropertyAnimator` and `ObjectAnimator` (`translationX`, `translationY`, `rotation` with a

@@ -21,3 +21,26 @@ Building on Linux needs the fontconfig headers (`libfontconfig1-dev` on Debian a
   until you turn it on) in `kite/desktop.json` in your config directory.
 - The tray icon needs a desktop that shows StatusNotifier icons. GNOME needs the AppIndicator
   extension.
+
+## Look and feel
+
+The kite follows [docs/design/motion.md](../../docs/design/motion.md). With the window closed to
+the tray, at rest and in reduced motion nothing is scheduled. Reduced motion is read from GNOME's
+`enable-animations` setting each time the window opens, or forced with `--reduced-motion`. Text
+follows GNOME's `text-scaling-factor`. The window follows the system's light or dark setting.
+
+Every control works from the keyboard: Tab and Shift+Tab move, Space and Enter act, and the focus
+ring is 3:1 against its background in both themes. Controls have names and roles for screen
+readers (through AT-SPI); the state of the connection is read with the main button.
+
+## Trying the window without a phone
+
+A debug build can talk to a stand-in for the daemon, which answers from a JSON file you edit while
+it runs (see the header of `examples/fake-daemon.rs`):
+
+```
+cargo run -p kite-desktop --example fake-daemon -- /tmp/fake.sock /tmp/fake.json
+KITE_SOCKET=/tmp/fake.sock cargo run -p kite-desktop
+```
+
+A release build always uses `/run/kite/kite.sock`.
