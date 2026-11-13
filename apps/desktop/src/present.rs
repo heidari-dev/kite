@@ -1,5 +1,6 @@
 //! What the window and the tray say for a [`View`]: plain functions, no UI types.
 
+use crate::kite::Show;
 use crate::worker::{Icon, View};
 use kite_ipc::{Device, Mode, State};
 
@@ -51,6 +52,20 @@ pub fn phones_note(v: &View) -> String {
     v.devices_error
         .clone()
         .unwrap_or_else(|| "No phone found. Plug it in with USB debugging turned on.".into())
+}
+
+/// What the kite shows: the same story as the icon, but a link that is being retried is the fall
+/// of a dropped link.
+pub fn kite_state(v: &View) -> Show {
+    if v.unreachable.is_some() || v.failure().is_some() {
+        return Show::Error;
+    }
+    match v.state() {
+        Some(State::Connected) => Show::Connected,
+        Some(State::Connecting) => Show::Connecting,
+        Some(State::Reconnecting) => Show::Dropped,
+        _ => Show::Disconnected,
+    }
 }
 
 /// `phone` says whether a ready phone is picked.
@@ -181,6 +196,23 @@ mod tests {
         );
         assert_eq!(c.headline, "Phone disconnected");
         assert_eq!(c.action, Action::Disconnect);
+    }
+
+    #[test]
+    fn the_kite_shows_the_same_story_as_the_icon() {
+        let show = |state, error| kite_state(&view(state, error));
+        assert_eq!(kite_state(&View::default()), Show::Disconnected);
+        assert_eq!(show(Some(State::Idle), None), Show::Disconnected);
+        assert_eq!(show(Some(State::Connecting), None), Show::Connecting);
+        assert_eq!(show(Some(State::Connected), None), Show::Connected);
+        // A link being retried is the fall of a dropped link.
+        assert_eq!(show(Some(State::Reconnecting), Some("lost")), Show::Dropped);
+        assert_eq!(show(Some(State::Idle), Some("not paired")), Show::Error);
+        let down = View {
+            unreachable: Some("gone".into()),
+            ..View::default()
+        };
+        assert_eq!(kite_state(&down), Show::Error);
     }
 
     #[test]
