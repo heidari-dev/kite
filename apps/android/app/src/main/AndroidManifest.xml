@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <!-- A connectedDevice service needs one of a few permissions; this normal one asks nothing of the user. -->
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <!-- Tells WiFi and hotspot interfaces from mobile data and VPNs, so the WiFi listener never binds those. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Lets the app ask once to be left running with the screen off; the user decides in a system dialog. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />

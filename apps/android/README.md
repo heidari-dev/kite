@@ -32,6 +32,12 @@ the phone shows. Paired computers are listed on the screen and can be removed th
 kite connect --usb
 ```
 
+Share over WiFi (off by default) also makes the relay listen on TCP port 47810 of the phone's
+WiFi, hotspot and ethernet addresses, and announce `_kite._tcp` while it does. It never listens on
+mobile data or a VPN interface, and the screen shows the addresses it listens on. Computers still
+need to be paired, and a stranger on the network is dropped after the handshake unless pairing is
+open.
+
 The relay's private key is stored in the app's no-backup directory, encrypted with an AES key that
 stays in Android Keystore; the paired computers' public keys are stored next to it.
 

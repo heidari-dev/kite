@@ -62,9 +62,14 @@ stream, session and queue has a cap, every wait for a peer has a timeout, and pe
 | D | A peer stalls a handshake or sits idle on a connection. | Timeouts on the SOCKS5 handshake, name resolution and connect; idle timeout on relayed connections and UDP sessions; an idle tunnel is closed. | `kite-relay` | done |
 | E | A paired (or compromised) computer reaches services the phone exposes to its own networks. | The relay refuses the phone's loopback, any address assigned to a local interface, link-local, unspecified, broadcast and multicast addresses. The check runs on resolved addresses, after DNS, with IPv4-mapped, IPv4-compatible and NAT64 forms normalised, so DNS rebinding does not help. | `kite-relay` | done |
 | S | Another local user binds the loopback port of the adb server (5037) when none runs, or a rogue app binds the abstract socket `kite` on the phone, and acts as the relay. It would see every destination and payload; in TUN mode that is all traffic. | Noise covers USB like TCP, and `kite connect` aborts the handshake unless the phone's key is a paired one, before sending its own key. `kite pair` over a rogue server fails on the code. | `kite-link`, `kite-cli` | done |
+| E | The WiFi listener is reachable from a network it should not be: mobile data, a VPN, or a public address. | Off until the user turns on "Share over WiFi". The app binds only private IPv4 addresses of interfaces that are up and are not the phone's mobile data or a VPN, never a wildcard address, and looks at the networks every 4 s: a listener ends within that time of its network going away, with the tunnels it carried. The relay checks again and refuses any address that is not private IPv4. | `kite-relay`, app | done |
+| D | A device on the WiFi or hotspot floods the listener with connections or stalls handshakes. | A connection holds a ticket until its handshake and pairing end: 8 in total, 2 per source address, 10 new connections per source address per 10 s, 256 source addresses remembered (a full table refuses new ones until entries expire). Over the cap the connection is closed before any byte is read. The Noise handshake has a 10 s timeout. A connection counts as a tunnel, with the 4-tunnel cap shared with USB, only after it is paired, so strangers cannot use up the places of paired computers. | `kite-relay`, `kite-ffi` | done |
+| S | A stranger on the link tries to use the phone through the listener. | Same as USB: after the handshake an unknown key gets `DENIED` and is dropped unless the user opened pairing in the app, and then the user must allow its fingerprint and the code must match. Pairing rate limit and expiry are unchanged. | `kite-relay` | done |
+| I | The announcement tells the network more than it should. | `_kite._tcp` is announced with the system's NsdManager only while the listener is up. The service name is `Kite`, not the phone's name; the TXT record has a version and a fingerprint of the phone's public key, which any peer sees in the handshake anyway. | app | done |
 
 After pairing each side accepts only the other's key. The Android app listens on the abstract
-socket `kite`; a WiFi listener does not exist yet. `relay-dev` keeps its key and pairings in memory,
+socket `kite` and, when the user turns it on, on TCP port 47810 of its WiFi, hotspot and ethernet
+addresses. `relay-dev` keeps its key and pairings in memory,
 allows every pairing request and is for development only.
 
 ## Android app
@@ -108,8 +113,7 @@ equivalents do not yet.
 | D | A remote server holds connections open or sends data without end. | Idle timeouts, the stream cap above, bounded copy buffers. | `kite-relay` | done |
 | E | The relay is turned into a way to reach the phone's own network (see B1, elevation). | Same deny-list. By design other hosts on the phone's networks, such as other hotspot clients on private addresses, stay reachable, because the user's traffic needs them. The phone's public address as seen by its carrier is not an interface address and cannot be detected. | `kite-relay` | done |
 
-The relay opens only outbound connections. The one thing it will listen on, the transport for WiFi
-pairing, is a planned part of B1.
+Besides the abstract socket, the relay's only listener is the optional WiFi one in B1.
 
 ## Keys and secrets
 
@@ -149,6 +153,12 @@ pairing, is a planned part of B1.
   that link's resolver, and so do link-local IPv6 resolvers.
 - In TUN mode, DNS over TCP to a resolver on the computer's LAN enters the tunnel and fails there,
   because the phone cannot reach that resolver. Only UDP queries to private resolvers are redirected.
+- With WiFi sharing on, anyone on the same network can see that a Kite phone is there and open
+  a connection, within the caps above. A paired computer that connects while the phone already
+  serves 4 computers is closed after the handshake.
+- IPv6-only networks are not served by the WiFi listener.
+- On an open or shared WiFi the link to the phone is encrypted by Noise, but the pairing window
+  is open to everyone there: pair on a network you trust.
 - Timing and volume of traffic are visible to anyone who can watch the link.
 
 ## Keeping this current
