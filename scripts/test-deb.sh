@@ -45,7 +45,8 @@ check_installed() {
     systemctl is-active --quiet kite.service || { journalctl -u kite --no-pager | tail -n 30; fail "daemon not running"; }
     [[ -S /run/kite/kite.sock ]] || fail "no daemon socket"
     # Root may talk to the daemon; with no tunnel it answers "not connected".
-    kite status 2>&1 | grep -q 'not connected' || fail "the daemon did not answer kite status"
+    answer=$(kite status 2>&1 || true)
+    [[ $answer == *'not connected'* ]] || { journalctl -u kite --no-pager | tail -n 30; fail "kite status said: $answer"; }
   fi
 }
 

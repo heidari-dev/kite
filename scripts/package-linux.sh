@@ -47,7 +47,7 @@ Version: $version
 Architecture: $arch
 Maintainer: heidari-dev <333728610+heidari-dev@users.noreply.github.com>
 Installed-Size: $size
-Depends: adb, libc6 (>= 2.35), libfontconfig1, systemd
+Depends: adb, libc6 (>= 2.35), libfontconfig1, systemd, libx11-6, libxcursor1, libxi6, libxrandr2, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-cursor0
 Recommends: polkitd | policykit-1
 Section: net
 Priority: optional
