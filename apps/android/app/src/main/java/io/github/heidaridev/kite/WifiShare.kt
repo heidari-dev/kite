@@ -6,6 +6,7 @@ import android.net.NetworkCapabilities
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import io.github.heidaridev.kite.ffi.Relay
+import io.github.heidaridev.kite.ffi.RelayException
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
@@ -29,14 +30,26 @@ internal object WifiShare {
     var error: String? = null
         private set
 
+    /** False from the switch being turned until the relay has answered, so the screen shows no stale line. */
+    @Volatile
+    var synced = false
+        private set
+
     // The two below belong to the service's worker thread.
     private var wanted: List<String>? = null
     private var advert: Advert? = null
 
+    // Read from the main thread every second; the file is read once.
+    @Volatile
+    private var cached: Boolean? = null
+
     fun enabled(context: Context): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY, false)
+        cached ?: context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY, false)
+            .also { cached = it }
 
     fun setEnabled(context: Context, on: Boolean) {
+        cached = on
+        synced = false
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY, on).apply()
     }
 
@@ -48,6 +61,7 @@ internal object WifiShare {
         val want = if (relay != null && enabled(context)) addresses(context) else emptyList()
         if (relay == null) {
             wanted = null
+            synced = false
         } else if (want == wanted && error == null) {
             return
         } else {
@@ -57,42 +71,57 @@ internal object WifiShare {
             val up = relay?.shareWifi(want) ?: emptyList()
             listening = up
             error = null
+            // An address that did not bind (a hotspot not ready yet) is tried again at the next look.
+            if (up.size < want.size) wanted = null
             if (up.isEmpty()) {
                 advert?.close()
                 advert = null
             } else if (advert == null) {
-                advert = Advert(context, up.first().substringAfterLast(':').toInt(), relay?.ownFingerprint())
+                advert = Advert(context, up.first().substringAfterLast(':').toInt())
             }
         } catch (e: Exception) {
             // The relay says why: a taken port, or it was stopped in the meantime.
             listening = emptyList()
-            error = e.message ?: e.javaClass.simpleName
+            error = (e as? RelayException.Io)?.reason ?: e.message ?: e.javaClass.simpleName
             advert?.close()
             advert = null
         }
+        synced = relay != null
     }
 
     /**
-     * The private IPv4 addresses of every interface that is up and is not the phone's mobile data
-     * or a VPN. A hotspot has no network of its own in ConnectivityManager, so interfaces are
-     * listed by what they are not. The relay checks the addresses again.
+     * The private IPv4 addresses of interfaces that are up and are WiFi, ethernet, hotspot or
+     * tethering ones, and not the phone's mobile data or a VPN. It is an allow-list: an interface
+     * counts when the system lists it as a WiFi or ethernet network, or when its name is a usual
+     * hotspot or tethering one (a hotspot has no network of its own in ConnectivityManager), and
+     * the system does not list it as cellular or VPN. Anything unknown is left out. The relay
+     * checks the addresses again.
      */
     private fun addresses(context: Context): List<String> {
         val connectivity = context.getSystemService(ConnectivityManager::class.java)
+        val allow = HashSet<String>()
         val skip = HashSet<String>()
         @Suppress("DEPRECATION") // there is no other list of every network
         for (network in connectivity.allNetworks) {
             val caps = connectivity.getNetworkCapabilities(network) ?: continue
+            val name = connectivity.getLinkProperties(network)?.interfaceName ?: continue
             if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
                 caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
             ) {
-                connectivity.getLinkProperties(network)?.interfaceName?.let(skip::add)
+                skip.add(name)
+            } else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI_AWARE)
+            ) {
+                allow.add(name)
             }
         }
         val found = ArrayList<String>()
         try {
             for (nic in NetworkInterface.getNetworkInterfaces()?.asSequence().orEmpty()) {
-                if (!nic.isUp || nic.isLoopback || nic.isPointToPoint || nic.name in skip) continue
+                val name = nic.name
+                if (!nic.isUp || nic.isLoopback || nic.isPointToPoint || name in skip) continue
+                if (name !in allow && HOTSPOT_PREFIXES.none { name.startsWith(it) }) continue
                 for (address in nic.inetAddresses) {
                     if (address is Inet4Address && address.isSiteLocalAddress) address.hostAddress?.let(found::add)
                 }
@@ -103,11 +132,15 @@ internal object WifiShare {
         return found.distinct().sorted()
     }
 
+    /** Names of the interfaces a hotspot, WiFi Direct and USB or ethernet tethering use. */
+    private val HOTSPOT_PREFIXES = listOf("ap", "swlan", "wlan", "softap", "p2p", "rndis", "ncm", "eth")
+
     /**
-     * `_kite._tcp` with a version and the phone's key fingerprint, which anyone who connects sees
-     * anyway. Best effort: a computer can still be given the address by hand.
+     * `_kite._tcp` with a version in the TXT record and nothing else: a key or name there would
+     * let anyone who listens on the network follow the phone from one network to the next.
+     * Best effort: a computer can still be given the address by hand.
      */
-    private class Advert(context: Context, port: Int, fingerprint: String?) : NsdManager.RegistrationListener {
+    private class Advert(context: Context, port: Int) : NsdManager.RegistrationListener {
         private val nsd = context.getSystemService(NsdManager::class.java)
 
         @Volatile
@@ -122,7 +155,6 @@ internal object WifiShare {
                 serviceType = "_kite._tcp"
                 setPort(port)
                 setAttribute("v", "1")
-                fingerprint?.let { setAttribute("fp", it.replace(" ", "")) }
             }
             try {
                 nsd.registerService(info, NsdManager.PROTOCOL_DNS_SD, this)

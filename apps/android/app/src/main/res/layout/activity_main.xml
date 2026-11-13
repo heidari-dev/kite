@@ -116,6 +116,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="32dp"
             android:minHeight="56dp"
+            android:saveEnabled="false"
             android:text="@string/wifi_title"
             android:textColor="@color/kite_text"
             android:textSize="18sp" />

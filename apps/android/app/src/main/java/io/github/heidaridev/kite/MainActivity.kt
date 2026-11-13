@@ -279,13 +279,16 @@ class MainActivity : Activity() {
                 else -> ""
             },
         )
+        val wifiError = WifiShare.error
+        val wifiUp = WifiShare.listening
         wifiLine.update(
             when {
                 !wifi.isChecked -> ""
                 stats == null -> getString(R.string.wifi_after_start)
-                WifiShare.error != null -> getString(R.string.wifi_error, WifiShare.error)
-                WifiShare.listening.isEmpty() -> getString(R.string.wifi_no_network)
-                else -> getString(R.string.wifi_listening, WifiShare.listening.joinToString(", "))
+                !WifiShare.synced -> ""
+                wifiError != null -> getString(R.string.wifi_error, wifiError)
+                wifiUp.isEmpty() -> getString(R.string.wifi_no_network)
+                else -> getString(R.string.wifi_listening, wifiUp.joinToString(", "))
             },
         )
         codeView.update(code?.chunked(3)?.joinToString(" ") ?: "")
