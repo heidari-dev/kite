@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Light by default; values-night switches to the dark parent, so the system decides. -->
+    <style name="Theme.Kite" parent="android:Theme.DeviceDefault.Light.NoActionBar">
+        <item name="android:windowBackground">@color/kite_bg</item>
+        <item name="android:textColorPrimary">@color/kite_text</item>
+        <item name="android:textColorSecondary">@color/kite_text_secondary</item>
+        <item name="android:statusBarColor">@color/kite_bg</item>
+        <item name="android:navigationBarColor">@color/kite_bg</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

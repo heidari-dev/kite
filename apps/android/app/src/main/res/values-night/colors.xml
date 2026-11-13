@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dark theme: a deeper ink so the kite's deep red keeps 3:1 against the background. Text 16:1,
+     secondary 9.3:1, button text on the accent 4.9:1. -->
+<resources>
+    <color name="kite_bg">#12161C</color>
+    <color name="kite_text">#F6F1E7</color>
+    <color name="kite_text_secondary">#B4BAC4</color>
+    <color name="kite_button">#E4572E</color>
+    <color name="kite_on_button">#12161C</color>
+    <color name="kite_error">#EF8A68</color>
+    <color name="kite_ripple">#33000000</color>
+    <color name="kite_ripple_outline">#33E4572E</color>
+</resources>
