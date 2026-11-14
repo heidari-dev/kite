@@ -8,7 +8,9 @@ repository.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-tokio = { version = "1.53", features = ["net"] }
+tokio = { version = "1.53", features = ["net", "sync"] }
+# tun2proxy already depends on it, for its own service.
+windows-service = "0.8"
 # The version tun and tun2proxy already use.
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
@@ -17,6 +19,7 @@ windows-sys = { version = "0.61", features = [
   "Win32_Networking_WinSock",
   "Win32_Security",
   "Win32_Security_Authorization",
+  "Win32_System_Console",
   "Win32_System_Pipes",
   "Win32_System_Threading",
 ] }

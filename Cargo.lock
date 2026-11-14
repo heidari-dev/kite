@@ -3003,6 +3003,7 @@ name = "kite-win"
 version = "0.0.0"
 dependencies = [
  "tokio",
+ "windows-service",
  "windows-sys 0.61.2",
 ]
 

@@ -9,7 +9,7 @@
 
 use crate::{Descriptor, SYSTEM_SID};
 use std::io;
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsHandle, AsRawHandle, OwnedHandle};
 use std::ptr::null_mut;
 use tokio::net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions};
 use windows_sys::Win32::Foundation::HANDLE;
@@ -88,22 +88,32 @@ fn access(me: &str, group: Option<&str>) -> String {
     sddl
 }
 
-/// Whether the process on the other end of `pipe` runs as an administrator (an elevated one: a
-/// filtered token of an administrator does not count) or as SYSTEM. The server must have read from
-/// the pipe already, or the system refuses to say who the client is.
-pub fn client_is_admin(pipe: &NamedPipeServer) -> io::Result<bool> {
-    let handle = pipe.as_raw_handle() as usize;
-    // On a thread of its own: it impersonates the client, and a thread that ends takes the
-    // impersonation with it, so it can never leak into the daemon's own work.
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            // SAFETY: `pipe` is borrowed for the whole scope, so its handle is open until this
-            // thread has been joined.
-            unsafe { administrator_on_this_thread(handle as HANDLE) }
+/// The client of a connected pipe instance, kept to be asked about later: its own handle to the
+/// instance, so it stays valid whatever happens to the one the connection reads and writes.
+pub struct Caller(OwnedHandle);
+
+/// Remembers who is connected to `pipe`.
+pub fn caller(pipe: &NamedPipeServer) -> io::Result<Caller> {
+    Ok(Caller(pipe.as_handle().try_clone_to_owned()?))
+}
+
+impl Caller {
+    /// Whether the process on the other end runs as an administrator (an elevated one: a filtered
+    /// token of an administrator does not count) or as SYSTEM. The server must have read from the
+    /// pipe already, or the system refuses to say who the client is.
+    pub fn is_admin(&self) -> io::Result<bool> {
+        let handle = self.0.as_raw_handle() as usize;
+        // On a thread of its own: it impersonates the client, and a thread that ends takes the
+        // impersonation with it, so it can never leak into the daemon's own work.
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                // SAFETY: `self` owns the handle, and the scope joins this thread before it ends.
+                unsafe { administrator_on_this_thread(handle as HANDLE) }
+            })
+            .join()
+            .unwrap_or_else(|_| Err(io::Error::other("the caller check failed")))
         })
-        .join()
-        .unwrap_or_else(|_| Err(io::Error::other("the caller check failed")))
-    })
+    }
 }
 
 /// # Safety
@@ -196,7 +206,7 @@ mod tests {
             .unwrap()
             .status
             .success();
-        assert_eq!(client_is_admin(&server).unwrap(), elevated);
+        assert_eq!(caller(&server).unwrap().is_admin().unwrap(), elevated);
         server.write_all(b"ok").await.unwrap();
         assert_eq!(&client.await.unwrap(), b"ok");
 

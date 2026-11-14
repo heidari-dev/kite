@@ -26,9 +26,18 @@ use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken}
 
 pub mod pipe;
 pub mod route;
+pub mod service;
 
 pub const SYSTEM_SID: &str = "S-1-5-18";
 pub const ADMINISTRATORS_SID: &str = "S-1-5-32-544";
+
+/// `%ProgramData%\Kite`: what the daemon keeps (its key, the paired phones, the TUN lock and
+/// state, its log). Call [`private_dir`] on it before use.
+pub fn data_dir() -> std::path::PathBuf {
+    std::env::var_os("ProgramData")
+        .map_or_else(|| r"C:\ProgramData".into(), std::path::PathBuf::from)
+        .join("Kite")
+}
 
 /// A UTF-16 string with the terminating zero the system calls expect.
 fn wide(s: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
