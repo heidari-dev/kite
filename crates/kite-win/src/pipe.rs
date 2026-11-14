@@ -11,7 +11,9 @@ use crate::{Descriptor, SYSTEM_SID};
 use std::io;
 use std::os::windows::io::{AsHandle, AsRawHandle, OwnedHandle};
 use std::ptr::null_mut;
-use tokio::net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions};
+use tokio::net::windows::named_pipe::{
+    ClientOptions, NamedPipeClient, NamedPipeServer, PipeMode, ServerOptions,
+};
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Security::{
     CheckTokenMembership, CreateWellKnownSid, RevertToSelf, WinBuiltinAdministratorsSid,
@@ -37,10 +39,13 @@ pub struct Pipe {
 impl Pipe {
     /// Works out the DACL for `name` (`\\.\pipe\...`). The group `kite` is looked up now.
     pub fn new(name: impl Into<String>) -> io::Result<Self> {
-        let sddl = access(
-            &crate::current_user_sid()?,
-            crate::local_group_sid(GROUP)?.as_deref(),
-        );
+        // Named with this computer: a bare name would be looked up in the domain as well, where
+        // someone else may have made a group of that name.
+        let group = match std::env::var("COMPUTERNAME") {
+            Ok(computer) => crate::local_group_sid(&format!("{computer}\\{GROUP}"))?,
+            Err(_) => None,
+        };
+        let sddl = access(&crate::current_user_sid()?, group.as_deref());
         Descriptor::parse(&sddl)?;
         Ok(Self {
             name: name.into(),
@@ -72,6 +77,31 @@ impl Pipe {
                 &self.name,
                 (&mut attributes as *mut SECURITY_ATTRIBUTES).cast(),
             )
+        }
+    }
+}
+
+/// `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`: the server may learn who the client is but
+/// not act as it. Without it a program that made the pipe before the service did could act as an
+/// administrator who runs `kite`.
+const IDENTIFICATION: u32 = 0x0010_0000 | 0x0001_0000;
+/// `ERROR_PIPE_BUSY`: every instance serves someone; one is free again in a moment.
+const PIPE_BUSY: i32 = 231;
+
+/// Opens the daemon's pipe as a client, waiting up to five seconds while it is busy, and
+/// without letting the server impersonate the caller.
+pub async fn connect(path: &std::path::Path) -> io::Result<NamedPipeClient> {
+    let mut tries = 0;
+    loop {
+        match ClientOptions::new()
+            .security_qos_flags(IDENTIFICATION)
+            .open(path)
+        {
+            Err(e) if e.raw_os_error() == Some(PIPE_BUSY) && tries < 50 => {
+                tries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            r => return r,
         }
     }
 }
@@ -155,7 +185,6 @@ unsafe fn administrator_on_this_thread(pipe: HANDLE) -> io::Result<bool> {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::windows::named_pipe::ClientOptions;
 
     fn name(tag: &str) -> String {
         format!(r"\\.\pipe\kite-win-test-{tag}-{}", std::process::id())
@@ -188,7 +217,7 @@ mod tests {
         let client = tokio::spawn({
             let n = pipe.name.clone();
             async move {
-                let mut c = ClientOptions::new().open(n).unwrap();
+                let mut c = connect(std::path::Path::new(&n)).await.unwrap();
                 c.write_all(b"hello").await.unwrap();
                 let mut back = [0u8; 2];
                 c.read_exact(&mut back).await.unwrap();

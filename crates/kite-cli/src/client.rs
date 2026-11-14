@@ -34,31 +34,17 @@ async fn open(socket: &Path) -> io::Result<impl AsyncRead + AsyncWrite + Unpin> 
 
 #[cfg(windows)]
 async fn open(socket: &Path) -> io::Result<impl AsyncRead + AsyncWrite + Unpin> {
-    use tokio::net::windows::named_pipe::ClientOptions;
-    /// `ERROR_PIPE_BUSY`: every instance is serving someone; one is free again in a moment.
-    const PIPE_BUSY: i32 = 231;
-    for _ in 0..50 {
-        match ClientOptions::new().open(socket) {
-            Err(e) if e.raw_os_error() == Some(PIPE_BUSY) => sleep(Duration::from_millis(100)).await,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Err(io::Error::new(
-                    e.kind(),
-                    "the Kite service is not running; start it (sc start Kite) or use --foreground",
-                ))
-            }
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-                return Err(io::Error::new(
-                    e.kind(),
-                    "no permission to use the Kite service; an administrator can add you to the                      local group kite (net localgroup kite %USERNAME% /add, then sign in again),                      or use --foreground from an administrator prompt",
-                ))
-            }
-            r => return r,
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        "the Kite service is busy",
-    ))
+    kite_win::pipe::connect(socket).await.map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => io::Error::new(
+            e.kind(),
+            "the Kite service is not running; start it (sc start Kite) or use --foreground",
+        ),
+        io::ErrorKind::PermissionDenied => io::Error::new(
+            e.kind(),
+            "no permission to use the Kite service; an administrator can add you to the local group kite (net localgroup kite %USERNAME% /add, then sign in again), or use --foreground from an administrator prompt",
+        ),
+        _ => e,
+    })
 }
 
 /// Sends one request. An error answer becomes an `Err` with the daemon's message.

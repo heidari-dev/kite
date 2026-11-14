@@ -30,6 +30,8 @@ netlink-packet-route = "0.33"
 rtnetlink = "0.23"
 
 [target.'cfg(windows)'.dependencies]
+# Checks that wintun.dll is signed by WireGuard LLC before it is loaded.
+tun = { version = "0.8.14", features = ["async", "verify_binary_signature"] }
 kite-win = { path = "../kite-win", version = "0.0.0" }
 
 [dev-dependencies]

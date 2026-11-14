@@ -53,7 +53,7 @@ with the same ones, so give it a directory of its own). Add a user to the group 
 service is installed by the MSI; by hand, with an administrator prompt:
 
 ```
-sc create Kite binPath= "C:\Program Files\Kite\kite.exe daemon --service" start= auto
+sc create Kite binPath= "\"C:\Program Files\Kite\kite.exe\" daemon --service" start= auto
 sc start Kite
 ```
 

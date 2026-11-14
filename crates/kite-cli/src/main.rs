@@ -182,9 +182,16 @@ fn run_service(opts: daemon::Options) -> io::Result<()> {
             let _ = stop.await;
         };
         block_on(
-            daemon::run_with(opts, stop, || {
-                let _ = up.running();
-            }),
+            async {
+                // The DNS rule of a TUN run that was killed survives a reboot; take it away.
+                if let Err(e) = tun::restore().await {
+                    eprintln!("kite: cleaning up after an earlier run: {e}");
+                }
+                daemon::run_with(opts, stop, || {
+                    let _ = up.running();
+                })
+                .await
+            },
             false,
         )
     })

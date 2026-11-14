@@ -14,12 +14,15 @@ use tokio::io::{AsyncRead, AsyncWrite};
 pub const NOT_RUNNING: &str =
     "The Kite daemon is not running. Start it with: sudo systemctl start kite";
 #[cfg(unix)]
-pub const NO_PERMISSION: &str = "You are not allowed to use the Kite daemon. Add yourself to the      kite group with: sudo usermod -aG kite $USER, then log out and in again.";
+pub const NO_PERMISSION: &str = "You are not allowed to use the Kite daemon. Add yourself to the \
+     kite group with: sudo usermod -aG kite $USER, then log out and in again.";
 #[cfg(windows)]
 pub const NOT_RUNNING: &str =
     "The Kite service is not running. Start it from Services (Kite), or reinstall Kite.";
 #[cfg(windows)]
-pub const NO_PERMISSION: &str = "You are not allowed to use the Kite service. Ask an administrator      to add you to the Windows group kite, then sign out and in again.";
+pub const NO_PERMISSION: &str =
+    "You are not allowed to use the Kite service. Ask an administrator \
+     to add you to the Windows group kite, then sign out and in again.";
 
 /// Why a request did not give an answer.
 #[derive(Debug, PartialEq, Eq)]
@@ -36,22 +39,9 @@ async fn open(socket: &Path) -> io::Result<impl AsyncRead + AsyncWrite + Unpin> 
     tokio::net::UnixStream::connect(socket).await
 }
 
-/// Opens the pipe; while every instance is serving someone, tries again for a few seconds.
 #[cfg(windows)]
 async fn open(socket: &Path) -> io::Result<impl AsyncRead + AsyncWrite + Unpin> {
-    use tokio::net::windows::named_pipe::ClientOptions;
-    /// `ERROR_PIPE_BUSY`.
-    const PIPE_BUSY: i32 = 231;
-    let mut tries = 0;
-    loop {
-        match ClientOptions::new().open(socket) {
-            Err(e) if e.raw_os_error() == Some(PIPE_BUSY) && tries < 50 => {
-                tries += 1;
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            r => return r,
-        }
-    }
+    kite_win::pipe::connect(socket).await
 }
 
 /// Sends one request and waits at most `wait` for the answer.

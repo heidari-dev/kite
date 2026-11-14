@@ -78,18 +78,7 @@ pub fn test_is_admin() -> bool {
 pub async fn connect(
     path: &std::path::Path,
 ) -> io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
-    use tokio::net::windows::named_pipe::ClientOptions;
-    /// `ERROR_PIPE_BUSY`.
-    const PIPE_BUSY: i32 = 231;
-    for _ in 0..50 {
-        match ClientOptions::new().open(path) {
-            Err(e) if e.raw_os_error() == Some(PIPE_BUSY) => {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-            r => return r,
-        }
-    }
-    Err(io::Error::other("the pipe stayed busy"))
+    kite_win::pipe::connect(path).await
 }
 
 #[cfg(test)]

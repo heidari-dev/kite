@@ -133,6 +133,18 @@ async fn client(stream: os::Stream, mut admin: os::Admin, daemon: &Daemon) {
 /// Requests that change something go to the system log, without keys, codes, addresses or the
 /// caller's identity (CodeQL treats peer credentials as secrets).
 fn log(req: &Request) {
+    // A client in the group cannot fill the disk by asking in a loop: a few lines a second at most.
+    static WINDOW: Mutex<(Option<Instant>, u32)> = Mutex::new((None, 0));
+    {
+        let mut w = WINDOW.lock().unwrap_or_else(PoisonError::into_inner);
+        if w.0.is_none_or(|t| t.elapsed() > Duration::from_secs(10)) {
+            *w = (Some(Instant::now()), 0);
+        }
+        w.1 += 1;
+        if w.1 > 20 {
+            return;
+        }
+    }
     let what = match req {
         Request::Connect {
             mode, kill_switch, ..
@@ -198,9 +210,11 @@ impl Daemon {
                 Request::PairStart { .. } | Request::Pair { .. } | Request::RemovePeer { .. }
             )
         {
-            return Response::err(
-                "changing the paired phones needs root or the daemon's user; try sudo",
-            );
+            return Response::err(if cfg!(windows) {
+                "changing the paired phones needs an administrator; run this from an administrator prompt"
+            } else {
+                "changing the paired phones needs root or the daemon's user; try sudo"
+            });
         }
         match req {
             Request::Status {} => self.status(),

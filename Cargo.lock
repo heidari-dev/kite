@@ -2954,6 +2954,7 @@ name = "kite-desktop"
 version = "0.0.0"
 dependencies = [
  "kite-ipc",
+ "kite-win",
  "serde",
  "serde_json",
  "slint",

@@ -10,17 +10,23 @@
 use std::ffi::c_void;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_INSUFFICIENT_BUFFER, HANDLE};
 use windows_sys::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-    GetNamedSecurityInfoW, SetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
+    SetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
     GetSecurityDescriptorDacl, GetTokenInformation, LookupAccountNameW, SidTypeAlias, TokenUser,
     ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
     PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    READ_CONTROL, WRITE_DAC,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -202,19 +208,32 @@ impl Descriptor {
 }
 
 /// Creates `path` if it is missing and makes it usable by SYSTEM, Administrators and the current
-/// user only, for the directory and everything created in it. Refuses a directory that somebody
-/// else owns: its owner could change the permissions back.
+/// user only, for what is created in it from now on. Refuses a directory that somebody else owns
+/// (its owner could change the permissions back) and one that is a junction or a symbolic link.
+/// The directory is opened once, without following links, and the checks and the new permissions
+/// go through that one handle, so nothing can be swapped in between.
 pub fn private_dir(path: &Path) -> io::Result<()> {
     std::fs::create_dir_all(path)?;
     let me = current_user_sid()?;
-    let path_w = wide(path);
+    let dir = std::fs::OpenOptions::new()
+        .access_mode(READ_CONTROL | WRITE_DAC)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    if dir.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{} is a link; remove it", path.display()),
+        ));
+    }
+    let handle = dir.as_raw_handle();
 
     let mut owner: PSID = null_mut();
     let mut sd: PSECURITY_DESCRIPTOR = null_mut();
-    // SAFETY: `path_w` is zero-terminated; the owner SID points into `sd`, freed below.
+    // SAFETY: `handle` belongs to `dir`, which is open until the end of this function; the owner
+    // SID points into `sd`, freed below.
     check(unsafe {
-        GetNamedSecurityInfoW(
-            path_w.as_ptr(),
+        GetSecurityInfo(
+            handle,
             SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION,
             &mut owner,
@@ -245,10 +264,10 @@ pub fn private_dir(path: &Path) -> io::Result<()> {
     if got == 0 || present == 0 {
         return Err(io::Error::other("no DACL in the descriptor"));
     }
-    // SAFETY: `path_w` is zero-terminated and `dacl` stays valid while `acl` lives.
+    // SAFETY: `handle` is open (see above) and `dacl` stays valid while `acl` lives.
     check(unsafe {
-        SetNamedSecurityInfoW(
-            path_w.as_ptr(),
+        SetSecurityInfo(
+            handle,
             SE_FILE_OBJECT,
             DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
             null_mut(),
@@ -305,5 +324,24 @@ mod tests {
         }
         assert!(text.contains("NT AUTHORITY\\SYSTEM"), "{text}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_junction_is_refused() {
+        let base = std::env::temp_dir().join(format!("kite-win-junction-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let target = base.join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        let link = base.join("link");
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+        let e = private_dir(&link).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied, "{e}");
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

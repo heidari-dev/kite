@@ -236,8 +236,11 @@ async fn setup(index: u32, relay: Option<IpAddr>) -> io::Result<()> {
     }
     for r in tunnel_routes(luid) {
         match route::add(&r, 0) {
-            // No IPv6 on this adapter or this host: there is no IPv6 traffic to take.
-            Err(_) if r.dest.is_ipv6() => {}
+            // No IPv6 on this adapter or this host is the usual reason; say so, so that a failure
+            // on a host that has IPv6 is not silent.
+            Err(e) if r.dest.is_ipv6() => {
+                eprintln!("kite: IPv6 is not taken into the tunnel: {e}");
+            }
             r => r?,
         }
     }

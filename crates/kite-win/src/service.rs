@@ -42,6 +42,9 @@ impl Up {
     }
 }
 
+/// Where the log goes, once the service manager has started us.
+static LOG: OnceLock<std::path::PathBuf> = OnceLock::new();
+
 type Body = Box<dyn FnOnce(Control) -> io::Result<()> + Send>;
 static BODY: Mutex<Option<Body>> = Mutex::new(None);
 
@@ -53,7 +56,8 @@ pub fn run(
     log: &std::path::Path,
     body: impl FnOnce(Control) -> io::Result<()> + Send + 'static,
 ) -> io::Result<()> {
-    redirect_stderr(log)?;
+    LOG.set(log.to_path_buf())
+        .map_err(|_| io::Error::other("the service started twice"))?;
     *BODY.lock().unwrap_or_else(PoisonError::into_inner) = Some(Box::new(body));
     service_dispatcher::start(NAME, ffi_service_main).map_err(|e| match e {
         windows_service::Error::Winapi(e) if e.raw_os_error() == Some(NOT_A_SERVICE) => {
@@ -70,6 +74,9 @@ fn service_main(_arguments: Vec<OsString>) {
     let Some(body) = BODY.lock().unwrap_or_else(PoisonError::into_inner).take() else {
         return;
     };
+    if let Some(log) = LOG.get() {
+        let _ = redirect_stderr(log);
+    }
     let (tx, stop) = oneshot::channel();
     let tx = Mutex::new(Some(tx));
     let handle = Arc::new(OnceLock::<ServiceStatusHandle>::new());
