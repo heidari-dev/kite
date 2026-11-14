@@ -11,15 +11,6 @@ rust-version.workspace = true
 [lib]
 crate-type = ["cdylib", "lib"]
 
-# Generates the Kotlin bindings from the built library; not part of the app.
-[[bin]]
-name = "uniffi-bindgen"
-path = "src/bin/uniffi-bindgen.rs"
-required-features = ["bindgen"]
-
-[features]
-bindgen = ["uniffi/cli", "uniffi/cargo-metadata"]
-
 [dependencies]
 kite-relay = { path = "../kite-relay" }
 tokio = { version = "1.53", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
