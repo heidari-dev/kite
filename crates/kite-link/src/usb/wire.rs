@@ -63,11 +63,31 @@ pub fn encode(command: u32, arg0: u32, arg1: u32, data: &[u8]) -> io::Result<Vec
 
 /// Reads one packet. The caller puts a timeout around it.
 pub async fn read_message<R: AsyncRead + Unpin>(r: &mut R) -> io::Result<Message> {
+    read_message_with(r, None).await
+}
+
+/// Reads one packet. Waiting for the header may take as long as the stream is idle; `body` limits
+/// how long the data of a packet whose header has come may take.
+pub async fn read_message_with<R: AsyncRead + Unpin>(
+    r: &mut R,
+    body: Option<std::time::Duration>,
+) -> io::Result<Message> {
     let mut header = [0u8; HEADER_LEN];
     r.read_exact(&mut header).await?;
     let (command, arg0, arg1, len) = parse_header(&header)?;
     let mut data = vec![0u8; len];
-    r.read_exact(&mut data).await?;
+    match body {
+        None => {
+            r.read_exact(&mut data).await?;
+        }
+        Some(wait) => {
+            tokio::time::timeout(wait, r.read_exact(&mut data))
+                .await
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::TimedOut, "the phone stopped in a packet")
+                })??;
+        }
+    }
     Ok(Message {
         command,
         arg0,

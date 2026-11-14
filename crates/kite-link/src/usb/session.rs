@@ -11,8 +11,8 @@ use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{mpsc, Notify};
-use tokio::time::{sleep, timeout};
+use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::time::timeout;
 
 /// Time allowed for a packet to go out or an answer to come back.
 const STEP: Duration = Duration::from_secs(10);
@@ -148,8 +148,26 @@ pub async fn open_stream<T: AsyncRead + AsyncWrite + Unpin>(io: &mut T) -> io::R
     Err(bad("an unexpected answer to opening the stream"))
 }
 
-/// What the USB writer is asked to send: command, two arguments, data.
-type Packet = (u32, u32, u32, Vec<u8>);
+/// What the USB writer is asked to send, and, if wanted, a signal for when it has been sent.
+struct Packet {
+    command: u32,
+    arg0: u32,
+    arg1: u32,
+    data: Vec<u8>,
+    sent: Option<oneshot::Sender<()>>,
+}
+
+impl Packet {
+    fn new(command: u32, arg0: u32, arg1: u32, data: Vec<u8>) -> Self {
+        Self {
+            command,
+            arg0,
+            arg1,
+            data,
+            sent: None,
+        }
+    }
+}
 
 /// Moves bytes between the phone's stream and `local` until either ends. Four loops run side by
 /// side and none waits for another one's work:
@@ -175,11 +193,31 @@ where
     let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(2);
     let acked = Notify::new();
     let in_flight = AtomicBool::new(false);
+    let usb_reader = read_usb(dev_r, remote, data_tx, &acked, &in_flight);
+    let local_writer = write_local(data_rx, local_w, out_tx.clone(), remote);
+    let local_reader = read_local(local_r, out_tx, &acked, &in_flight, remote, max);
+    let usb_writer = write_usb(dev_w, out_rx);
+    tokio::pin!(usb_reader, local_writer, local_reader, usb_writer);
     tokio::select! {
-        r = read_usb(dev_r, remote, data_tx, &acked, &in_flight) => r,
-        r = write_local(data_rx, local_w, out_tx.clone(), remote) => r,
-        r = read_local(local_r, out_tx, &acked, &in_flight, remote, max) => r,
-        r = write_usb(dev_w, out_rx) => r,
+        biased;
+        r = &mut usb_reader => {
+            r?;
+            // The phone closed the stream. What it sent before is still on its way to `local`:
+            // the reader is done and has dropped its end of the channel, so the writer ends when
+            // that is empty. The USB writer stays up meanwhile, for the OKAYs that are left.
+            let drain = async {
+                tokio::select! {
+                    r = &mut local_writer => r,
+                    r = &mut usb_writer => r,
+                }
+            };
+            timeout(STEP, drain).await.map_err(|_| {
+                io::Error::new(io::ErrorKind::TimedOut, "the tunnel did not take the last data")
+            })?
+        }
+        r = &mut local_writer => r,
+        r = &mut local_reader => r,
+        r = &mut usb_writer => r,
     }
 }
 
@@ -191,7 +229,7 @@ async fn read_usb<R: AsyncRead + Unpin>(
     in_flight: &AtomicBool,
 ) -> io::Result<()> {
     loop {
-        let m = wire::read_message(&mut dev).await?;
+        let m = wire::read_message_with(&mut dev, Some(STEP)).await?;
         match m.command {
             WRTE if m.arg0 == remote && m.arg1 == LOCAL_ID => {
                 // Never full unless the phone sends before it was answered.
@@ -217,14 +255,14 @@ async fn write_local<W: AsyncWrite + Unpin>(
     remote: u32,
 ) -> io::Result<()> {
     loop {
+        // Ends when the USB reader has, and everything it passed on has been written.
         let Some(bytes) = data.recv().await else {
-            // The USB reader ended; its result is the one that counts.
-            return std::future::pending().await;
+            return Ok(());
         };
         timeout(STEP, local.write_all(&bytes)).await.map_err(|_| {
             io::Error::new(io::ErrorKind::TimedOut, "the tunnel did not take data")
         })??;
-        out.send((OKAY, LOCAL_ID, remote, Vec::new()))
+        out.send(Packet::new(OKAY, LOCAL_ID, remote, Vec::new()))
             .await
             .map_err(|_| bad("the USB writer stopped"))?;
     }
@@ -245,13 +283,17 @@ async fn read_local<R: AsyncRead + Unpin>(
     loop {
         let n = local.read(&mut buf).await?;
         if n == 0 {
-            let _ = out.send((CLSE, LOCAL_ID, remote, Vec::new())).await;
-            // Let the writer take it out before the session ends.
-            sleep(Duration::from_millis(100)).await;
+            // Tell the phone, and wait until the packet has gone out before the session ends.
+            let (sent, gone) = oneshot::channel();
+            let mut close = Packet::new(CLSE, LOCAL_ID, remote, Vec::new());
+            close.sent = Some(sent);
+            if out.send(close).await.is_ok() {
+                let _ = timeout(STEP, gone).await;
+            }
             return Ok(());
         }
         in_flight.store(true, Ordering::SeqCst);
-        out.send((WRTE, LOCAL_ID, remote, buf[..n].to_vec()))
+        out.send(Packet::new(WRTE, LOCAL_ID, remote, buf[..n].to_vec()))
             .await
             .map_err(|_| bad("the USB writer stopped"))?;
         timeout(ACK, acked.notified())
@@ -264,8 +306,11 @@ async fn write_usb<W: AsyncWrite + Unpin>(
     mut dev: W,
     mut out: mpsc::Receiver<Packet>,
 ) -> io::Result<()> {
-    while let Some((command, a0, a1, data)) = out.recv().await {
-        send(&mut dev, command, a0, a1, &data).await?;
+    while let Some(p) = out.recv().await {
+        send(&mut dev, p.command, p.arg0, p.arg1, &p.data).await?;
+        if let Some(sent) = p.sent {
+            let _ = sent.send(());
+        }
     }
     Ok(())
 }
@@ -614,5 +659,70 @@ mod tests {
         drop((r, w));
         assert!(session.await.unwrap().is_ok());
         assert_eq!(phone.await.unwrap(), TOTAL);
+    }
+
+    #[tokio::test]
+    async fn the_data_before_the_phones_close_is_not_lost() {
+        let key = key();
+        let (mut host, mut device) = duplex(1 << 16);
+        let phone = tokio::spawn(async move {
+            let _ = wire::read_message(&mut device).await;
+            let hello = wire::encode(CNXN, VERSION, 4096, &[]).unwrap();
+            device.write_all(&hello).await.unwrap();
+            let _ = wire::read_message(&mut device).await;
+            let ok = wire::encode(OKAY, 5, LOCAL_ID, &[]).unwrap();
+            device.write_all(&ok).await.unwrap();
+            // The last data and the close, back to back, as a response followed by a close is.
+            let data: Vec<u8> = (0..3000).map(|i| byte(i, 7)).collect();
+            device
+                .write_all(&wire::encode(WRTE, 5, LOCAL_ID, &data).unwrap())
+                .await
+                .unwrap();
+            device
+                .write_all(&wire::encode(CLSE, 5, LOCAL_ID, &[]).unwrap())
+                .await
+                .unwrap();
+            device
+        });
+        let c = connect(&mut host, &key).await.unwrap();
+        let remote = open_stream(&mut host).await.unwrap();
+        // A small pipe and a reader that starts late: the data waits to be written when the close
+        // has been read already.
+        let (mut mine, theirs) = duplex(1024);
+        let session = tokio::spawn(serve(host, theirs, remote, c.max));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut got = Vec::new();
+        mine.read_to_end(&mut got).await.unwrap();
+        assert_eq!(got.len(), 3000);
+        assert!(got.iter().enumerate().all(|(i, b)| *b == byte(i, 7)));
+        assert!(session.await.unwrap().is_ok());
+        drop(phone.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn closing_the_local_end_closes_the_phones_stream_first() {
+        let key = key();
+        let (mut host, mut device) = duplex(1 << 16);
+        let phone = tokio::spawn(async move {
+            let _ = wire::read_message(&mut device).await;
+            let hello = wire::encode(CNXN, VERSION, 4096, &[]).unwrap();
+            device.write_all(&hello).await.unwrap();
+            let _ = wire::read_message(&mut device).await;
+            let ok = wire::encode(OKAY, 5, LOCAL_ID, &[]).unwrap();
+            device.write_all(&ok).await.unwrap();
+            let close = wire::read_message(&mut device).await.unwrap();
+            // As adb does, answer a close with a close.
+            let back = wire::encode(CLSE, 5, LOCAL_ID, &[]).unwrap();
+            device.write_all(&back).await.unwrap();
+            close
+        });
+        let c = connect(&mut host, &key).await.unwrap();
+        let remote = open_stream(&mut host).await.unwrap();
+        let (mine, theirs) = duplex(1024);
+        let session = tokio::spawn(serve(host, theirs, remote, c.max));
+        drop(mine);
+        let m = phone.await.unwrap();
+        assert_eq!((m.command, m.arg0, m.arg1), (CLSE, LOCAL_ID, 5));
+        assert!(session.await.unwrap().is_ok());
     }
 }
