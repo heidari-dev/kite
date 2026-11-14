@@ -16,7 +16,7 @@ unprotected and do not rely on it.
 | Phone network access | The computer gets to open sockets from the phone: its data plan, its VPN or proxy exit, and its view of the networks it is on. |
 | Pairing keys | The long-term keys that decide which computer may use which phone. Whoever holds them is the paired computer. |
 | User traffic | Payloads, destination names and addresses, and DNS queries that cross the tunnel. |
-| Daemon privileges | On the computer the daemon creates the TUN device and changes routes and DNS. That needs `CAP_NET_ADMIN` on Linux and administrator rights elsewhere. |
+| Daemon privileges | On the computer the daemon creates the TUN device and changes routes and DNS. That needs `CAP_NET_ADMIN` on Linux and administrator rights on Windows. |
 
 ## Who we worry about
 
@@ -88,8 +88,8 @@ allows every pairing request and is for development only.
 ## B2: local IPC
 
 The daemon owns the privileges. The CLI and the desktop app are unprivileged clients. The Linux
-daemon, its socket and its systemd unit exist (`packaging/linux`); the Windows and macOS
-equivalents do not yet.
+daemon, its socket and its systemd unit exist (`packaging/linux`), and so do the Windows service
+and its named pipe (rows marked Windows); the macOS equivalent does not yet.
 
 | | Threat | Mitigation | Owner | Status |
 |---|--------|------------|-------|--------|
@@ -104,6 +104,11 @@ equivalents do not yet.
 | S | The window shows a setting that is not what the daemon runs. | While a tunnel is up the window shows the daemon's own mode and kill switch and locks those controls; the saved choice only applies at the next connect. | `apps/desktop` | done |
 | I | The app keeps or leaks the pairing code or a key. | The code is sent once and not stored, logged or printed (its `Debug` output hides it). The app never holds a key; it shows the computer's fingerprint, and pairing stops if the daemon gives none. The only file it writes is `kite/desktop.json` (mode, kill switch), owner-only, replaced through a temporary file and ignored if damaged. | `apps/desktop` | done |
 | E | A local user turns the daemon into a way to run commands or touch files as it. | A fixed set of commands with typed arguments, no paths or command lines taken from clients. The daemon's state directory is 0700 and its own. On Linux the unit runs it as the `kite` user with `CAP_NET_ADMIN` and nothing else (bounding set and ambient), `NoNewPrivileges`, a read-only system, no home directories, a system call and address family filter and a device allow-list; CI checks the unit with `systemd-analyze security` and runs it in the netns test. The polkit rule lets that user change DNS on a link through systemd-resolved and nothing else. | `kite-cli` (daemon), `packaging/linux` | done (installed by the Linux packages) |
+| S | Another local user or a remote machine connects to the daemon's pipe (Windows). | The pipe's access list lets in SYSTEM, the administrators, the user a console daemon runs as, and the members of the local group `kite` (a local group, looked up by name and by type: a user called `kite` does not count), and nobody else; `PIPE_REJECT_REMOTE_CLIENTS` refuses other machines. Whether a caller may change the paired phones is asked of the system when a request needs it: the daemon impersonates the client on a thread of its own and checks for the Administrators group in an elevated token, so only an elevated administrator or SYSTEM may pair, as only root may on Linux. | `kite-win`, `kite-cli` (daemon) | done (Windows) |
+| E | A member of the group `kite` opens a second instance of the pipe and answers the other members' requests (Windows). | The members' rights leave out `FILE_CREATE_PIPE_INSTANCE` (the bit `FILE_APPEND_DATA` shares), so only the daemon creates instances, and a test checks that a second first instance cannot be made. | `kite-win` | done (Windows) |
+| S | A program creates the pipe `\\.\pipe\kite` before the service does and poses as the daemon (Windows). | The service creates the pipe as its first instance, which fails when anybody else got there first, and starts at boot. The service then does not start and says so in `kite.log`. The clients do not check who serves the pipe, see the known gaps. | `kite-win`, `kite-cli` (daemon) | partial (Windows) |
+| E | A local user turns the service into a way to run commands or touch files as SYSTEM (Windows). | Same fixed set of typed commands as on Linux. The service runs PowerShell only with fixed text (the DNS rule: constants and nothing from a client), by the full path of the system's own copy and without a module path from the environment; the only address that reaches the system is a parsed IP address, handed to the routing API and never to a command line. `wintun.dll` is loaded by full path from the directory of `kite.exe` (`Program Files`, which only administrators can write) and never searched for. The daemon's directory `%ProgramData%\Kite`, with the key, the phones, the log and the TUN state, has a protected access list for SYSTEM and the administrators; the daemon refuses a directory that somebody else owns. | `kite-win`, `kite-cli` | done (Windows) |
+| E | The service has more rights than it needs (Windows). | It runs as LocalSystem. A narrower account does not work: creating the Wintun adapter installs a device and changing routes changes the machine's network, which needs administrator rights; LocalService, NetworkService and a virtual service account have neither, and putting one in the Administrators group would not be narrower. The installer cuts what the SYSTEM token may do. | `packaging/windows` | planned |
 | E | The package gives the wrong person access to the tunnel. | The install script adds one person to the `kite` group, once, on first install: the one `sudo` or `pkexec` names, or else the person at the active graphical session. Only ordinary accounts qualify (UID 1000 to 59999), never root, and it prints who it added. Pairing stays closed to the group (see above). Removing the package deletes the user, the group and the state. | `packaging/linux` | done |
 
 ## B3: phone and Internet
@@ -113,7 +118,8 @@ equivalents do not yet.
 | S | Forged DNS answers send traffic to the wrong host. | Names resolve on the phone, so queries leave through the phone's VPN or network, not the computer's. | `kite-relay` | done |
 | T | Someone alters traffic past the phone. | Out of our hands: Kite does not touch application TLS. | none | n/a |
 | I | Traffic or DNS leaves the computer outside the tunnel, or outside the phone's VPN. | The relay opens a real socket on the phone for every connection, so the phone's VPN applies. In TUN mode policy rules send every packet to port 53 and everything not marked as the relay transport into the tunnel, and tun2proxy carries DNS over TCP through it; with systemd-resolved the tunnel link gets the `~.` routing domain. CI checks with packet counters that nothing else leaves. | `kite-relay`, `kite-cli` | done |
-| I | The link to the phone drops and traffic falls back to the computer's own network, with its real address and DNS. | With the kill switch (`--kill-switch`, or the switch in the desktop app; off until the user turns it on) the TUN device, its rules and DNS settings stay while the link is down, local connections are refused, and the relay is redialled with backoff; a blackhole route in the tunnel table keeps traffic blocked if kite itself dies, until `kite restore`. The netns CI test cuts the link mid-download and counts zero packets outside the tunnel, then checks that traffic resumes. Without the kill switch a dropped link restores normal routing. | `kite-cli` | done |
+| I | Traffic or DNS leaves the computer outside the tunnel (Windows). | Four routes on the Wintun adapter (`0.0.0.0/1`, `128.0.0.0/1`, `::/1`, `8000::/1`) are more specific than any default route, so they take everything the local network does not; the relay's own address gets a host route past them when it needs one. A catch-all DNS rule (NRPT) sends every lookup to 1.1.1.1 through the tunnel, because Windows otherwise asks the DNS server of every adapter at once, and the adapter's own DNS server and metric say the same. Everything is removed on stop and by `kite restore`. The smoke test on a Windows runner checks that the routes, the rule and the adapter appear and that all of it is gone afterwards. | `kite-cli`, `kite-win` | done (Windows), see the known gaps |
+| I | The link to the phone drops and traffic falls back to the computer's own network, with its real address and DNS. | With the kill switch (`--kill-switch`, or the switch in the desktop app; off until the user turns it on) the TUN device, its rules and DNS settings stay while the link is down, local connections are refused, and the relay is redialled with backoff; a blackhole route in the tunnel table keeps traffic blocked if kite itself dies, until `kite restore`. The netns CI test cuts the link mid-download and counts zero packets outside the tunnel, then checks that traffic resumes. Without the kill switch a dropped link restores normal routing. There is no kill switch on Windows yet (issue 88): `--kill-switch` is refused. | `kite-cli` | done (Linux), planned (Windows) |
 | D | A remote server holds connections open or sends data without end. | Idle timeouts, the stream cap above, bounded copy buffers. | `kite-relay` | done |
 | E | The relay is turned into a way to reach the phone's own network (see B1, elevation). | Same deny-list. By design other hosts on the phone's networks, such as other hotspot clients on private addresses, stay reachable, because the user's traffic needs them. The phone's public address as seen by its carrier is not an interface address and cannot be detected. | `kite-relay` | done |
 
@@ -122,7 +128,9 @@ Besides the abstract socket, the relay's only listener is the optional WiFi one 
 ## Keys and secrets
 
 - Computer: `key` and `phones` in the user's config directory, mode 0600 in a 0700 directory;
-  kite refuses files other users can read or write. On Windows they rely on the profile's ACL.
+  kite refuses files other users can read or write. On Windows the directory (`%APPDATA%\kite`, or
+  `%ProgramData%\Kite` for the service) gets a protected access list for the user, SYSTEM and the
+  administrators each time kite opens it, and kite refuses a directory that somebody else owns.
   **Done.**
 - Phone: the relay takes the key as bytes and wipes them; the app keeps it encrypted with an AES key
   in Android Keystore (iOS Keychain with `ThisDeviceOnly` is planned). **Done** on Android.
@@ -140,6 +148,7 @@ Besides the abstract socket, the relay's only listener is the optional WiFi one 
 | A dependency has a known vulnerability, is yanked, or comes from an unexpected source. | `cargo-deny` on every pull request and weekly: advisories, bans, licenses, and only crates.io allowed. Dependabot for crates and Actions. | done |
 | A CI action is swapped for a malicious version. | Every action is pinned to a full commit SHA. Workflows default to `contents: read` and never use `pull_request_target`. | done |
 | Unsafe or buggy code lands in a parser. | `#![forbid(unsafe_code)]` outside FFI and TUN glue, CodeQL, fuzz targets, review on every pull request. | done |
+| `wintun.dll` is swapped for another one. | It is never committed. `scripts/fetch-wintun.ps1` downloads the zip from wintun.net over HTTPS and checks the zip and the DLL against SHA-256 values in the script; the DLL is signed by WireGuard LLC. kite loads it only from its own directory. | done |
 | The AppImage runtime or a packaging tool is swapped. | The .deb is built with `dpkg-deb` and no other tool. The only download is the AppImage runtime, checked against a SHA-256 in `scripts/package-linux.sh`. | done |
 | A release is built or altered somewhere untrusted. | Releases are built only by CI from tags, with SHA-256 checksums, GitHub artifact attestations and a CycloneDX SBOM. OpenSSF Scorecard tracks the repository's practices. | planned (releases), done (Scorecard) |
 
@@ -150,6 +159,9 @@ Besides the abstract socket, the relay's only listener is the optional WiFi one 
   tunnel; keep it small.
 - One member of the `kite` group can hold all 8 IPC slots for a few seconds at a time and starve the
   others; there is no per-user cap yet.
+- On Windows the clients (`kite`, the desktop app) do not check that the pipe's server is the service. A program that makes the pipe first, before the service starts, would see the requests (phone addresses, the pairing code, which cannot be used without the phone's handshake) and could show a false status. Starting the service at boot makes the window small. Checking the server's process against the service's is planned.
+- On Windows a program that sends DNS to a resolver on the local network itself (`nslookup NAME 192.168.1.1`) reaches it directly, because that network's own route is more specific than the tunnel's. Names looked up the usual way go through the rule. Names that only the local network knows stop resolving while the tunnel is up.
+- On Windows a crash of the daemon leaves the DNS rule (and a host route for a relay on the Internet) until the next TUN start or `kite restore`; the adapter and its routes go with the process. Names then resolve through 1.1.1.1 without a tunnel.
 - Removing a computer in the app does not end a tunnel it already has up; stop sharing to cut it off.
 - No quota per paired computer: a paired computer can use all of the phone's data.
 - Proxy mode and TUN mode listen on 127.0.0.1, so any local user can send traffic through the phone

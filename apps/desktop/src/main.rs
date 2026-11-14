@@ -1,3 +1,4 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 //! Kite for the desktop: a small window and a tray icon. Both are only a view of the daemon, which
 //! owns the tunnel, so closing the window or quitting this program does not drop the connection.
 
@@ -237,6 +238,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let ui = AppWindow::new()?;
     ui.set_phones(ModelRc::from(phones));
+    ui.set_kill_switch_available(settings::KILL_SWITCH);
     let tray = Tray::new()?;
     let (cmds, rx) = unbounded_channel();
     let visible = Arc::new(AtomicBool::new(false));

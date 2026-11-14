@@ -27,13 +27,17 @@ impl Server {
         let name = path
             .to_str()
             .filter(|n| n.starts_with(PREFIX) && n.len() > PREFIX.len())
-            .ok_or_else(|| io::Error::other(r"the socket must be a pipe name like \\.\pipe\kite"))?;
+            .ok_or_else(|| {
+                io::Error::other(r"the socket must be a pipe name like \\.\pipe\kite")
+            })?;
         let pipe = Pipe::new(name)?;
         // As the first instance it fails when anyone made a pipe of this name before: no one can
         // stand in for the daemon.
         let next = pipe.instance(true).map_err(|e| {
             if e.raw_os_error() == Some(ACCESS_DENIED) {
-                io::Error::other("another kite daemon is already running, or the pipe name is taken")
+                io::Error::other(
+                    "another kite daemon is already running, or the pipe name is taken",
+                )
             } else {
                 e
             }
@@ -49,7 +53,10 @@ impl Server {
         let fresh = self.pipe.instance(false)?;
         let ready = std::mem::replace(&mut self.next, fresh);
         let caller = caller(&ready)?;
-        Ok(Some((ready, Box::new(move || caller.is_admin().unwrap_or(false)))))
+        Ok(Some((
+            ready,
+            Box::new(move || caller.is_admin().unwrap_or(false)),
+        )))
     }
 }
 
@@ -91,7 +98,13 @@ mod tests {
 
     #[tokio::test]
     async fn only_pipe_names_are_taken() {
-        for bad in ["kite", r"C:\kite", r"\\.\pipe\", r"\\server\pipe\kite", "/run/kite.sock"] {
+        for bad in [
+            "kite",
+            r"C:\kite",
+            r"\\.\pipe\",
+            r"\\server\pipe\kite",
+            "/run/kite.sock",
+        ] {
             let e = Server::bind(bad.into()).await.map(drop).unwrap_err();
             assert!(e.to_string().contains("pipe name"), "{bad}: {e}");
         }

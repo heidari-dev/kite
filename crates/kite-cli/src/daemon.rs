@@ -531,10 +531,17 @@ mod tests {
         }
     }
 
-    async fn ask(socket: &PathBuf, line: &str) -> Response {
+    async fn ask(socket: &std::path::Path, line: &str) -> Response {
         let mut s = os::connect(socket).await.unwrap();
-        s.write_all(format!("{line}
-").as_bytes()).await.unwrap();
+        s.write_all(
+            format!(
+                "{line}
+"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
         let mut reply = String::new();
         BufReader::new(s).read_line(&mut reply).await.unwrap();
         Response::parse(reply.trim_end().as_bytes()).unwrap()

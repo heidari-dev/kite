@@ -19,8 +19,8 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{
     GetSecurityDescriptorDacl, GetTokenInformation, LookupAccountNameW, SidTypeAlias, TokenUser,
-    ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-    PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
+    ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -113,8 +113,9 @@ pub fn current_user_sid() -> io::Result<String> {
         // u64 elements keep the TOKEN_USER the system writes here aligned.
         let mut buf = vec![0u64; (need as usize).div_ceil(8)];
         // SAFETY: `buf` is at least `need` bytes.
-        let got =
-            unsafe { GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), need, &mut need) };
+        let got = unsafe {
+            GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), need, &mut need)
+        };
         if got == 0 {
             return Err(io::Error::last_os_error());
         }
@@ -289,10 +290,17 @@ mod tests {
         // Twice: replacing the permissions is repeatable.
         private_dir(&dir).unwrap();
         std::fs::write(dir.join("key"), b"x").unwrap();
-        let out = std::process::Command::new("icacls").arg(&dir).output().unwrap();
+        let out = std::process::Command::new("icacls")
+            .arg(&dir)
+            .output()
+            .unwrap();
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         // Users, Everyone and Authenticated Users must not appear in the list.
-        for other in ["BUILTIN\\Users", "Everyone", "NT AUTHORITY\\Authenticated Users"] {
+        for other in [
+            "BUILTIN\\Users",
+            "Everyone",
+            "NT AUTHORITY\\Authenticated Users",
+        ] {
             assert!(!text.contains(other), "{other} in {text}");
         }
         assert!(text.contains("NT AUTHORITY\\SYSTEM"), "{text}");

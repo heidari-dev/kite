@@ -37,6 +37,9 @@ impl Default for Settings {
     }
 }
 
+/// Whether there is a kill switch to turn on: not on Windows yet.
+pub const KILL_SWITCH: bool = cfg!(not(windows));
+
 /// The kill switch redials without a lookup, so the daemon takes only an IP address (with or
 /// without a port) for it; a name is caught here, before the daemon has to refuse it.
 pub fn for_kill_switch(addr: Option<String>) -> Result<Option<String>, &'static str> {
@@ -102,6 +105,8 @@ impl Settings {
         match clean_addr(&s.wifi_addr) {
             Ok(addr) => {
                 s.wifi_addr = addr.unwrap_or_default();
+                // A file copied from another system may ask for what this one cannot do.
+                s.kill_switch &= KILL_SWITCH;
                 s
             }
             Err(_) => Self::default(),
@@ -155,7 +160,7 @@ mod tests {
         let path = d.join("kite").join("desktop.json");
         let s = Settings {
             mode: Mode::Proxy,
-            kill_switch: true,
+            kill_switch: KILL_SWITCH,
             wifi: true,
             wifi_addr: "192.168.1.20:47810".into(),
         };
@@ -168,6 +173,16 @@ mod tests {
             assert_eq!(mode(&path), 0o600);
             assert_eq!(mode(path.parent().unwrap()), 0o700);
         }
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn a_kill_switch_this_system_lacks_is_dropped() {
+        let d = dir("clamp");
+        let path = d.join("kite").join("desktop.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"kill_switch":true}"#).unwrap();
+        assert_eq!(Settings::load(&path).kill_switch, KILL_SWITCH);
         std::fs::remove_dir_all(d).unwrap();
     }
 

@@ -26,6 +26,19 @@ Building on Linux needs the fontconfig headers (`libfontconfig1-dev` on Debian a
 - The tray icon needs a desktop that shows StatusNotifier icons. GNOME needs the AppIndicator
   extension.
 
+## On Windows
+
+The app talks to the Kite service over the named pipe `\\.\pipe\kite`. If the service is not
+running, or your user is not in the local group `kite`, the window says so (an administrator adds
+you with `net localgroup kite YOUR_NAME /add`; sign in again afterwards). Pairing needs an
+administrator, so pair from an administrator prompt with `kite pair --usb` (or `--wifi`). The
+settings file is `%APPDATA%\kite\desktop.json`.
+
+The tray icon is Slint's own (no extra crate: Slint uses the Windows notification area API and
+`ksni` is only for Linux). Windows 11 puts a new icon in the overflow flyout of the taskbar; drag
+it out to keep it visible. There is no kill switch on Windows yet, so the switch is not shown.
+Reduced motion and text scaling are not read from the system on Windows; `--reduced-motion` works.
+
 ## Look and feel
 
 The kite follows [docs/design/motion.md](../../docs/design/motion.md). With the window closed to

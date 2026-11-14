@@ -9,8 +9,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use windows_service::define_windows_service;
 use windows_service::service::{
-    ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
-    ServiceType,
+    ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
 };
 use windows_service::service_control_handler::{
     self, ServiceControlHandlerResult, ServiceStatusHandle,
@@ -93,7 +92,11 @@ fn service_main(_arguments: Vec<OsString>) {
         return;
     };
     let _ = handle.set(status);
-    let _ = report(&status, ServiceState::StartPending, ServiceExitCode::Win32(0));
+    let _ = report(
+        &status,
+        ServiceState::StartPending,
+        ServiceExitCode::Win32(0),
+    );
     let result = body(Control {
         stop,
         up: Up(status),
@@ -113,7 +116,10 @@ fn report(
     state: ServiceState,
     exit_code: ServiceExitCode,
 ) -> io::Result<()> {
-    let pending = matches!(state, ServiceState::StartPending | ServiceState::StopPending);
+    let pending = matches!(
+        state,
+        ServiceState::StartPending | ServiceState::StopPending
+    );
     handle
         .set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
