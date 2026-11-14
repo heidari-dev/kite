@@ -40,12 +40,30 @@ pub fn start(transport: &Transport) -> Result<(), String> {
     if !exe.is_file() {
         return Err("kite.exe is not next to this program; reinstall Kite.".into());
     }
+    // The prompt would show this file as the program to trust, so only one that ordinary users
+    // cannot replace: the installed copy.
+    let installed = ["ProgramW6432", "ProgramFiles"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .any(|base| under(&exe, std::path::Path::new(&base)));
+    if !installed {
+        return Err("Pairing from a copy of Kite outside Program Files is not offered. Run kite pair in an administrator prompt.".into());
+    }
     kite_win::elevate::run_as_admin(&exe, &args).map_err(|e| {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
             "The Windows prompt was declined, so pairing did not start.".to_string()
         } else {
             e.to_string()
         }
+    })
+}
+
+/// Whether `file` is inside `dir`, by whole path parts.
+fn under(file: &std::path::Path, dir: &std::path::Path) -> bool {
+    let (mut f, mut d) = (file.components(), dir.components());
+    d.all(|c| {
+        f.next()
+            .is_some_and(|x| x.as_os_str().eq_ignore_ascii_case(c.as_os_str()))
     })
 }
 
@@ -75,6 +93,23 @@ mod tests {
             pair_args(&wifi(Some("[fd00::1]"))).unwrap(),
             "pair --wifi [fd00::1] --pause"
         );
+    }
+
+    #[test]
+    fn only_a_file_inside_the_directory_is_under_it() {
+        use std::path::Path;
+        let base = Path::new(r"C:\Program Files");
+        assert!(under(Path::new(r"C:\Program Files\Kite\kite.exe"), base));
+        assert!(under(Path::new(r"c:\program files\Kite\kite.exe"), base));
+        assert!(!under(
+            Path::new(r"C:\Program Files (x86)\Kite\kite.exe"),
+            base
+        ));
+        assert!(!under(
+            Path::new(r"C:\Users\me\Program Files\kite.exe"),
+            base
+        ));
+        assert!(!under(Path::new(r"D:\Program Files\Kite\kite.exe"), base));
     }
 
     #[test]

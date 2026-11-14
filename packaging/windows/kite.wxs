@@ -29,7 +29,8 @@
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
-        <Directory Id="INSTALLFOLDER" Name="Kite" />
+        <!-- Not upper case, so it is not a public property: it cannot be set on the command line. -->
+        <Directory Id="InstallFolder" Name="Kite" />
       </Directory>
       <Directory Id="ProgramMenuFolder">
         <Directory Id="MenuFolder" Name="Kite" />
@@ -44,7 +45,7 @@
       <ComponentRef Id="StartMenu" />
     </Feature>
 
-    <DirectoryRef Id="INSTALLFOLDER">
+    <DirectoryRef Id="InstallFolder">
       <!-- The command line and the service. It runs as LocalSystem, see docs/threat-model.md; the
            privileges its token keeps are cut by the Privs action below. -->
       <Component Id="Cli" Guid="*" Win64="yes">
@@ -75,7 +76,7 @@
         <File Id="DesktopExe" Source="$(var.Bin)\kite-desktop.exe" KeyPath="yes" />
         <!-- Starts hidden in the tray at every sign-in, as the Linux package does. -->
         <RegistryValue Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Run" Name="Kite"
-                       Type="string" Value="&quot;[INSTALLFOLDER]kite-desktop.exe&quot; --hidden" />
+                       Type="string" Value="&quot;[InstallFolder]kite-desktop.exe&quot; --hidden" />
       </Component>
     </DirectoryRef>
 
@@ -85,7 +86,7 @@
       <Component Id="StartMenu" Guid="*">
         <Shortcut Id="StartMenuKite" Name="Kite"
                   Description="Share your phone's connection with this computer"
-                  Target="[INSTALLFOLDER]kite-desktop.exe" WorkingDirectory="INSTALLFOLDER"
+                  Target="[InstallFolder]kite-desktop.exe" WorkingDirectory="InstallFolder"
                   Icon="kite.ico" />
         <RemoveFolder Id="RemoveMenuFolder" On="uninstall" />
         <RegistryValue Root="HKCU" Key="Software\Kite" Name="StartMenu" Type="integer" Value="1"
@@ -113,7 +114,7 @@
     <!-- The group takes effect at the next sign-in; this lets the person who installs use the
          service at once, through the users file the pipe's access list reads. -->
     <CustomAction Id="Allow.Set" Property="Allow" Execute="immediate"
-        Value="&quot;[INSTALLFOLDER]kite.exe&quot; allow &quot;[%USERDOMAIN]\[%USERNAME]&quot;" />
+        Value="&quot;[InstallFolder]kite.exe&quot; allow &quot;[%USERDOMAIN]\[%USERNAME]&quot;" />
     <CustomAction Id="Allow" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred"
                   Impersonate="no" Return="ignore" />
 
@@ -124,7 +125,7 @@
                   Impersonate="no" Return="check" />
 
     <CustomAction Id="Restore.Set" Property="Restore" Execute="immediate"
-        Value="&quot;[INSTALLFOLDER]kite.exe&quot; restore" />
+        Value="&quot;[InstallFolder]kite.exe&quot; restore" />
     <CustomAction Id="Restore" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred"
                   Impersonate="no" Return="ignore" />
 
@@ -133,8 +134,10 @@
     <CustomAction Id="RemoveData" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred"
                   Impersonate="no" Return="ignore" />
 
+    <!-- Only the group this installer made: it has the comment given to AddGroup, a group of the
+         same name that somebody else made does not. -->
     <CustomAction Id="RemoveGroup.Set" Property="RemoveGroup" Execute="immediate"
-        Value="&quot;[System64Folder]net.exe&quot; localgroup kite /delete" />
+        Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -Command &quot;if ((Get-LocalGroup -Name kite).Description -eq 'People who may use the Kite service') { Remove-LocalGroup -Name kite }&quot;" />
     <CustomAction Id="RemoveGroup" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred"
                   Impersonate="no" Return="ignore" />
 
@@ -155,9 +158,10 @@
       <Custom Action="Privs" Sequence="5810">NOT Installed</Custom>
 
       <!-- Uninstalling, after the service stopped (1900): lift what a tunnel left, then remove the
-           data and the group, unless this is an upgrade, which keeps keys and pairings. -->
+           files (3500), the data and the group, unless this is an upgrade, which keeps keys and
+           pairings. The data goes last, so an uninstall that fails earlier loses nothing. -->
       <Custom Action="Restore" Sequence="1950">REMOVE="ALL"</Custom>
-      <Custom Action="RemoveData" Sequence="1960">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="RemoveData" Sequence="3510">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="RemoveGroup" Sequence="1970">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
     </InstallExecuteSequence>
   </Product>

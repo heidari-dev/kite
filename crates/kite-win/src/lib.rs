@@ -202,38 +202,76 @@ pub fn is_sid_text(s: &str) -> bool {
         })
 }
 
-/// The users the installer or `kite allow` let use the daemon, besides the group `kite`: one SID
-/// per line in `users` in the data directory. A missing file is nobody; a line that is not a SID
-/// is skipped, and at most 64 are read, so the file cannot put anything but SIDs into the
-/// pipe's access list.
-pub fn allowed_users() -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(data_dir().join("users")) else {
-        return Vec::new();
+/// At most this many users in the file.
+const MAX_USERS: usize = 64;
+
+/// The users in `users` in the data directory: one SID per line. A missing file is nobody; a line
+/// that is not a valid SID is skipped (a byte order mark is ignored), so the file can put nothing
+/// but SIDs into the pipe's access list. Any other trouble reading it is an error.
+fn read_users() -> io::Result<Vec<String>> {
+    let mut file = match std::fs::File::open(data_dir().join("users")) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
     };
-    text.lines()
+    // The directory is closed to others once `private_dir` has run, but it is made with the
+    // permissions of ProgramData first: a file somebody else made in that moment is theirs to
+    // change later, so it does not count.
+    if !trusted_owner(file.as_raw_handle(), &current_user_sid()?)? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the list of allowed users belongs to another user; remove it",
+        ));
+    }
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut std::io::Read::take(&mut file, 64 * 1024), &mut text)?;
+    Ok(text
+        .trim_start_matches('\u{feff}')
+        .lines()
         .map(str::trim)
-        .filter(|l| is_sid_text(l))
-        .take(64)
+        // A SID of the right shape that Windows does not accept would stop the pipe being made.
+        .filter(|l| is_sid_text(l) && Descriptor::parse(&format!("D:(A;;GA;;;{l})")).is_ok())
+        .take(MAX_USERS)
         .map(String::from)
-        .collect()
+        .collect())
+}
+
+/// The users the installer or `kite allow` let use the daemon, besides the group `kite`. A file
+/// that cannot be read means nobody, said on stderr.
+pub fn allowed_users() -> Vec<String> {
+    read_users().unwrap_or_else(|e| {
+        eprintln!("kite: cannot read the list of allowed users: {e}");
+        Vec::new()
+    })
 }
 
 /// Lets the user with `sid` use the daemon (from the next start of the service). Needs the
 /// rights to write the data directory, which are the administrators'.
 pub fn allow_user(sid: &str) -> io::Result<()> {
-    if !is_sid_text(sid) {
+    if !is_sid_text(sid) || Descriptor::parse(&format!("D:(A;;GA;;;{sid})")).is_err() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a SID"));
     }
     let dir = data_dir();
     private_dir(&dir)?;
-    let mut users = allowed_users();
+    // An unreadable list is an error here: writing it again would lose the others.
+    let mut users = read_users()?;
     if !users.iter().any(|u| u == sid) {
+        if users.len() >= MAX_USERS {
+            return Err(io::Error::other(format!(
+                "{MAX_USERS} users are allowed already"
+            )));
+        }
         users.push(sid.to_string());
     }
     let text: String = users.iter().map(|u| format!("{u}\n")).collect();
     let tmp = dir.join(format!("users.tmp{}", std::process::id()));
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, dir.join("users")).inspect_err(|_| {
+    let written = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        std::io::Write::write_all(&mut f, text.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, dir.join("users"))
+    })();
+    written.inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
 }
@@ -265,6 +303,31 @@ impl Descriptor {
     }
 }
 
+/// Whether the file or directory behind `handle` is owned by SYSTEM, the Administrators or `me`.
+/// Its owner can change who may use it, so anyone else's is not to be trusted.
+fn trusted_owner(handle: HANDLE, me: &str) -> io::Result<bool> {
+    let mut owner: PSID = null_mut();
+    let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+    // SAFETY: the caller's handle is open for this call; the owner SID points into `sd`, freed
+    // below.
+    check(unsafe {
+        GetSecurityInfo(
+            handle,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &mut sd,
+        )
+    })?;
+    let _sd = Local(sd.cast());
+    // SAFETY: the call above succeeded, so `owner` is a valid SID.
+    let owner = unsafe { sid_string(owner) }?;
+    Ok(owner == me || owner == SYSTEM_SID || owner == ADMINISTRATORS_SID)
+}
+
 /// Creates `path` if it is missing and makes it usable by SYSTEM, Administrators and the current
 /// user only, for what is created in it from now on. Refuses a directory that somebody else owns
 /// (its owner could change the permissions back) and one that is a junction or a symbolic link.
@@ -285,26 +348,7 @@ pub fn private_dir(path: &Path) -> io::Result<()> {
     }
     let handle = dir.as_raw_handle();
 
-    let mut owner: PSID = null_mut();
-    let mut sd: PSECURITY_DESCRIPTOR = null_mut();
-    // SAFETY: `handle` belongs to `dir`, which is open until the end of this function; the owner
-    // SID points into `sd`, freed below.
-    check(unsafe {
-        GetSecurityInfo(
-            handle,
-            SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION,
-            &mut owner,
-            null_mut(),
-            null_mut(),
-            null_mut(),
-            &mut sd,
-        )
-    })?;
-    let _sd = Local(sd.cast());
-    // SAFETY: the call above succeeded, so `owner` is a valid SID.
-    let owner = unsafe { sid_string(owner) }?;
-    if owner != me && owner != SYSTEM_SID && owner != ADMINISTRATORS_SID {
+    if !trusted_owner(handle, &me)? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!("{} belongs to another user; remove it", path.display()),
@@ -402,6 +446,18 @@ mod tests {
             &format!("S-1-{}", "1".repeat(200)),
         ] {
             assert!(!is_sid_text(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_sid_of_the_right_shape_that_windows_refuses_is_not_a_user() {
+        // Too many sub-authorities, and a number that does not fit.
+        for bad in [
+            "S-1-5-1-2-3-4-5-6-7-8-9-10-11-12-13-14-15-16",
+            "S-1-99999999999999999999",
+        ] {
+            assert!(is_sid_text(bad));
+            assert!(allow_user(bad).is_err(), "{bad}");
         }
     }
 
