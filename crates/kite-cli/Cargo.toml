@@ -20,12 +20,17 @@ tokio = { version = "1.53", features = ["io-util", "macros", "net", "rt", "signa
 tokio-util = { version = "0.7", features = ["compat"] }
 yamux = "0.14"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-netlink-packet-route = "0.33"
-rtnetlink = "0.23"
+[target.'cfg(any(target_os = "linux", windows))'.dependencies]
 tokio = { version = "1.53", features = ["fs", "process", "rt-multi-thread"] }
 tun = { version = "0.8.14", features = ["async"] }
 tun2proxy = { version = "0.8.7", default-features = false, features = ["udpgw"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+netlink-packet-route = "0.33"
+rtnetlink = "0.23"
+
+[target.'cfg(windows)'.dependencies]
+kite-win = { path = "../kite-win", version = "0.0.0" }
 
 [dev-dependencies]
 kite-relay = { path = "../kite-relay" }

@@ -1,11 +1,12 @@
 //! `kite daemon`: owns the transports, the TUN device and the tunnel, and answers the `kite`
-//! command and the desktop app on a Unix socket (protocol in `kite-ipc`).
+//! command and the desktop app on a Unix socket, or a named pipe on Windows (protocol in
+//! `kite-ipc`).
 //!
-//! Who may talk to it: the socket is 0660 and belongs to the daemon's group, and each caller's
-//! credentials (SO_PEERCRED) are checked again: root, the daemon's own user, or a member of the
-//! daemon's group. Every request is a fixed command with typed arguments; no path or command line
-//! of a client is ever used. The tunnel runs on its own thread with its own runtime, so a slow
-//! request never stalls it and it never stalls a request.
+//! Who may talk to it is the system's business, see `sock.rs` and `pipe.rs`: the socket and the
+//! pipe are closed to everyone but root or the administrators and the group `kite`, and each
+//! caller is checked again. Every request is a fixed command with typed arguments; no path or
+//! command line of a client is ever used. The tunnel runs on its own thread with its own runtime,
+//! so a slow request never stalls it and it never stalls a request.
 
 use crate::session::{self, Params, Shared};
 use crate::store::{hex, Store};
@@ -13,7 +14,6 @@ use crate::Transport;
 use kite_ipc::{read_line, Device, Mode, Request, Response, State, Stats, Status, MAX_REQUEST};
 use kite_relay::pair::{self, PairAttempt};
 use std::net::SocketAddr;
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -21,9 +21,18 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use std::{future::Future, io};
 use tokio::io::{AsyncWriteExt, BufReader};
-use tokio::net::{TcpStream, UnixListener, UnixStream};
+use tokio::net::TcpStream;
 use tokio::sync::{oneshot, Semaphore};
 use tokio::time::{timeout, Instant};
+
+#[cfg(windows)]
+mod pipe;
+#[cfg(unix)]
+mod sock;
+#[cfg(windows)]
+use pipe as os;
+#[cfg(unix)]
+use sock as os;
 
 /// Open client connections at once; more are closed on arrival.
 const MAX_CLIENTS: usize = 8;
@@ -38,6 +47,7 @@ const PAIR_START_TIMEOUT: Duration = Duration::from_secs(25);
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct Options {
+    /// The Unix socket, or on Windows the named pipe (`\.\pipe\NAME`).
     pub socket: PathBuf,
     /// Holds the daemon's key and the paired phones.
     pub state: PathBuf,
@@ -45,28 +55,39 @@ pub struct Options {
 
 /// Runs the daemon until `shutdown` completes.
 pub async fn run(opts: Options, shutdown: impl Future<Output = ()>) -> io::Result<()> {
+    run_with(opts, shutdown, || {}).await
+}
+
+/// [`run`], calling `ready` once the daemon accepts clients.
+pub async fn run_with(
+    opts: Options,
+    shutdown: impl Future<Output = ()>,
+    ready: impl FnOnce(),
+) -> io::Result<()> {
     let store = Store::at(opts.state)?;
-    let me = Ids::of_pid("self")?;
-    let (listener, _socket) = bind(opts.socket).await?;
+    let mut server = os::Server::bind(opts.socket).await?;
     let daemon = Arc::new(Daemon {
         store,
         inner: Mutex::new(Inner::default()),
     });
     let slots = Arc::new(Semaphore::new(MAX_CLIENTS));
     eprintln!("kite: daemon ready");
+    ready();
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
             () = &mut shutdown => break,
-            accepted = listener.accept() => match accepted {
-                Ok((stream, _)) => {
+            accepted = server.accept() => match accepted {
+                Ok(Some((stream, admin))) => {
                     let Ok(slot) = slots.clone().try_acquire_owned() else { continue };
-                    let (daemon, me) = (daemon.clone(), me.clone());
+                    let daemon = daemon.clone();
                     tokio::spawn(async move {
-                        client(stream, &daemon, &me).await;
+                        client(stream, admin, &daemon).await;
                         drop(slot);
                     });
                 }
+                // A caller the system says may not talk to the daemon.
+                Ok(None) => {}
                 Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
             },
         }
@@ -76,88 +97,11 @@ pub async fn run(opts: Options, shutdown: impl Future<Output = ()>) -> io::Resul
     Ok(())
 }
 
-/// Binds the socket owner and group only, replacing one left by a daemon that did not exit
-/// cleanly. A socket that answers belongs to a running daemon. The guard removes the file again.
-async fn bind(path: PathBuf) -> io::Result<(UnixListener, crate::status::SocketFile)> {
-    let listener = match UnixListener::bind(&path) {
-        Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
-            let alive = timeout(Duration::from_secs(1), UnixStream::connect(&path)).await;
-            if !matches!(alive, Ok(Err(_))) {
-                return Err(io::Error::other("another kite daemon is already running"));
-            }
-            // Only ever a stale socket, whatever `--socket` points at.
-            if !std::fs::symlink_metadata(&path)?.file_type().is_socket() {
-                return Err(io::Error::other("the socket path is not a socket"));
-            }
-            std::fs::remove_file(&path)?;
-            UnixListener::bind(&path)?
-        }
-        bound => bound?,
-    };
-    let guard = crate::status::SocketFile(path);
-    // Until this, the umask decides; a socket needs write permission to be connected to, and the
-    // usual umask gives that to the owner only.
-    std::fs::set_permissions(&guard.0, std::fs::Permissions::from_mode(0o660))?;
-    Ok((listener, guard))
-}
-
-/// User and groups of a process, from `/proc/PID/status`.
-#[derive(Clone, Debug, PartialEq)]
-struct Ids {
-    uid: u32,
-    gid: u32,
-    groups: Vec<u32>,
-}
-
-impl Ids {
-    fn of_pid(pid: impl std::fmt::Display) -> io::Result<Self> {
-        let text = std::fs::read_to_string(format!("/proc/{pid}/status"))?;
-        Self::parse(&text).ok_or_else(|| io::Error::other("unreadable /proc status"))
-    }
-
-    /// The effective user and group and the supplementary groups.
-    fn parse(status: &str) -> Option<Self> {
-        let field = |name: &str| status.lines().find_map(|l| l.strip_prefix(name));
-        let effective = |name: &str| field(name)?.split_whitespace().nth(1)?.parse().ok();
-        Some(Self {
-            uid: effective("Uid:")?,
-            gid: effective("Gid:")?,
-            groups: field("Groups:")?
-                .split_whitespace()
-                .map(|g| g.parse().ok())
-                .collect::<Option<_>>()?,
-        })
-    }
-
-    /// Root or the daemon's own user. Pairing decides which phones the tunnel, and in TUN mode all
-    /// traffic of the computer, may go to, so the group does not get it.
-    fn may_admin(&self, daemon: &Self) -> bool {
-        self.uid == 0 || self.uid == daemon.uid
-    }
-
-    /// Root, the daemon's own user, or a member of the daemon's group.
-    fn may_talk_to(&self, daemon: &Self) -> bool {
-        self.uid == 0
-            || self.uid == daemon.uid
-            || self.gid == daemon.gid
-            || self.groups.contains(&daemon.gid)
-    }
-}
-
 /// Serves one client: requests are answered in order until it hangs up or breaks the protocol.
-async fn client(stream: UnixStream, daemon: &Daemon, me: &Ids) {
-    // A caller whose credentials cannot be read or whose group cannot be established is refused
-    // (a /proc mounted with hidepid hides other users' processes, and so their groups).
-    let Ok(caller) = stream.peer_cred() else {
-        return;
-    };
-    let peer = caller.pid().and_then(|pid| Ids::of_pid(pid).ok());
-    let Some(peer) = peer.filter(|p| p.uid == caller.uid() && p.may_talk_to(me)) else {
-        eprintln!("kite: refused a connection from outside root and the daemon's group");
-        return;
-    };
-    let admin = peer.may_admin(me);
-    let (read, mut write) = stream.into_split();
+/// `admin` says whether the client may change the paired phones; it is only asked for requests
+/// that do.
+async fn client(stream: os::Stream, mut admin: os::Admin, daemon: &Daemon) {
+    let (read, mut write) = tokio::io::split(stream);
     let mut read = BufReader::with_capacity(MAX_REQUEST, read);
     loop {
         let line = match timeout(READ_TIMEOUT, read_line(&mut read, MAX_REQUEST)).await {
@@ -168,6 +112,11 @@ async fn client(stream: UnixStream, daemon: &Daemon, me: &Ids) {
         let response = match Request::parse(&line) {
             Ok(req) => {
                 log(&req);
+                let privileged = matches!(
+                    req,
+                    Request::PairStart { .. } | Request::Pair { .. } | Request::RemovePeer { .. }
+                );
+                let admin = privileged && admin();
                 timeout(REQUEST_TIMEOUT, daemon.handle(req, admin))
                     .await
                     .unwrap_or_else(|_| Response::err("timed out"))
@@ -353,6 +302,9 @@ impl Daemon {
         kill_switch: bool,
         listen: Option<SocketAddr>,
     ) -> Response {
+        if kill_switch && cfg!(windows) {
+            return Response::err("the kill switch is not available on Windows yet");
+        }
         let mut inner = self.inner();
         if inner.closing {
             return Response::err("the daemon is shutting down");
@@ -535,43 +487,6 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 
-    const STATUS: &str =
-        "Name:\tkite\nUid:\t1000\t1001\t1000\t1001\nGid:\t200\t201\t200\t201\nGroups:\t10 20 30\n";
-
-    #[test]
-    fn parses_ids_from_proc_status() {
-        let ids = Ids::parse(STATUS).unwrap();
-        assert_eq!((ids.uid, ids.gid), (1001, 201));
-        assert_eq!(ids.groups, [10, 20, 30]);
-        assert!(Ids::parse("Uid:\t1\n").is_none());
-        assert!(Ids::parse(&STATUS.replace("30", "x")).is_none());
-        let root = Ids::parse("Uid:\t0\t0\nGid:\t0\t0\nGroups:\t\n").unwrap();
-        assert!(root.groups.is_empty());
-    }
-
-    #[test]
-    fn only_root_the_daemon_and_its_group_may_talk_to_it() {
-        let me = Ids {
-            uid: 900,
-            gid: 901,
-            groups: vec![],
-        };
-        let who = |uid, gid, groups: &[u32]| Ids {
-            uid,
-            gid,
-            groups: groups.to_vec(),
-        };
-        assert!(who(0, 0, &[]).may_talk_to(&me));
-        assert!(who(900, 5, &[]).may_talk_to(&me));
-        assert!(who(1000, 901, &[]).may_talk_to(&me));
-        assert!(who(1000, 1000, &[4, 901]).may_talk_to(&me));
-        assert!(!who(1000, 1000, &[4, 27]).may_talk_to(&me));
-        // Changing the paired phones is for root and the daemon's user only.
-        assert!(who(0, 0, &[]).may_admin(&me));
-        assert!(who(900, 5, &[]).may_admin(&me));
-        assert!(!who(1000, 901, &[901]).may_admin(&me));
-    }
-
     struct Running {
         socket: PathBuf,
         stop: oneshot::Sender<()>,
@@ -583,7 +498,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kite-daemon-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let socket = dir.join("kite.sock");
+        let socket = os::test_path(&dir, name);
         let opts = Options {
             socket: socket.clone(),
             state: dir.join("state"),
@@ -593,7 +508,7 @@ mod tests {
             let _ = stopped.await;
         }));
         for _ in 0..100 {
-            if socket.exists() {
+            if os::connect(&socket).await.is_ok() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -610,14 +525,16 @@ mod tests {
         async fn end(self) {
             self.stop.send(()).unwrap();
             self.task.await.unwrap().unwrap();
+            #[cfg(unix)]
             assert!(!self.socket.exists(), "socket left behind");
             std::fs::remove_dir_all(self.dir).unwrap();
         }
     }
 
     async fn ask(socket: &PathBuf, line: &str) -> Response {
-        let mut s = UnixStream::connect(socket).await.unwrap();
-        s.write_all(format!("{line}\n").as_bytes()).await.unwrap();
+        let mut s = os::connect(socket).await.unwrap();
+        s.write_all(format!("{line}
+").as_bytes()).await.unwrap();
         let mut reply = String::new();
         BufReader::new(s).read_line(&mut reply).await.unwrap();
         Response::parse(reply.trim_end().as_bytes()).unwrap()
@@ -626,8 +543,12 @@ mod tests {
     #[tokio::test]
     async fn answers_commands_and_refuses_bad_ones() {
         let d = start("cmds").await;
-        let mode = std::fs::metadata(&d.socket).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o660);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&d.socket).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o660);
+        }
 
         let r = ask(&d.socket, r#"{"cmd":"status"}"#).await;
         assert_eq!(r.status.unwrap().state, State::Idle);
@@ -665,10 +586,18 @@ mod tests {
         assert_eq!(r.stats.unwrap().streams, 0);
         assert!(ask(&d.socket, r#"{"cmd":"disconnect"}"#).await.ok);
 
+        // Pairing is for administrators (on Linux: root and the daemon's own user).
+        let start = r#"{"cmd":"pair_start","transport":{"type":"tcp","addr":"127.0.0.1:9"}}"#;
+        if !os::test_is_admin() {
+            for line in [r#"{"cmd":"pair","code":"123456"}"#, start] {
+                let r = ask(&d.socket, line).await;
+                assert!(r.error.unwrap().contains("changing the paired phones"));
+            }
+            return d.end().await;
+        }
         // A code with no pairing started is refused, and a failed start leaves nothing behind.
         let r = ask(&d.socket, r#"{"cmd":"pair","code":"123456"}"#).await;
         assert!(r.error.unwrap().contains("no pairing"));
-        let start = r#"{"cmd":"pair_start","transport":{"type":"tcp","addr":"127.0.0.1:9"}}"#;
         for _ in 0..2 {
             let r = ask(&d.socket, start).await;
             assert!(!r.ok && !r.error.unwrap().contains("already"));
@@ -679,11 +608,13 @@ mod tests {
     #[tokio::test]
     async fn drops_oversized_clients() {
         let d = start("limits").await;
-        let mut s = UnixStream::connect(&d.socket).await.unwrap();
+        let mut s = os::connect(&d.socket).await.unwrap();
         s.write_all(&vec![b'a'; MAX_REQUEST + 1]).await.unwrap();
         let mut buf = Vec::new();
-        // The daemon closes the connection without an answer.
-        assert_eq!(s.read_to_end(&mut buf).await.unwrap(), 0);
+        // The daemon closes the connection without an answer; a pipe may report that as an error.
+        let read = s.read_to_end(&mut buf).await;
+        assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+        assert!(buf.is_empty());
         assert!(ask(&d.socket, r#"{"cmd":"status"}"#).await.ok);
         d.end().await;
     }
@@ -697,6 +628,19 @@ mod tests {
         };
         let err = run(opts, std::future::pending()).await.unwrap_err();
         assert!(err.to_string().contains("already running"), "{err}");
+        d.end().await;
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn refuses_the_kill_switch_on_windows() {
+        let d = start("killswitch").await;
+        let r = ask(
+            &d.socket,
+            r#"{"cmd":"connect","transport":{"type":"tcp","addr":"127.0.0.1:9"},"mode":"tun","kill_switch":true}"#,
+        )
+        .await;
+        assert!(r.error.unwrap().contains("not available on Windows"));
         d.end().await;
     }
 }

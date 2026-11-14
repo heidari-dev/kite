@@ -31,13 +31,15 @@ const NOT_A_SERVICE: i32 = 1063;
 pub struct Control {
     /// Completes when the service manager asks the service to stop, or the system shuts down.
     pub stop: oneshot::Receiver<()>,
-    status: ServiceStatusHandle,
+    pub up: Up,
 }
 
-impl Control {
-    /// Tells the service manager that the daemon is up.
+/// Tells the service manager that the daemon is up.
+pub struct Up(ServiceStatusHandle);
+
+impl Up {
     pub fn running(&self) -> io::Result<()> {
-        report(&self.status, ServiceState::Running, ServiceExitCode::Win32(0))
+        report(&self.0, ServiceState::Running, ServiceExitCode::Win32(0))
     }
 }
 
@@ -92,7 +94,10 @@ fn service_main(_arguments: Vec<OsString>) {
     };
     let _ = handle.set(status);
     let _ = report(&status, ServiceState::StartPending, ServiceExitCode::Win32(0));
-    let result = body(Control { stop, status });
+    let result = body(Control {
+        stop,
+        up: Up(status),
+    });
     let code = match &result {
         Ok(()) => ServiceExitCode::Win32(0),
         Err(e) => {

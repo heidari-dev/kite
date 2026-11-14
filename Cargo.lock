@@ -2938,6 +2938,7 @@ dependencies = [
  "kite-ipc",
  "kite-link",
  "kite-relay",
+ "kite-win",
  "netlink-packet-route",
  "rtnetlink",
  "socket2",

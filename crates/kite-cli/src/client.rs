@@ -1,12 +1,12 @@
-//! The `kite` commands that talk to the daemon over its socket (protocol in `kite-ipc`).
+//! The `kite` commands that talk to the daemon over its socket or, on Windows, its named pipe
+//! (protocol in `kite-ipc`).
 
 use crate::{read_code, Connect, Transport};
 use kite_ipc::{read_line, Mode, Request, Response, State, MAX_RESPONSE};
 use std::io;
 use std::path::Path;
 use std::time::Duration;
-use tokio::io::{AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::time::{sleep, timeout};
 
 /// The daemon answers within 30 s; this is a little more.
@@ -14,9 +14,10 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(35);
 /// How long `connect` waits for the tunnel to come up.
 const CONNECT_WAIT: Duration = Duration::from_secs(60);
 
-/// Sends one request. An error answer becomes an `Err` with the daemon's message.
-async fn call(socket: &Path, req: &Request) -> io::Result<Response> {
-    let mut s = UnixStream::connect(socket)
+/// Connects to the daemon, with an error that says what to do when it cannot be reached.
+#[cfg(unix)]
+async fn open(socket: &Path) -> io::Result<impl AsyncRead + AsyncWrite + Unpin> {
+    tokio::net::UnixStream::connect(socket)
         .await
         .map_err(|e| match e.kind() {
             io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => io::Error::new(
@@ -28,7 +29,41 @@ async fn call(socket: &Path, req: &Request) -> io::Result<Response> {
                 "no permission to use the kite daemon; join the kite group, or use --foreground",
             ),
             _ => e,
-        })?;
+        })
+}
+
+#[cfg(windows)]
+async fn open(socket: &Path) -> io::Result<impl AsyncRead + AsyncWrite + Unpin> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+    /// `ERROR_PIPE_BUSY`: every instance is serving someone; one is free again in a moment.
+    const PIPE_BUSY: i32 = 231;
+    for _ in 0..50 {
+        match ClientOptions::new().open(socket) {
+            Err(e) if e.raw_os_error() == Some(PIPE_BUSY) => sleep(Duration::from_millis(100)).await,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(io::Error::new(
+                    e.kind(),
+                    "the Kite service is not running; start it (sc start Kite) or use --foreground",
+                ))
+            }
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                return Err(io::Error::new(
+                    e.kind(),
+                    "no permission to use the Kite service; an administrator can add you to the                      local group kite (net localgroup kite %USERNAME% /add, then sign in again),                      or use --foreground from an administrator prompt",
+                ))
+            }
+            r => return r,
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        "the Kite service is busy",
+    ))
+}
+
+/// Sends one request. An error answer becomes an `Err` with the daemon's message.
+async fn call(socket: &Path, req: &Request) -> io::Result<Response> {
+    let mut s = open(socket).await?;
     let answer = timeout(REPLY_TIMEOUT, async {
         s.write_all(&req.line()).await?;
         read_line(&mut BufReader::new(s), MAX_RESPONSE).await
