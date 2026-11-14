@@ -40,6 +40,9 @@ configure)
     fi
   fi
 
+  # The rule for phones on USB applies to the next one plugged in.
+  udevadm control --reload-rules 2>/dev/null || true
+
   if [ -d /run/systemd/system ]; then
     systemctl daemon-reload
     if [ -n "$fresh" ]; then

@@ -47,8 +47,9 @@ Installing again over an older version upgrades it and keeps your key and the pa
 1. Open **Kite** from the Start menu. Its icon sits in the tray; Windows 11 puts a new icon in the
    overflow flyout (the arrow at the right of the taskbar), and you can drag it out.
 2. Install the Kite app on the phone, turn on USB debugging, connect the phone by USB or put it on the
-   same WiFi, and start sharing on the phone. USB needs `adb` for now: install Android's
-   platform-tools and run `adb start-server` (the installer will not ship adb).
+   same WiFi, and start sharing on the phone. Kite talks to the phone over USB itself, without adb;
+   the phone asks once to allow this computer ("Allow USB debugging?"). It needs the WinUSB driver on
+   the phone's ADB interface, see below.
 3. Click **Pair a phone**. Pairing decides where all of your traffic may go, so only an administrator
    may do it: Windows asks for permission, and a window opens in which you allow this computer on the
    phone and type the 6-digit code. Do this once per phone.
@@ -59,6 +60,20 @@ From a terminal the same things are `kite pair --usb` (in an administrator promp
 
 There is no kill switch on Windows yet ([#88](https://github.com/heidari-dev/kite/issues/88)): if the
 link to the phone drops, the tunnel ends and Windows returns to its own network.
+
+### If Windows has no driver for the phone
+
+Kite reaches the phone's ADB interface through WinUSB. Windows 10 and 11 bind WinUSB to many phones by
+themselves; if yours is not one of them (Kite says "USB: ... needs the WinUSB driver"), do one of:
+
+- install Android's platform-tools and run `adb start-server`; Kite then uses adb, and the phone's
+  own driver (or Google's USB driver) is whatever adb needs;
+- or bind WinUSB to the phone's **ADB interface** (not the MTP or camera one), for example with
+  [Zadig](https://zadig.akeo.ie/): pick the device called "Android ADB Interface" or similar,
+  choose WinUSB and click Replace Driver. `adb.exe` works with WinUSB too.
+
+Only one program can hold the interface at a time: if `adb` is running and Kite says the interface is
+busy, run `adb start-server` and try again, or close `adb`.
 
 ### Letting someone else use it
 

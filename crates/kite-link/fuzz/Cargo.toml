@@ -21,3 +21,10 @@ path = "fuzz_targets/mdns_response.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "adb_packet"
+path = "fuzz_targets/adb_packet.rs"
+test = false
+doc = false
+bench = false

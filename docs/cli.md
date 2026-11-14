@@ -139,17 +139,30 @@ If the relay closes the tunnel or it fails, kite prints the error and exits with
 
 ### USB
 
-`--usb` asks the adb server on 127.0.0.1:5037 for the connected phones, picks one, and opens the
-abstract socket `kite` on it; that stream carries the same tunnel as `--tcp`, so proxy and TUN mode
-work the same. It needs `adb` installed with its server running (`adb start-server`; on Windows
-Android's platform-tools, with a driver for the phone), USB debugging turned on, and the Kite app
-listening on the phone. Only phones connected by USB count; adb over WiFi
-is ignored. Kite explains what is missing:
+`--usb` finds the connected phones, picks one, and opens the abstract socket `kite` on it; that
+stream carries the same tunnel as `--tcp`, so proxy and TUN mode work the same. It needs USB
+debugging turned on and the Kite app listening on the phone, and it reaches the phone in one of two
+ways:
 
-- no phone found, or the adb server is not running;
-- several phones connected: choose one with `--serial` (the serial is the first column of `adb devices`);
-- the phone is `unauthorized`: accept the USB debugging prompt on the phone and run kite again;
+- If an adb server runs on 127.0.0.1:5037 (`adb start-server`), kite asks it, as before: the server
+  owns the USB interface. Only phones connected by USB count; adb over WiFi is ignored.
+- Otherwise kite talks ADB to the phone's USB interface itself, with no adb installed. The first time
+  it makes an RSA key (`adbkey` in the state directory, owner only) and shows it to the phone, which
+  asks "Allow USB debugging?": tap Allow, ideally "Always allow from this computer", and run kite
+  again if it gave up waiting (it waits 60 s). Linux needs access to the USB device: the `kite`
+  package installs `51-kite-adb.rules`, which gives the group `kite` and the person at the console
+  the phone's ADB interface (class ff, subclass 42, protocol 01) and nothing else; replug the
+  phone after installing. Windows needs the WinUSB driver on the phone's ADB interface, see
+  [windows.md](windows.md). Only one program can hold the interface: close `adb` or run
+  `adb start-server` to let it have it.
+
+Kite explains what is missing:
+
+- no phone found;
+- several phones connected: choose one with `--serial` (the serial is the first column of `adb devices`, or of `kite devices`);
+- the phone is `unauthorized` (adb server) or did not allow the computer (direct): accept the USB debugging prompt on the phone and run kite again;
 - the phone is `offline`: unplug and replug it;
+- no permission to use the phone over USB (Linux), or no driver (Windows);
 - the Kite app is not listening: open it on the phone and start sharing.
 
 Unplugging the phone, or stopping the adb server, closes the tunnel: kite prints the error and exits

@@ -10,6 +10,7 @@ in a Debian 12 container.
 | `kite.service` | `/usr/lib/systemd/system/kite.service` |
 | `kite.sysusers` | `/usr/lib/sysusers.d/kite.conf` |
 | `50-kite.rules` | `/usr/share/polkit-1/rules.d/50-kite.rules` |
+| `51-kite-adb.rules` | `/usr/lib/udev/rules.d/51-kite-adb.rules`: group `kite` and the console user may open a phone's ADB interface (USB without an adb server) |
 | `kite.desktop` | `/usr/share/applications/kite.desktop` |
 | `kite-autostart.desktop` | `/etc/xdg/autostart/kite-desktop.desktop` (tray icon at login) |
 | `deb/postinst`, `prerm`, `postrm` | the package's maintainer scripts |

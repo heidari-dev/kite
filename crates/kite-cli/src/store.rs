@@ -46,6 +46,11 @@ impl Store {
         Ok(Self { dir })
     }
 
+    /// The file with the key this computer shows phones as an ADB host (made by `kite-link`).
+    pub fn adb_key_path(&self) -> PathBuf {
+        self.dir.join("adbkey")
+    }
+
     /// This computer's key, created on first use.
     pub fn key(&self) -> io::Result<StaticKey> {
         let path = self.dir.join("key");
