@@ -29,6 +29,12 @@ through `kite-ffi`. Tracked in [#16](https://github.com/heidari-dev/kite/issues/
 - **macOS** as a computer, with `utun`: [#17](https://github.com/heidari-dev/kite/issues/17).
 - **User guides and a website**: [#18](https://github.com/heidari-dev/kite/issues/18).
 
+## Not planned
+
+- A hosted service, account or server of ours in the data path. Traffic goes only between your
+  phone and your computer.
+- A WebView or Electron app. The apps stay native so that they use little memory.
+
 ## Ongoing
 
 - Keeping the supply chain honest: dependency advisories ([#63](https://github.com/heidari-dev/kite/issues/63)),
