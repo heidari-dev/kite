@@ -1,8 +1,9 @@
 # Releasing Kite
 
 A release is built by `.github/workflows/release.yml` when a tag like `v0.1.0` is pushed, and by
-nothing else. It builds the Linux packages and the Android APK from the tagged commit, writes
-checksums and SBOMs, attests and signs every file, and leaves a **draft** GitHub release. Nobody
+nothing else. It builds the Linux packages, the Windows installer and the Android APK from the tagged
+commit, writes checksums and SBOMs, attests and signs every file, and leaves a **draft** GitHub
+release. Nobody
 uploads anything by hand, and the release is not public until you press Publish.
 
 ## One-time setup
@@ -84,6 +85,17 @@ names the secret when one is missing or the keystore, password or alias does not
    `git tag -d v0.1.0`) and tag again.
 4. Open the draft under Releases, read the notes (they list the `feat`, `fix` and `perf` commits since
    the last tag), install the APK and a package once, and press Publish.
+
+## The Windows installer
+
+The `windows` job builds `kite-VERSION-x86_64.msi` with `scripts/build-msi.ps1` (WiX 3.14.1, checked
+against a SHA-256 in the script, and Wintun, checked by `scripts/fetch-wintun.ps1`). It is not signed
+yet, so Windows shows an unknown publisher warning, see [windows.md](windows.md); like every other file
+it gets a checksum, an attestation and a Sigstore bundle. Windows Installer versions have three
+numbers, so the third is `PATCH*100 + R`, with R the release candidate number or 99 for the release
+(the Android `versionCode` rule): `0.1.0-rc.1` installs as 0.1.1, `0.1.0` as 0.1.99, and an
+installer upgrades over an older one. CI installs the MSI on a Windows runner, runs the TUN test
+against the installed service and uninstalls it (`scripts/msi-test.ps1`).
 
 ## Trying it first
 

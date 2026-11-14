@@ -21,7 +21,7 @@ mode). A kill switch that blocks traffic while the phone is disconnected is ther
 turn it on. Linux has a desktop app with a tray icon, and `.deb` and AppImage packages. The link is
 encrypted with Noise, and both sides are paired once with a 6-digit code.
 
-Coming: Windows, iPhone and macOS. See the [roadmap](ROADMAP.md).
+Windows has the same, with an MSI installer: see [Kite on Windows](docs/windows.md). Coming: iPhone and macOS. See the [roadmap](ROADMAP.md).
 
 ## Install on Linux
 
@@ -73,7 +73,7 @@ every command and option, and [docs/architecture.md](docs/architecture.md) for h
 |----------|------|-----------|
 | Android  | Phone (relay app) | v0.1.0 |
 | Linux    | Computer (CLI, daemon, desktop app) | v0.1.0 |
-| Windows  | Computer | v0.2.0 |
+| Windows  | Computer (CLI, service, desktop app, MSI) | v0.2.0 |
 | iPhone   | Phone (relay app) | v0.3.0 |
 | macOS    | Computer | not scheduled |
 
