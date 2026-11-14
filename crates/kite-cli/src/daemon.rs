@@ -73,6 +73,12 @@ pub async fn run_with(
     });
     let slots = Arc::new(Semaphore::new(MAX_CLIENTS));
     eprintln!("kite: daemon ready");
+    tokio::spawn(async {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            trace!("daemon runtime tick");
+        }
+    });
     ready();
     tokio::pin!(shutdown);
     loop {
@@ -347,7 +353,9 @@ impl Daemon {
             .name("kite-session".into())
             .spawn(move || {
                 let result = crate::block_on(session(params, store, theirs.clone(), stopped), tun);
+                trace!("session thread: block_on returned {result:?}");
                 theirs.finish(&result);
+                trace!("session thread: finished");
             });
         match thread {
             Ok(thread) => {
@@ -368,9 +376,11 @@ impl Daemon {
     /// Takes the tunnel down, and with it the routes it set up, and waits for that. Whoever asks
     /// while another disconnect is still running waits for it too.
     async fn disconnect(&self) -> Response {
+        trace!("disconnect: asked");
         let stop = self.inner().session.as_mut().and_then(|a| a.stop.take());
         if let Some(stop) = stop {
             let _ = stop.send(());
+            trace!("disconnect: stop sent");
         }
         // A tunnel that ended with the kill switch on left its block behind; this lifts it.
         let leftover = match &mut self.inner().session {
@@ -383,13 +393,24 @@ impl Daemon {
             }
         }
         let down = async {
+            let mut n = 0u32;
             while !self.inner().session.as_ref().is_none_or(Active::idle) {
                 tokio::time::sleep(Duration::from_millis(50)).await;
+                n += 1;
+                if n % 40 == 0 {
+                    trace!("disconnect: still waiting");
+                }
             }
         };
         match timeout(STOP_TIMEOUT, down).await {
-            Ok(()) => Response::ok(),
-            Err(_) => Response::err("the tunnel did not stop in time"),
+            Ok(()) => {
+                trace!("disconnect: down");
+                Response::ok()
+            }
+            Err(_) => {
+                trace!("disconnect: timed out");
+                Response::err("the tunnel did not stop in time")
+            }
         }
     }
 
@@ -488,6 +509,7 @@ async fn session(
     // A dropped sender stops it as well.
     let stopped = async {
         let _ = stopped.await;
+        trace!("session: stop seen");
     };
     tokio::pin!(stopped);
     let started = tokio::select! {

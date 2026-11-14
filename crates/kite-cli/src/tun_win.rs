@@ -187,21 +187,32 @@ where
         .ipv6_enabled(false);
 
     let token = CancellationToken::new();
+    tokio::spawn(async {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            trace!("tun runtime tick");
+        }
+    });
     let work = async {
         let (proxied, tunneled, ()) = tokio::join!(
             async {
                 let r = serve_link(token.clone()).await;
+                trace!("serve: the link ended: {r:?}");
                 token.cancel();
                 r
             },
             async {
                 let r = tun2proxy::run(device, MTU, args, token.clone()).await;
+                trace!("serve: tun2proxy ended");
                 token.cancel();
                 r
             },
             async {
                 tokio::select! {
-                    () = shutdown => token.cancel(),
+                    () = shutdown => {
+                        trace!("serve: shutdown seen");
+                        token.cancel()
+                    }
                     () = token.cancelled() => {}
                 }
             },
@@ -219,12 +230,16 @@ where
                 () = async {
                     token.cancelled().await;
                     tokio::time::sleep(TEARDOWN).await;
+                    trace!("serve: the teardown time is up");
                 } => Err(io::Error::other("the tunnel did not stop in time and was dropped")),
             }
         },
         async {
             token.cancelled().await;
-            undo().await
+            trace!("undo: starting");
+            let r = undo().await;
+            trace!("undo: done {r:?}");
+            r
         },
     );
     result.and(cleaned)
@@ -294,6 +309,7 @@ async fn undo() -> io::Result<()> {
         Ok(None) => {}
         Err(e) => note(Err(e)),
     }
+    trace!("undo: routes done");
     match State::load() {
         Ok(State { bypass: Some(r) }) => note(route::delete(&r)),
         Ok(_) => {}
@@ -378,6 +394,7 @@ async fn powershell(script: &str) -> io::Result<()> {
         .filter(|p| p.is_absolute())
         .ok_or_else(|| io::Error::other("SystemRoot is not set"))?;
     let exe = root.join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    trace!("powershell: start");
     let run = tokio::process::Command::new(exe)
         .args(["-NoProfile", "-NonInteractive", "-Command"])
         .arg(format!(
@@ -391,6 +408,7 @@ async fn powershell(script: &str) -> io::Result<()> {
     let out = tokio::time::timeout(POWERSHELL_TIMEOUT, run)
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "PowerShell did not answer"))??;
+    trace!("powershell: finished");
     if out.status.success() {
         Ok(())
     } else {
