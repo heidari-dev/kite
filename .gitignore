@@ -36,3 +36,6 @@ Thumbs.db
 # Built by apps/android/build-rust.sh
 apps/android/app/src/main/jniLibs/
 apps/android/app/src/main/java/io/github/heidaridev/kite/ffi/
+
+# Built by apps/ios/build-rust.sh
+apps/ios/Kite/FFI/
