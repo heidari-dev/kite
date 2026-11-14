@@ -1,21 +1,29 @@
-//! What the app remembers per user: the mode and the kill switch, in `kite/desktop.json` in the
-//! user's config directory. The file is only a convenience: a missing or damaged one gives the
-//! defaults, and nothing in it is used for anything but those two choices.
+//! What the app remembers per user: the mode, the kill switch and how to reach the phone, in
+//! `kite/desktop.json` in the user's config directory. The file is only a convenience: a missing or
+//! damaged one gives the defaults, and nothing in it is used for anything but those choices.
 
 use kite_ipc::Mode;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 /// The file is read whole; a real one is a few dozen bytes.
 const MAX_FILE: u64 = 4096;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Longest phone address, as the daemon takes it.
+const MAX_ADDR: usize = 255;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Settings {
     pub mode: Mode,
     /// Block all traffic while the phone is away. Off until the user turns it on.
     pub kill_switch: bool,
+    /// Reach the phone over WiFi instead of USB.
+    pub wifi: bool,
+    /// The phone's `HOST` or `HOST:PORT`; empty finds it with mDNS. Always passes [`clean_addr`].
+    pub wifi_addr: String,
 }
 
 impl Default for Settings {
@@ -23,8 +31,43 @@ impl Default for Settings {
         Self {
             mode: Mode::Tun,
             kill_switch: false,
+            wifi: false,
+            wifi_addr: String::new(),
         }
     }
+}
+
+/// The kill switch redials without a lookup, so the daemon takes only an IP address (with or
+/// without a port) for it; a name is caught here, before the daemon has to refuse it.
+pub fn for_kill_switch(addr: Option<String>) -> Result<Option<String>, &'static str> {
+    match addr {
+        Some(a) if a.parse::<SocketAddr>().is_err() && a.parse::<IpAddr>().is_err() => {
+            Err("The kill switch needs the phone's IP address, not a name.")
+        }
+        other => Ok(other),
+    }
+}
+
+/// What the user typed as the phone's address, ready to send: trimmed, `None` when empty. Refused
+/// when it is too long or has a character that cannot be part of an address, which includes the
+/// ones that make text read in another order.
+pub fn clean_addr(text: &str) -> Result<Option<String>, &'static str> {
+    let text = text.trim();
+    if text.len() > MAX_ADDR {
+        return Err("The address is too long.");
+    }
+    let hidden = |c: char| {
+        c.is_control()
+            || c.is_whitespace()
+            || matches!(
+                c,
+                '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+            )
+    };
+    if text.chars().any(hidden) {
+        return Err("The address has spaces or hidden characters. Remove them.");
+    }
+    Ok((!text.is_empty()).then(|| text.to_string()))
 }
 
 impl Settings {
@@ -54,7 +97,15 @@ impl Settings {
             // The length check does not hold for a pipe or a device, so the read is capped too.
             serde_json::from_reader(file.take(MAX_FILE)).map_err(io::Error::other)
         };
-        read().unwrap_or_default()
+        let mut s = read().unwrap_or_default();
+        // An address that would be refused on its way out means the file is not one of ours.
+        match clean_addr(&s.wifi_addr) {
+            Ok(addr) => {
+                s.wifi_addr = addr.unwrap_or_default();
+                s
+            }
+            Err(_) => Self::default(),
+        }
     }
 
     /// Replaces the file through a temporary one, so a crash leaves the old or the new.
@@ -105,6 +156,8 @@ mod tests {
         let s = Settings {
             mode: Mode::Proxy,
             kill_switch: true,
+            wifi: true,
+            wifi_addr: "192.168.1.20:47810".into(),
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
@@ -128,10 +181,71 @@ mod tests {
             r#"{"kill_switch":"yes"}"#.into(),
             r#"{"path":"/etc"}"#.into(),
             " ".repeat(MAX_FILE as usize + 1),
+            r#"{"wifi":"yes"}"#.into(),
+            r#"{"wifi_addr":"10.0.\n0.2"}"#.into(),
+            r#"{"wifi_addr":"a\u0007b"}"#.into(),
+            r#"{"wifi_addr":"a\u202eb"}"#.into(),
+            format!(r#"{{"wifi_addr":"{}"}}"#, "a".repeat(MAX_ADDR + 1)),
         ] {
             std::fs::write(&path, bad).unwrap();
             assert_eq!(Settings::load(&path), Settings::default());
         }
         std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn a_loaded_address_is_trimmed() {
+        let d = dir("trim");
+        std::fs::create_dir_all(&d).unwrap();
+        let path = d.join("desktop.json");
+        std::fs::write(&path, r#"{"wifi":true,"wifi_addr":"  phone.local "}"#).unwrap();
+        let s = Settings::load(&path);
+        assert!(s.wifi);
+        assert_eq!(s.wifi_addr, "phone.local");
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn the_kill_switch_wants_an_ip() {
+        for ok in [
+            None,
+            Some("10.0.0.2"),
+            Some("10.0.0.2:5"),
+            Some("[fe80::1]:5"),
+        ] {
+            let addr = ok.map(String::from);
+            assert_eq!(for_kill_switch(addr.clone()), Ok(addr));
+        }
+        assert!(for_kill_switch(Some("phone.local".into())).is_err());
+        assert!(for_kill_switch(Some("phone.local:47810".into())).is_err());
+    }
+
+    #[test]
+    fn typed_addresses_are_cleaned_or_refused() {
+        assert_eq!(clean_addr(""), Ok(None));
+        assert_eq!(clean_addr("  \t "), Ok(None));
+        assert_eq!(
+            clean_addr(" 192.168.1.20 "),
+            Ok(Some("192.168.1.20".into()))
+        );
+        assert_eq!(
+            clean_addr("[fe80::1]:47810"),
+            Ok(Some("[fe80::1]:47810".into()))
+        );
+        // The limit is the daemon's: 255 bytes, so 63 four-byte emoji pass and 64 do not.
+        assert!(clean_addr(&"a".repeat(MAX_ADDR)).is_ok());
+        assert!(clean_addr(&"a".repeat(MAX_ADDR + 1)).is_err());
+        assert!(clean_addr(&"\u{1F4F1}".repeat(63)).is_ok());
+        assert!(clean_addr(&"\u{1F4F1}".repeat(64)).is_err());
+        for bad in [
+            "10.0.0.2\n10.0.0.3",
+            "10.0.0.\u{7}2",
+            "10.0.0.2 :1",
+            "\u{202E}2.0.0.01",
+            "10.0.0.\u{200B}2",
+            "10.0.0.\u{FEFF}2",
+        ] {
+            assert!(clean_addr(bad).is_err(), "{bad:?}");
+        }
     }
 }

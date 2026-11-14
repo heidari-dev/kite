@@ -506,6 +506,7 @@ impl From<kite_ipc::Transport> for Transport {
         match t {
             kite_ipc::Transport::Tcp { addr } => Self::Tcp(addr),
             kite_ipc::Transport::Usb { serial } => Self::Usb(serial),
+            kite_ipc::Transport::Wifi { addr } => Self::Wifi(addr),
         }
     }
 }

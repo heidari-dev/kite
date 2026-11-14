@@ -52,6 +52,7 @@ fn transport(t: &Transport) -> kite_ipc::Transport {
         Transport::Usb(serial) => kite_ipc::Transport::Usb {
             serial: serial.clone(),
         },
+        Transport::Wifi(addr) => kite_ipc::Transport::Wifi { addr: addr.clone() },
     }
 }
 

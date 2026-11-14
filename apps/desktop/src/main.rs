@@ -12,8 +12,8 @@ mod settings;
 mod worker;
 
 use kite::Kite;
-use kite_ipc::{Mode, State as Tunnel};
-use present::Action;
+use kite_ipc::{Mode, State as Tunnel, Transport};
+use present::{Action, Link};
 use settings::Settings;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::{Cell, RefCell};
@@ -37,6 +37,8 @@ struct State {
     settings_path: Option<PathBuf>,
     /// The phone the user clicked; the first ready one is used until then.
     picked: Option<String>,
+    /// What is typed in the address field; only a clean one is saved or sent.
+    wifi_text: String,
     view: View,
     /// The rows in the window; kept, so a redraw does not replace the rows under a click.
     phones: Rc<VecModel<PhoneRow>>,
@@ -216,11 +218,13 @@ fn main() -> Result<(), slint::PlatformError> {
     let reduced = std::env::args().any(|a| a == "--reduced-motion");
     let settings_path = Settings::path();
     let phones = Rc::new(VecModel::default());
+    let settings = settings_path
+        .as_deref()
+        .map(Settings::load)
+        .unwrap_or_default();
     STATE.set(Some(State {
-        settings: settings_path
-            .as_deref()
-            .map(Settings::load)
-            .unwrap_or_default(),
+        wifi_text: settings.wifi_addr.clone(),
+        settings,
         settings_path,
         picked: None,
         view: View::default(),
@@ -346,6 +350,26 @@ fn wire(ui: &AppWindow, tray: &Tray, cmds: &UnboundedSender<Cmd>, visible: &Arc<
         r();
     });
     let r = redraw.clone();
+    ui.on_set_wifi(move |on| {
+        with_state(|s| {
+            s.settings.wifi = on;
+            remember(s);
+        });
+        r();
+    });
+    let r = redraw.clone();
+    ui.on_set_wifi_addr(move |text| {
+        with_state(|s| {
+            s.wifi_text = text.into();
+            // A bad one is not saved; the window says what is wrong and Connect waits.
+            if let Ok(addr) = settings::clean_addr(&s.wifi_text) {
+                s.settings.wifi_addr = addr.unwrap_or_default();
+                remember(s);
+            }
+        });
+        r();
+    });
+    let r = redraw.clone();
     ui.on_set_mode(move |i| {
         with_state(|s| {
             s.settings.mode = if i == 0 { Mode::Tun } else { Mode::Proxy };
@@ -364,8 +388,8 @@ fn wire(ui: &AppWindow, tray: &Tray, cmds: &UnboundedSender<Cmd>, visible: &Arc<
 
     let c = cmds.clone();
     ui.on_pair_start(move || {
-        if let Some(serial) = with_state(|s| picked(s).map(String::from)) {
-            let _ = c.send(Cmd::PairStart { serial });
+        if let Some(transport) = with_state(|s| transport(s, false)) {
+            let _ = c.send(Cmd::PairStart { transport });
         }
     });
     let c = cmds.clone();
@@ -386,6 +410,40 @@ fn picked(s: &State) -> Option<&str> {
     present::pick(&s.view.devices, s.picked.as_deref())
 }
 
+/// The address to send, or what is wrong with it. `connect` adds what the kill switch needs.
+fn wifi_addr(s: &State, connect: bool) -> Result<Option<String>, &'static str> {
+    let addr = settings::clean_addr(&s.wifi_text)?;
+    if connect && s.settings.kill_switch && s.settings.mode == Mode::Tun {
+        settings::for_kill_switch(addr)
+    } else {
+        Ok(addr)
+    }
+}
+
+fn link(s: &State, connect: bool) -> Link {
+    if s.settings.wifi {
+        Link::Wifi {
+            addr_ok: wifi_addr(s, connect).is_ok(),
+        }
+    } else {
+        Link::Usb {
+            phone: picked(s).is_some(),
+        }
+    }
+}
+
+/// Where a Connect or a pairing goes; `None` while the choice cannot be used.
+fn transport(s: &State, connect: bool) -> Option<Transport> {
+    if s.settings.wifi {
+        let addr = wifi_addr(s, connect).ok()?;
+        Some(Transport::Wifi { addr })
+    } else {
+        picked(s).map(|serial| Transport::Usb {
+            serial: Some(serial.into()),
+        })
+    }
+}
+
 fn remember(s: &State) {
     // A setting that cannot be saved is only forgotten at the next start.
     if let Some(path) = &s.settings_path {
@@ -395,17 +453,16 @@ fn remember(s: &State) {
 
 /// The big button and the tray's first item do the same.
 fn act(cmds: &UnboundedSender<Cmd>) {
-    let cmd =
-        with_state(
-            |s| match present::card(&s.view, s.settings.mode, picked(s).is_some()).action {
-                Action::Disconnect => Some(Cmd::Disconnect),
-                Action::Connect => picked(s).map(|serial| Cmd::Connect {
-                    serial: serial.into(),
-                    mode: s.settings.mode,
-                    kill_switch: s.settings.kill_switch,
-                }),
-            },
-        );
+    let cmd = with_state(
+        |s| match present::card(&s.view, s.settings.mode, link(s, true)).action {
+            Action::Disconnect => Some(Cmd::Disconnect),
+            Action::Connect => transport(s, true).map(|transport| Cmd::Connect {
+                transport,
+                mode: s.settings.mode,
+                kill_switch: s.settings.kill_switch,
+            }),
+        },
+    );
     if let Some(cmd) = cmd {
         let _ = cmds.send(cmd);
     }
@@ -415,7 +472,7 @@ fn render(ui: &AppWindow, tray: &Tray) {
     with_state(|s| {
         let v = &s.view;
         let phone = picked(s);
-        let card = present::card(v, s.settings.mode, phone.is_some());
+        let card = present::card(v, s.settings.mode, link(s, true));
         let kind = match card.icon {
             Icon::Disconnected => Kind::Disconnected,
             Icon::Connecting => Kind::Connecting,
@@ -466,7 +523,10 @@ fn render(ui: &AppWindow, tray: &Tray) {
         ui.set_pair_step(step);
         ui.set_fingerprint(fingerprint.into());
         ui.set_pair_note(note.into());
-        ui.set_pair_enabled(phone.is_some());
+        ui.set_pair_enabled(link(s, false).ready());
+        ui.set_wifi(s.settings.wifi);
+        ui.set_wifi_addr(s.wifi_text.clone().into());
+        ui.set_wifi_error(wifi_addr(s, true).err().unwrap_or_default().into());
 
         tray.set_kind(kind);
         let tip = if v.unreachable.is_some() {

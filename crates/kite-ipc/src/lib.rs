@@ -25,6 +25,9 @@ pub enum Transport {
     Tcp { addr: String },
     /// A phone connected by USB, through the adb server. `serial` picks one of several.
     Usb { serial: Option<String> },
+    /// The phone's relay on the local network or its hotspot: `addr` is `HOST` or `HOST:PORT`
+    /// (port 47810 if left out), or None to look for the phone with mDNS.
+    Wifi { addr: Option<String> },
 }
 
 /// What to share.
@@ -107,10 +110,13 @@ impl Request {
                 }
                 // A name would be looked up again at every redial, and with the link down that
                 // lookup goes into the block.
-                if let (true, Transport::Tcp { addr }) = (*kill_switch, transport) {
-                    if addr.parse::<SocketAddr>().is_err() {
-                        return Err("kill_switch needs an IP address as the relay".into());
-                    }
+                let named = match transport {
+                    Transport::Tcp { addr } => addr.parse::<SocketAddr>().is_err(),
+                    Transport::Wifi { addr: Some(addr) } => !is_ip(addr),
+                    _ => false,
+                };
+                if *kill_switch && named {
+                    return Err("kill_switch needs an IP address as the relay".into());
                 }
                 if let Some(listen) = listen {
                     if *mode != Mode::Proxy || !listen.ip().is_loopback() {
@@ -135,9 +141,14 @@ impl Request {
     }
 }
 
+/// `IP` or `IP:PORT`.
+fn is_ip(addr: &str) -> bool {
+    addr.parse::<SocketAddr>().is_ok() || addr.parse::<std::net::IpAddr>().is_ok()
+}
+
 fn check_transport(t: &Transport) -> Result<(), String> {
     match t {
-        Transport::Tcp { addr }
+        Transport::Tcp { addr } | Transport::Wifi { addr: Some(addr) }
             if addr.is_empty() || addr.len() > 255 || addr.chars().any(char::is_control) =>
         {
             Err("bad addr".into())
@@ -353,6 +364,22 @@ mod tests {
             ))
         };
         assert!(tun("10.0.0.2:7000").is_ok());
+        let wifi = |addr: &str, rest: &str| {
+            parse(&format!(
+                r#"{{"cmd":"connect","transport":{{"type":"wifi","addr":{addr}}},"mode":"tun"{rest}}}"#
+            ))
+        };
+        let kill = r#","kill_switch":true"#;
+        assert!(wifi("null", kill).is_ok());
+        assert!(wifi(r#""192.168.43.1""#, kill).is_ok());
+        assert!(wifi(r#""192.168.43.1:9""#, kill).is_ok());
+        assert!(wifi(r#""phone.local""#, kill).is_err());
+        assert!(wifi(r#""phone.local""#, "").is_ok());
+        let tcp_bare = r#"{"cmd":"connect","transport":{"type":"tcp","addr":"10.0.0.2"},"mode":"tun","kill_switch":true}"#;
+        assert!(parse(tcp_bare).is_err(), "--tcp needs the port");
+        assert!(wifi(r#""""#, "").is_err());
+        assert!(wifi(r#""a\nb""#, "").is_err());
+        assert!(parse(r#"{"cmd":"pair_start","transport":{"type":"wifi","addr":null}}"#).is_ok());
         assert!(tun("relay.local:7000").is_err());
         assert!(connect(r#"{"type":"tcp","addr":""}"#, "").is_err());
         assert!(connect(r#"{"type":"tcp","addr":"a\nb"}"#, "").is_err());

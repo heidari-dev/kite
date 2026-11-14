@@ -16,9 +16,13 @@ Building on Linux needs the fontconfig headers (`libfontconfig1-dev` on Debian a
   to do.
 - Pairing a phone changes where all of your traffic can go, so the daemon allows it only for root
   and its own user. As a member of the `kite` group the app shows the daemon's refusal; pair with
-  `sudo kite pair --usb` instead.
-- The window remembers the mode and the kill switch ("Block traffic if the phone disconnects", off
-  until you turn it on) in `kite/desktop.json` in your config directory.
+  `sudo kite pair --usb` instead (or `--wifi`, if the phone shares over WiFi).
+- The phone is reached by USB or over WiFi. For WiFi, Share over WiFi must be on in the phone app and
+  both must be on the same WiFi or hotspot. Type the phone's address, or leave it empty to find it
+  automatically. The kill switch needs an IP address there, not a name.
+- The window remembers the mode, the kill switch ("Block traffic if the phone disconnects", off
+  until you turn it on), USB or WiFi and the address in `kite/desktop.json` in your config
+  directory.
 - The tray icon needs a desktop that shows StatusNotifier icons. GNOME needs the AppIndicator
   extension.
 

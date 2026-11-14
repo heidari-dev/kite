@@ -25,13 +25,13 @@ const NO_FINGERPRINT: &str = "The daemon did not say which computer this is, so 
 #[derive(PartialEq, Eq)]
 pub enum Cmd {
     Connect {
-        serial: String,
+        transport: Transport,
         mode: Mode,
         kill_switch: bool,
     },
     Disconnect,
     PairStart {
-        serial: String,
+        transport: Transport,
     },
     Pair {
         code: String,
@@ -226,18 +226,15 @@ impl Worker {
 
     async fn command(&mut self, cmd: Cmd) {
         self.view.message = None;
-        let usb = |serial: String| Transport::Usb {
-            serial: Some(serial),
-        };
         match cmd {
             Cmd::Connect {
-                serial,
+                transport,
                 mode,
                 kill_switch,
             } => {
                 self.meter.reset();
                 let req = Request::Connect {
-                    transport: usb(serial),
+                    transport,
                     mode,
                     kill_switch: kill_switch && mode == Mode::Tun,
                     listen: None,
@@ -247,10 +244,8 @@ impl Worker {
             Cmd::Disconnect => {
                 self.ask(Request::Disconnect {}, COMMAND_WAIT).await;
             }
-            Cmd::PairStart { serial } => {
-                let req = Request::PairStart {
-                    transport: usb(serial),
-                };
+            Cmd::PairStart { transport } => {
+                let req = Request::PairStart { transport };
                 if let Some(r) = self.ask(req, COMMAND_WAIT).await {
                     // The fingerprint is the user's only check that the phone talks to this
                     // computer, so a daemon that does not give one ends the pairing.
@@ -380,6 +375,18 @@ mod tests {
         (path, asked)
     }
 
+    fn usb() -> Transport {
+        Transport::Usb {
+            serial: Some("R5CT".into()),
+        }
+    }
+
+    fn wifi(addr: Option<&str>) -> Transport {
+        Transport::Wifi {
+            addr: addr.map(Into::into),
+        }
+    }
+
     fn worker(socket: PathBuf) -> Worker {
         Worker {
             socket,
@@ -497,7 +504,7 @@ mod tests {
         let mut w = worker(path);
         for (mode, kill_switch) in [(Mode::Tun, true), (Mode::Proxy, true)] {
             w.command(Cmd::Connect {
-                serial: "R5CT".into(),
+                transport: usb(),
                 mode,
                 kill_switch,
             })
@@ -505,15 +512,53 @@ mod tests {
         }
         let asked = asked.lock().unwrap();
         let connect = |mode, kill_switch| Request::Connect {
-            transport: Transport::Usb {
-                serial: Some("R5CT".into()),
-            },
+            transport: usb(),
             mode,
             kill_switch,
             listen: None,
         };
         assert_eq!(asked[0], connect(Mode::Tun, true));
         assert_eq!(asked[1], connect(Mode::Proxy, false));
+    }
+
+    #[tokio::test]
+    async fn wifi_connects_and_pairs_with_no_phone_on_usb() {
+        let (path, asked) = daemon("wifi", |req| match req {
+            Request::Devices {} => Response::err("the adb server is not running"),
+            Request::PairStart { .. } => Response {
+                fingerprint: Some("3F2A 91C0 77D4 0B1E".into()),
+                ..Response::ok()
+            },
+            _ => Response::ok(),
+        });
+        let mut w = worker(path);
+        w.poll(true).await;
+        assert!(w.view.devices.is_empty());
+        for addr in [Some("192.168.1.20:47810"), None] {
+            w.command(Cmd::Connect {
+                transport: wifi(addr),
+                mode: Mode::Tun,
+                kill_switch: false,
+            })
+            .await;
+            assert_eq!(w.view.message, None);
+        }
+        w.command(Cmd::PairStart {
+            transport: wifi(None),
+        })
+        .await;
+        assert!(matches!(w.view.pair, Pair::Waiting { .. }));
+        let asked = asked.lock().unwrap();
+        let sent = |i: usize| match &asked[i] {
+            Request::Connect { transport, .. } | Request::PairStart { transport } => {
+                transport.clone()
+            }
+            other => panic!("{other:?}"),
+        };
+        let n = asked.len();
+        assert_eq!(sent(n - 3), wifi(Some("192.168.1.20:47810")));
+        assert_eq!(sent(n - 2), wifi(None));
+        assert_eq!(sent(n - 1), wifi(None));
     }
 
     #[tokio::test]
@@ -535,9 +580,7 @@ mod tests {
     async fn pairing_shows_the_fingerprint_then_ends_after_one_try() {
         let (path, _) = idle_daemon("pair");
         let mut w = worker(path);
-        let start = || Cmd::PairStart {
-            serial: "R5CT".into(),
-        };
+        let start = || Cmd::PairStart { transport: usb() };
         w.command(start()).await;
         assert_eq!(
             w.view.pair,
@@ -564,10 +607,7 @@ mod tests {
     async fn pairing_without_a_fingerprint_does_not_go_on() {
         let (path, _) = daemon("nofp", |_| Response::ok());
         let mut w = worker(path);
-        w.command(Cmd::PairStart {
-            serial: "R5CT".into(),
-        })
-        .await;
+        w.command(Cmd::PairStart { transport: usb() }).await;
         assert_eq!(w.view.pair, Pair::Idle);
         assert_eq!(w.view.message.as_deref(), Some(NO_FINGERPRINT));
     }
@@ -576,10 +616,7 @@ mod tests {
     async fn an_expired_pairing_closes_the_code_field() {
         let (path, _) = idle_daemon("expire");
         let mut w = worker(path);
-        w.command(Cmd::PairStart {
-            serial: "R5CT".into(),
-        })
-        .await;
+        w.command(Cmd::PairStart { transport: usb() }).await;
         // Just started: the daemon may not report it yet.
         w.poll(false).await;
         assert!(matches!(w.view.pair, Pair::Waiting { .. }));
