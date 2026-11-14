@@ -141,7 +141,7 @@ Besides the abstract socket, the relay's only listener is the optional WiFi one 
 | A CI action is swapped for a malicious version. | Every action is pinned to a full commit SHA. Workflows default to `contents: read` and never use `pull_request_target`. | done |
 | Unsafe or buggy code lands in a parser. | `#![forbid(unsafe_code)]` outside FFI and TUN glue, CodeQL, fuzz targets, review on every pull request. | done |
 | The AppImage runtime or a packaging tool is swapped. | The .deb is built with `dpkg-deb` and no other tool. The only download is the AppImage runtime, checked against a SHA-256 in `scripts/package-linux.sh`. | done |
-| A release is built or altered somewhere untrusted. | Releases are built only by CI from tags, with SHA-256 checksums, GitHub artifact attestations and a CycloneDX SBOM. OpenSSF Scorecard tracks the repository's practices. | planned (releases), done (Scorecard) |
+| A release is built or altered somewhere untrusted. | Releases are built only by CI from tags, with SHA-256 checksums, GitHub artifact attestations and a CycloneDX SBOM. OpenSSF Scorecard tracks the repository's practices. | done (see [releasing.md](releasing.md)) |
 
 ## Known gaps
 
