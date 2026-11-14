@@ -9,10 +9,14 @@
 #
 #   scripts\tun-smoke.ps1 target\release\kite.exe target\release\examples\relay-dev.exe
 #
+# With -Service it tests the installed service Kite instead of a daemon of its own (the installer
+# test does this): the service is killed once and must clean up after itself when it comes back.
+#
 # It changes this machine's routes and DNS settings while it runs, and puts them back.
 param(
     [Parameter(Mandatory = $true)][string]$Kite,
-    [Parameter(Mandatory = $true)][string]$RelayDev
+    [Parameter(Mandatory = $true)][string]$RelayDev,
+    [switch]$Service
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,7 +30,7 @@ if (-not $admin.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 $work = Join-Path ([IO.Path]::GetTempPath()) ("kite-smoke-" + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $work | Out-Null
-$pipe = '\\.\pipe\kite-smoke'
+$pipe = if ($Service) { '\\.\pipe\kite' } else { '\\.\pipe\kite-smoke' }
 $relay = '127.0.0.1:7000'
 $procs = @()
 
@@ -85,8 +89,10 @@ try {
 
     $relayProc = Start-Logged $RelayDev @($relay, '--refuse-external') 'relay'
     Wait-For 'relay-dev' { (Get-Content (Join-Path $work 'relay.log') -ErrorAction SilentlyContinue) -match 'listening' }
-    $daemon = Start-Logged $Kite @('daemon', '--socket', $pipe, '--state-dir', (Join-Path $work 'state')) 'daemon'
-    Wait-For 'the daemon' { (Get-Content (Join-Path $work 'daemon.err.log') -ErrorAction SilentlyContinue) -match 'daemon ready' }
+    if (-not $Service) {
+        $daemon = Start-Logged $Kite @('daemon', '--socket', $pipe, '--state-dir', (Join-Path $work 'state')) 'daemon'
+        Wait-For 'the daemon' { (Get-Content (Join-Path $work 'daemon.err.log') -ErrorAction SilentlyContinue) -match 'daemon ready' }
+    }
 
     # Pairing: kite pair asks for the code the phone would show.
     $pair = [Diagnostics.Process]::new()
@@ -115,18 +121,32 @@ try {
     Assert-Clean 'after disconnect'
     Write-Host 'clean after disconnect'
 
-    # A daemon that is killed leaves the DNS rule at most; restore takes the rest away.
+    # A daemon that is killed leaves the DNS rule at most; restore takes the rest away. The service
+    # is started again by the service manager, and cleans up when it starts.
     Kite @('connect', '--tcp', $relay, '--tun')
     Assert-Up
-    Stop-Process -Id $daemon.Id -Force
-    $daemon.WaitForExit()
-    Start-Sleep -Seconds 2
-    Write-Host ("after the kill: adapter={0} routes={1} rules={2}" -f [bool](Adapter), (Halves).Count, (Rules).Count)
-    & $Kite restore
-    if ($LASTEXITCODE -ne 0) { Fail "kite restore exited with $LASTEXITCODE" }
-    Wait-For 'the adapter to go' { -not (Adapter) } 30
-    Assert-Clean 'after restore'
-    Write-Host 'clean after kill and restore'
+    if ($Service) {
+        $id = (Get-CimInstance Win32_Service -Filter "Name='Kite'").ProcessId
+        Stop-Process -Id $id -Force
+        Wait-For 'the service to run again' {
+            $now = (Get-CimInstance Win32_Service -Filter "Name='Kite'").ProcessId
+            $now -ne 0 -and $now -ne $id
+        } 60
+        Wait-For 'the service to clean up' { -not (Adapter) -and (Halves).Count -eq 0 -and (Rules).Count -eq 0 } 60
+        Assert-Clean 'after the service restarted'
+        Write-Host 'clean after the service was killed and started again'
+    }
+    else {
+        Stop-Process -Id $daemon.Id -Force
+        $daemon.WaitForExit()
+        Start-Sleep -Seconds 2
+        Write-Host ("after the kill: adapter={0} routes={1} rules={2}" -f [bool](Adapter), (Halves).Count, (Rules).Count)
+        & $Kite restore
+        if ($LASTEXITCODE -ne 0) { Fail "kite restore exited with $LASTEXITCODE" }
+        Wait-For 'the adapter to go' { -not (Adapter) } 30
+        Assert-Clean 'after restore'
+        Write-Host 'clean after kill and restore'
+    }
 }
 finally {
     foreach ($p in $procs) { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }

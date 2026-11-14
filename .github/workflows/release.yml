@@ -72,6 +72,28 @@ jobs:
           path: dist/
           retention-days: 7
 
+  # The installer. Unsigned for now, so Windows warns about an unknown publisher (docs/windows.md);
+  # it is checksummed, attested and signed with Sigstore like every other file.
+  windows:
+    needs: check
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo build --release --locked -p kite-cli -p kite-desktop
+      - run: scripts\fetch-wintun.ps1 target\wintun
+      - name: Build the installer
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: scripts\build-msi.ps1 -Version $env:VERSION -Bin target\release -Wintun target\wintun -Out dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows
+          path: dist/*.msi
+          retention-days: 7
+
   android:
     needs: check
     runs-on: ubuntu-latest
@@ -177,7 +199,7 @@ jobs:
 
   # Checksums, attestations and signatures. It holds the signing identity but cannot touch the repository.
   sign:
-    needs: [linux, android, sbom, sign-apk]
+    needs: [linux, windows, android, sbom, sign-apk]
     # sign-apk is skipped in a dry run.
     if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
