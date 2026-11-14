@@ -21,7 +21,7 @@ mode). A kill switch that blocks traffic while the phone is disconnected is ther
 turn it on. Linux has a desktop app with a tray icon, and `.deb` and AppImage packages. The link is
 encrypted with Noise, and both sides are paired once with a 6-digit code.
 
-Coming: Windows, iPhone and macOS. See the open issues and milestones for the roadmap.
+Coming: Windows, iPhone and macOS. See the [roadmap](ROADMAP.md).
 
 ## Install on Linux
 
@@ -64,7 +64,7 @@ every command and option, and [docs/architecture.md](docs/architecture.md) for h
 
 - Bugs and ideas: [issues](https://github.com/heidari-dev/kite/issues)
 - Questions and discussion: [Discussions](https://github.com/heidari-dev/kite/discussions)
-- Code and docs: see [CONTRIBUTING.md](CONTRIBUTING.md)
+- Code and docs: see [CONTRIBUTING.md](CONTRIBUTING.md); how decisions are made: [GOVERNANCE.md](GOVERNANCE.md)
 - Security problems: see [SECURITY.md](SECURITY.md), not a public issue
 
 ## Planned platforms
