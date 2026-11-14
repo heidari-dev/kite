@@ -43,8 +43,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Dialling the phone and its side of the pairing handshake.
 const PAIR_START_TIMEOUT: Duration = Duration::from_secs(25);
-/// How long a disconnect waits for the tunnel to come down.
-const STOP_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a disconnect waits for the tunnel to come down. On Windows taking the DNS rule off
+/// (PowerShell, up to 15 s) comes after the few seconds the tunnel's tasks get to wind down.
+const STOP_TIMEOUT: Duration = Duration::from_secs(if cfg!(windows) { 25 } else { 10 });
 
 pub struct Options {
     /// The Unix socket, or on Windows the named pipe (`\.\pipe\NAME`).

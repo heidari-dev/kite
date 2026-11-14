@@ -42,7 +42,11 @@ const GUID: u128 = 0x6b69_7465_0000_4000_8000_0a11_2233_4455;
 /// The comment that marks the DNS rule as ours.
 const RULE: &str = "kite";
 /// Longest wait for PowerShell.
-const POWERSHELL_TIMEOUT: Duration = Duration::from_secs(20);
+const POWERSHELL_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long the tunnel's tasks get to finish once the tunnel is told to end. Past it they are
+/// dropped: with many open connections, or a task that does not answer, a disconnect would
+/// otherwise not end.
+const TEARDOWN: Duration = Duration::from_secs(4);
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// The routes that take all traffic into the tunnel: each half of the address space.
@@ -78,8 +82,7 @@ where
     // Whatever a kite that was killed left behind.
     undo().await?;
     let device = create()?;
-    let result = serve(device, proxy, relay, serve_link, shutdown).await;
-    result.and(undo().await)
+    serve(device, proxy, relay, serve_link, shutdown).await
 }
 
 /// Deletes what a TUN mode run that was killed left behind. Fails while another one is running.
@@ -164,8 +167,13 @@ where
     // Polled from the start, so a signal during setup still ends in a clean restore.
     tokio::pin!(shutdown);
     tokio::select! {
-        r = setup(index, relay) => r?,
-        () = &mut shutdown => return Ok(()),
+        r = setup(index, relay) => {
+            if let Err(e) = r {
+                let _ = undo().await;
+                return Err(e);
+            }
+        }
+        () = &mut shutdown => return undo().await,
     }
 
     let proxy_url = format!("socks5://{proxy}");
@@ -179,25 +187,47 @@ where
         .ipv6_enabled(false);
 
     let token = CancellationToken::new();
-    let (proxied, tunneled, ()) = tokio::join!(
-        async {
-            let r = serve_link(token.clone()).await;
-            token.cancel();
-            r
-        },
-        async {
-            let r = tun2proxy::run(device, MTU, args, token.clone()).await;
-            token.cancel();
-            r
-        },
+    let work = async {
+        let (proxied, tunneled, ()) = tokio::join!(
+            async {
+                let r = serve_link(token.clone()).await;
+                token.cancel();
+                r
+            },
+            async {
+                let r = tun2proxy::run(device, MTU, args, token.clone()).await;
+                token.cancel();
+                r
+            },
+            async {
+                tokio::select! {
+                    () = shutdown => token.cancel(),
+                    () = token.cancelled() => {}
+                }
+            },
+        );
+        proxied.and(tunneled.map(drop).map_err(io::Error::from))
+    };
+    tokio::pin!(work);
+    // From the moment the tunnel is told to end, the routes and the DNS rule come off at once,
+    // beside the tasks winding down, so the computer is back on its own network whatever those
+    // tasks do. The tasks get TEARDOWN, then they are dropped.
+    let (result, cleaned) = tokio::join!(
         async {
             tokio::select! {
-                () = shutdown => token.cancel(),
-                () = token.cancelled() => {}
+                r = &mut work => r,
+                () = async {
+                    token.cancelled().await;
+                    tokio::time::sleep(TEARDOWN).await;
+                } => Err(io::Error::other("the tunnel did not stop in time and was dropped")),
             }
         },
+        async {
+            token.cancelled().await;
+            undo().await
+        },
     );
-    proxied.and(tunneled.map(drop).map_err(io::Error::from))
+    result.and(cleaned)
 }
 
 /// The routes of the tunnel on the adapter with `luid`.

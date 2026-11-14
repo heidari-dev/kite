@@ -241,7 +241,12 @@ fn block_on<F: std::future::Future<Output = io::Result<()>>>(f: F, tun: bool) ->
         rt.worker_threads(1);
     }
     // Name lookups; block_in_place also borrows a thread from this pool.
-    rt.enable_all().max_blocking_threads(4).build()?.block_on(f)
+    let rt = rt.enable_all().max_blocking_threads(4).build()?;
+    let result = rt.block_on(f);
+    // A task that does not stop must not keep the tunnel from ending: dropping the runtime would
+    // wait for it for ever.
+    rt.shutdown_timeout(Duration::from_secs(2));
+    result
 }
 
 fn usage(msg: impl Into<String>) -> io::Error {
@@ -620,6 +625,24 @@ mod tests {
         assert_eq!(c.is_ok_and(|c| c.tun && !c.kill_switch), TUN);
         let c = parse_connect(&args("--tun --kill-switch --usb"));
         assert_eq!(c.is_ok_and(|c| c.kill_switch), KILL_SWITCH);
+    }
+
+    #[test]
+    fn a_task_that_does_not_stop_does_not_hold_the_runtime() {
+        let started = std::time::Instant::now();
+        super::block_on(
+            async {
+                tokio::task::spawn_blocking(|| {
+                    std::thread::sleep(std::time::Duration::from_secs(20))
+                });
+                // Let the blocking task start.
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                Ok(())
+            },
+            false,
+        )
+        .unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 
     #[test]
