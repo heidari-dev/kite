@@ -21,6 +21,10 @@ cd apps/android && gradle assembleDebug
 `app/src/main/jniLibs` and the generated Kotlin bindings under `app/src/main/java/.../ffi`. Both
 are build outputs and ignored by git. CI builds the same debug APK and attaches it to every run.
 
+The Kotlin generator (`uniffi-bindgen`) is installed by the script on first use, in
+`target/uniffi-bindgen-VERSION`, at the same version as the `uniffi` crate in `Cargo.lock`. It is not
+a dependency of the workspace, so its crates are not in `Cargo.lock`.
+
 ## Try it
 
 Install the APK, open Kite and tap Start sharing. The first time, tap Pair a computer and, on the
