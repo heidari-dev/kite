@@ -16,7 +16,7 @@ for host in target/debug/libkite_ffi.so target/debug/libkite_ffi.dylib target/de
 done
 # The generator is installed outside the workspace so that its dependencies stay out of Cargo.lock.
 # Its version must be the one of the uniffi library, so it is read from Cargo.lock.
-uniffi=$(sed -n '/^name = "uniffi"$/{n;s/^version = "\(.*\)"$/\1/p;q}' Cargo.lock)
+uniffi=$(awk '/^name = "uniffi"$/ { getline; gsub(/^version = "|"$/, ""); print; exit }' Cargo.lock)
 [ -n "$uniffi" ] || { echo "uniffi is not in Cargo.lock" >&2; exit 1; }
 root=target/uniffi-bindgen-$uniffi
 [ -x "$root/bin/uniffi-bindgen" ] ||

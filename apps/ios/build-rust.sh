@@ -15,7 +15,7 @@ done
 # generator is installed outside the workspace at the version of the uniffi library.
 cargo build -q -p kite-ffi --lib
 host=target/debug/libkite_ffi.dylib
-uniffi=$(sed -n '/^name = "uniffi"$/{n;s/^version = "\(.*\)"$/\1/p;q}' Cargo.lock)
+uniffi=$(awk '/^name = "uniffi"$/ { getline; gsub(/^version = "|"$/, ""); print; exit }' Cargo.lock)
 [ -n "$uniffi" ] || { echo "uniffi is not in Cargo.lock" >&2; exit 1; }
 root=target/uniffi-bindgen-$uniffi
 [ -x "$root/bin/uniffi-bindgen" ] ||
