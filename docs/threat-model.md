@@ -150,7 +150,7 @@ Besides the abstract socket, the relay's only listener is the optional WiFi one 
 | Unsafe or buggy code lands in a parser. | `#![forbid(unsafe_code)]` outside FFI and TUN glue, CodeQL, fuzz targets, review on every pull request. | done |
 | `wintun.dll` is swapped for another one. | It is never committed. `scripts/fetch-wintun.ps1` downloads the zip from wintun.net over HTTPS and checks the zip and the DLL against SHA-256 values in the script; the DLL is signed by WireGuard LLC. kite loads it only from its own directory. | done |
 | The AppImage runtime or a packaging tool is swapped. | The .deb is built with `dpkg-deb` and no other tool. The only download is the AppImage runtime, checked against a SHA-256 in `scripts/package-linux.sh`. | done |
-| A release is built or altered somewhere untrusted. | Releases are built only by CI from tags, with SHA-256 checksums, GitHub artifact attestations and a CycloneDX SBOM. OpenSSF Scorecard tracks the repository's practices. | planned (releases), done (Scorecard) |
+| A release is built or altered somewhere untrusted. | Releases are built only by CI from tags, with SHA-256 checksums, GitHub artifact attestations and a CycloneDX SBOM. OpenSSF Scorecard tracks the repository's practices. | done (see [releasing.md](releasing.md)) |
 
 ## Known gaps
 
