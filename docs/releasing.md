@@ -121,6 +121,26 @@ cosign verify-blob --bundle kite_0.1.0-rc.1_amd64.deb.sigstore.json \
 apksigner verify --print-certs kite-0.1.0-rc.1.apk
 ```
 
+The provenance file checks the same files without asking GitHub which attestations exist, so it
+works from a copy of the release kept offline:
+
+```
+gh attestation verify kite_0.1.0-rc.1_amd64.deb --repo heidari-dev/kite \
+  --bundle kite-0.1.0-rc.1.intoto.jsonl
+```
+
+It must report that the workflow was `release.yml` on a `v*` tag of `heidari-dev/kite`.
+
+The provenance file checks the same files without asking GitHub which attestations exist, so it
+works from a copy of the release kept offline:
+
+```
+gh attestation verify kite_0.1.0-rc.1_amd64.deb --repo heidari-dev/kite \
+  --bundle kite-0.1.0-rc.1.intoto.jsonl
+```
+
+It must report that the workflow was `release.yml` on a `v*` tag of `heidari-dev/kite`.
+
 (Downloading a draft needs a GitHub account with access to the repository; a published release does
 not.) The APK's certificate digest must be the same in every release; it is the SHA-256 line
 `apksigner` prints, and the workflow log shows it too.
