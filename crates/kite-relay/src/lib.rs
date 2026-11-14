@@ -71,6 +71,10 @@ pub struct Config {
     pub idle_timeout: Duration,
     /// Allow targets on the phone's own loopback. For tests and local development only.
     pub allow_loopback: bool,
+    /// Refuse every target that is not on the loopback (which `allow_loopback` still decides). For
+    /// tests that run the relay on the computer under test, where its own connections would
+    /// otherwise enter that computer's tunnel and loop back to it.
+    pub refuse_external: bool,
 }
 
 impl Default for Config {
@@ -79,6 +83,7 @@ impl Default for Config {
             connect_timeout: Duration::from_secs(10),
             idle_timeout: Duration::from_secs(300),
             allow_loopback: false,
+            refuse_external: false,
         }
     }
 }
@@ -90,6 +95,9 @@ impl Config {
         let ip = ip.to_canonical();
         if ip.is_loopback() {
             return self.allow_loopback;
+        }
+        if self.refuse_external {
+            return false;
         }
         if ip.is_unspecified() || ip.is_multicast() || is_local(ip) {
             return false;
@@ -139,6 +147,24 @@ pub(crate) fn own_address() -> Option<IpAddr> {
 #[cfg(test)]
 mod tests {
     use super::Config;
+
+    #[test]
+    fn refuse_external_leaves_only_the_loopback_to_allow_loopback() {
+        let cfg = Config {
+            refuse_external: true,
+            ..Config::default()
+        };
+        for ip in ["8.8.8.8", "10.0.0.2", "2001:db8::1", "127.0.0.1"] {
+            assert!(!cfg.allows(ip.parse().unwrap()), "{ip}");
+        }
+        let cfg = Config {
+            allow_loopback: true,
+            ..cfg
+        };
+        assert!(cfg.allows("127.0.0.1".parse().unwrap()));
+        assert!(!cfg.allows("8.8.8.8".parse().unwrap()));
+        assert!(Config::default().allows("8.8.8.8".parse().unwrap()));
+    }
 
     #[test]
     fn allows_public_and_private_addresses() {

@@ -248,14 +248,21 @@ fn daemon_only(_: &[String], _: &Path) -> io::Result<()> {
 #[cfg_attr(not(any(target_os = "linux", windows)), allow(unused_variables))]
 fn block_on<F: std::future::Future<Output = io::Result<()>>>(f: F, tun: bool) -> io::Result<()> {
     let mut rt = tokio::runtime::Builder::new_current_thread();
+    // Name lookups; in TUN mode block_in_place also takes a thread from this pool.
+    let mut blocking = 4;
     #[cfg(any(target_os = "linux", windows))]
     if tun {
         // tun2proxy's TCP stack calls block_in_place, which a current_thread runtime refuses.
         rt = tokio::runtime::Builder::new_multi_thread();
         rt.worker_threads(1);
+        // Dropping a connection there blocks its thread until the connection's task is done, and
+        // that task needs a worker: the worker moves to another thread of this pool for as long
+        // as the first one waits. With the pool full the only worker is stuck for good and
+        // nothing runs, timers and the stop included, so a flood of connections ending together
+        // (a disconnect) could freeze the tunnel. Threads are made when needed and go when idle.
+        blocking = 512;
     }
-    // Name lookups; block_in_place also borrows a thread from this pool.
-    let rt = rt.enable_all().max_blocking_threads(4).build()?;
+    let rt = rt.enable_all().max_blocking_threads(blocking).build()?;
     let result = rt.block_on(f);
     trace!("block_on: the future is done");
     // A task that does not stop must not keep the tunnel from ending: dropping the runtime would

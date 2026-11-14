@@ -1,7 +1,9 @@
 # Smoke test of TUN mode on Windows, with relay-dev standing in for the phone on the loopback
 # address. It checks what kite changes on the system and that all of it is gone again, after a
 # clean disconnect and after the daemon was killed. It does not move data through the tunnel: the
-# relay's own connections would enter the tunnel too, since both run on this machine.
+# relay runs on this machine, so its own connections would enter the tunnel and loop back to it;
+# relay-dev refuses every target but the loopback for that reason, and anything this machine sends
+# meanwhile reaches the tunnel, is refused and closed.
 #
 # Run it from an administrator prompt with wintun.dll next to kite.exe (scripts\fetch-wintun.ps1):
 #
@@ -81,7 +83,7 @@ function Kite([string[]]$Arguments) {
 try {
     Assert-Clean 'before the test'
 
-    $relayProc = Start-Logged $RelayDev @($relay) 'relay'
+    $relayProc = Start-Logged $RelayDev @($relay, '--refuse-external') 'relay'
     Wait-For 'relay-dev' { (Get-Content (Join-Path $work 'relay.log') -ErrorAction SilentlyContinue) -match 'listening' }
     $daemon = Start-Logged $Kite @('daemon', '--socket', $pipe, '--state-dir', (Join-Path $work 'state')) 'daemon'
     Wait-For 'the daemon' { (Get-Content (Join-Path $work 'daemon.err.log') -ErrorAction SilentlyContinue) -match 'daemon ready' }

@@ -397,7 +397,7 @@ impl Daemon {
             while !self.inner().session.as_ref().is_none_or(Active::idle) {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 n += 1;
-                if n % 40 == 0 {
+                if n.is_multiple_of(40) {
                     trace!("disconnect: still waiting");
                 }
             }
