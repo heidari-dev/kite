@@ -2999,6 +2999,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kite-win"
+version = "0.0.0"
+dependencies = [
+ "tokio",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "ksni"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

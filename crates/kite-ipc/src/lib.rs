@@ -10,8 +10,11 @@ use std::io;
 use std::net::SocketAddr;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
-/// Where the daemon listens unless told otherwise.
+/// Where the daemon listens unless told otherwise: a Unix socket, or a named pipe on Windows.
+#[cfg(not(windows))]
 pub const DEFAULT_SOCKET: &str = "/run/kite/kite.sock";
+#[cfg(windows)]
+pub const DEFAULT_SOCKET: &str = r"\\.\pipe\kite";
 /// Longest request line, newline included.
 pub const MAX_REQUEST: usize = 4096;
 /// Longest response line a client accepts.
