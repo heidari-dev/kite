@@ -20,8 +20,8 @@ use windows_sys::Win32::Security::Authorization::{
     SetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    GetSecurityDescriptorDacl, GetTokenInformation, LookupAccountNameW, SidTypeAlias, TokenUser,
-    ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+    GetSecurityDescriptorDacl, GetTokenInformation, LookupAccountNameW, SidTypeAlias, SidTypeUser,
+    TokenUser, ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
     PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
@@ -30,6 +30,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
+pub mod elevate;
 pub mod pipe;
 pub mod route;
 pub mod service;
@@ -142,6 +143,15 @@ pub fn is_system() -> io::Result<bool> {
 /// The SID of the local group `name`, or None when there is no such local group. A user or a
 /// domain group of that name does not count: only an administrator can create a local group.
 pub fn local_group_sid(name: &str) -> io::Result<Option<String>> {
+    account_sid(name, SidTypeAlias)
+}
+
+/// The SID of the user `name` (as the system writes it: with or without its domain), or None when there is no such user.
+pub fn user_sid(name: &str) -> io::Result<Option<String>> {
+    account_sid(name, SidTypeUser)
+}
+
+fn account_sid(name: &str, wanted: i32) -> io::Result<Option<String>> {
     let name = wide(name);
     let (mut sid_len, mut domain_len, mut kind) = (0u32, 0u32, 0);
     // SAFETY: null buffers of length 0 only ask for the sizes.
@@ -173,11 +183,59 @@ pub fn local_group_sid(name: &str) -> io::Result<Option<String>> {
             &mut kind,
         )
     };
-    if ok == 0 || kind != SidTypeAlias {
+    if ok == 0 || kind != wanted {
         return Ok(None);
     }
     // SAFETY: LookupAccountNameW wrote a valid SID into `sid`.
     unsafe { sid_string(sid.as_mut_ptr().cast()) }.map(Some)
+}
+
+/// A user SID in the form SDDL takes: `S-1-` and digits and dashes, nothing else.
+pub fn is_sid_text(s: &str) -> bool {
+    s.len() <= 184
+        && s.strip_prefix("S-1-").is_some_and(|rest| {
+            !rest.is_empty()
+                && rest.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+                && !rest.starts_with('-')
+                && !rest.ends_with('-')
+                && !rest.contains("--")
+        })
+}
+
+/// The users the installer or `kite allow` let use the daemon, besides the group `kite`: one SID
+/// per line in `users` in the data directory. A missing file is nobody; a line that is not a SID
+/// is skipped, and at most 64 are read, so the file cannot put anything but SIDs into the
+/// pipe's access list.
+pub fn allowed_users() -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(data_dir().join("users")) else {
+        return Vec::new();
+    };
+    text.lines()
+        .map(str::trim)
+        .filter(|l| is_sid_text(l))
+        .take(64)
+        .map(String::from)
+        .collect()
+}
+
+/// Lets the user with `sid` use the daemon (from the next start of the service). Needs the
+/// rights to write the data directory, which are the administrators'.
+pub fn allow_user(sid: &str) -> io::Result<()> {
+    if !is_sid_text(sid) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a SID"));
+    }
+    let dir = data_dir();
+    private_dir(&dir)?;
+    let mut users = allowed_users();
+    if !users.iter().any(|u| u == sid) {
+        users.push(sid.to_string());
+    }
+    let text: String = users.iter().map(|u| format!("{u}\n")).collect();
+    let tmp = dir.join(format!("users.tmp{}", std::process::id()));
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, dir.join("users")).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 /// A security descriptor parsed from SDDL text.
@@ -324,6 +382,35 @@ mod tests {
         }
         assert!(text.contains("NT AUTHORITY\\SYSTEM"), "{text}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_sids_are_sids() {
+        for good in ["S-1-5-18", "S-1-5-21-1-2-3-1001", "S-1-5-32-544"] {
+            assert!(is_sid_text(good), "{good}");
+        }
+        for bad in [
+            "",
+            "S-1-",
+            "S-1-5-",
+            "S-1--5",
+            "x",
+            "S-1-5-18)(A;;GA;;;WD",
+            "S-1-5-18 ",
+            "s-1-5-18",
+            "S-2-5-18",
+            &format!("S-1-{}", "1".repeat(200)),
+        ] {
+            assert!(!is_sid_text(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn finds_the_user_but_not_a_group_or_a_stranger() {
+        let user = std::env::var("USERNAME").unwrap();
+        assert_eq!(user_sid(&user).unwrap(), Some(current_user_sid().unwrap()));
+        assert_eq!(user_sid("Administrators").unwrap(), None);
+        assert_eq!(user_sid("kite-no-such-user").unwrap(), None);
     }
 
     #[test]

@@ -54,10 +54,13 @@ const USAGE: &str = "usage:
       Show the running tunnel.
   kite restore
       Remove routes, rules and DNS settings left behind by a TUN mode run that was killed.
+  kite allow USER
+      Windows, as an administrator: let USER use the Kite service. It takes effect when the
+      service starts again.
 
 pair, peers and connect run in the daemon; add --foreground to run them in this
 process instead, with this user's own key and phones. --socket PATH picks another
-daemon socket.";
+daemon socket. --pause keeps the window open until Enter is pressed.";
 
 const DEFAULT_LISTEN: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 1080);
@@ -65,11 +68,13 @@ const DEFAULT_LISTEN: SocketAddr =
 fn main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let foreground = take_flag(&mut args, "--foreground");
+    // For a window the desktop app opened: keep it until the user has read the result.
+    let pause = take_flag(&mut args, "--pause");
     let result = take_option(&mut args, "--socket").and_then(|socket| {
         let socket = socket.unwrap_or_else(|| PathBuf::from(kite_ipc::DEFAULT_SOCKET));
         run(&args, &socket, foreground)
     });
-    match result {
+    let code = match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("kite: {e}");
@@ -78,7 +83,12 @@ fn main() -> ExitCode {
             }
             ExitCode::FAILURE
         }
+    };
+    if pause {
+        println!("Press Enter to close this window.");
+        let _ = std::io::stdin().read_line(&mut String::new());
     }
+    code
 }
 
 /// Removes `flag` from `args` and says whether it was there.
@@ -133,6 +143,7 @@ fn run(args: &[String], socket: &Path, foreground: bool) -> io::Result<()> {
         Some("disconnect" | "devices") => daemon_only(args, socket),
         Some("status") => block_on(status(socket), false),
         Some("restore") => block_on(restore(), false),
+        Some("allow") => allow(&args[1..]),
         Some("--version" | "-V") => {
             println!("kite {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -202,6 +213,29 @@ fn daemon_command(_: &[String], _: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "the daemon is only available on Linux and Windows",
+    ))
+}
+
+/// `kite allow USER` (Windows): the user may use the service, besides the group `kite`.
+#[cfg(windows)]
+fn allow(args: &[String]) -> io::Result<()> {
+    let [name] = args else {
+        return Err(usage("allow takes one user name"));
+    };
+    let sid = kite_win::user_sid(name)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no user {name}")))?;
+    kite_win::allow_user(&sid)?;
+    println!(
+        "{name} may use the Kite service. Restart it for this to take effect: sc stop Kite, then sc start Kite"
+    );
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn allow(_: &[String]) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "allow is only available on Windows; on Linux add the user to the group kite",
     ))
 }
 
