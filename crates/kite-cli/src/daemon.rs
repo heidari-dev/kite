@@ -412,7 +412,11 @@ impl Daemon {
             let key = self.store.key()?;
             let name =
                 pair::fingerprint(&key.public()?).ok_or_else(|| io::Error::other("no BLAKE2s"))?;
-            let attempt = pair::start(crate::dial(&transport, false).await?, &key).await?;
+            let attempt = pair::start(
+                crate::dial(&transport, false, &self.store.adb_key_path()).await?,
+                &key,
+            )
+            .await?;
             Ok((attempt, name))
         })
         .await

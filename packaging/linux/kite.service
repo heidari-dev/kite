@@ -46,9 +46,11 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources
-# Standard pseudo devices plus the TUN device.
+# Standard pseudo devices plus the TUN device and USB.
 DevicePolicy=closed
 DeviceAllow=/dev/net/tun rw
+# USB devices (the phone's ADB interface, see 51-kite-adb.rules); the rule decides which.
+DeviceAllow=char-usb_device rw
 
 # The daemon needs a few MiB (see docs/architecture.md); this only stops a runaway.
 MemoryMax=128M

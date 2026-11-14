@@ -9,7 +9,14 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-tokio = { version = "1.53", features = ["io-util", "net", "time"] }
+base64ct = { version = "1", features = ["alloc"] }
+getrandom = { version = "0.4", features = ["sys_rng"] }
+# Pure Rust USB access (usbfs on Linux, WinUSB on Windows). rsa 0.10 is the first release past RUSTSEC-2023-0071 (Marvin).
+nusb = { version = "0.2.9", features = ["tokio"] }
+rsa = { version = "0.10.0", features = ["pkcs1v15"] }
+sha1 = { version = "0.11.0", features = ["oid"] }
+tokio = { version = "1.53", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+zeroize = "1.9.1"
 
 [dev-dependencies]
 tokio = { version = "1.53", features = ["macros", "rt", "test-util"] }
