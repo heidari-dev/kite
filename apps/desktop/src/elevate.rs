@@ -59,6 +59,7 @@ pub fn start(transport: &Transport) -> Result<(), String> {
 }
 
 /// Whether `file` is inside `dir`, by whole path parts.
+#[cfg(windows)]
 fn under(file: &std::path::Path, dir: &std::path::Path) -> bool {
     let (mut f, mut d) = (file.components(), dir.components());
     d.all(|c| {
@@ -95,6 +96,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn only_a_file_inside_the_directory_is_under_it() {
         use std::path::Path;
