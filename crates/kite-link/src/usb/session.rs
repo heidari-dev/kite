@@ -545,8 +545,8 @@ mod tests {
     }
 
     /// The byte at `i` of the data each side sends.
-    fn byte(i: usize, salt: usize) -> u8 {
-        ((i * 31 + salt) % 251) as u8
+    fn byte(i: usize, phase: usize) -> u8 {
+        ((i * 31 + phase) % 251) as u8
     }
 
     /// A phone that follows ADB's flow control and streams `total` bytes to the host while it
