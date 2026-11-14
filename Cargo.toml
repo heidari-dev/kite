@@ -6,6 +6,7 @@ members = ["crates/*", "apps/desktop"]
 version = "0.1.0-rc.1"
 edition = "2021"
 license = "GPL-3.0-or-later"
+publish = false
 repository = "https://github.com/heidari-dev/kite"
 rust-version = "1.92"
 
