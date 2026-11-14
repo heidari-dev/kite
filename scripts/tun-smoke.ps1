@@ -57,11 +57,11 @@ function Adapter { Get-NetAdapter -Name kite0 -ErrorAction SilentlyContinue }
 function Halves { @(Get-NetRoute -InterfaceAlias kite0 -ErrorAction SilentlyContinue | Where-Object { $_.DestinationPrefix -in '0.0.0.0/1', '128.0.0.0/1' }) }
 function Rules { @(Get-DnsClientNrptRule | Where-Object { $_.Comment -eq 'kite' }) }
 function Assert-Clean([string]$When) {
-    if (Adapter) { Fail "$When: the adapter kite0 is still there" }
-    if (Halves.Count -ne 0) { Fail "$When: routes of the tunnel are still there" }
-    if (Rules.Count -ne 0) { Fail "$When: the DNS rule is still there" }
+    if (Adapter) { Fail "${When}: the adapter kite0 is still there" }
+    if ((Halves).Count -ne 0) { Fail "${When}: routes of the tunnel are still there" }
+    if ((Rules).Count -ne 0) { Fail "${When}: the DNS rule is still there" }
     $to = (Find-NetRoute -RemoteIPAddress 1.1.1.1 | Where-Object { $_.InterfaceAlias } | Select-Object -First 1).InterfaceAlias
-    if ($to -eq 'kite0') { Fail "$When: traffic still goes to the tunnel" }
+    if ($to -eq 'kite0') { Fail "${When}: traffic still goes to the tunnel" }
 }
 function Assert-Up {
     Wait-For 'the tunnel routes' { (Halves).Count -eq 2 -and (Rules).Count -eq 1 }
