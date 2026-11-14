@@ -3002,7 +3002,7 @@ dependencies = [
 
 [[package]]
 name = "kite-win"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "tokio",
  "windows-service",
