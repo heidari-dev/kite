@@ -1,0 +1,41 @@
+name: iOS
+
+# The iPhone app: kite-ffi as an XCFramework and the app built against it, without signing.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - apps/ios/**
+      - crates/kite-ffi/**
+      - crates/kite-relay/**
+      - Cargo.lock
+      - .github/workflows/ios.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: xcodebuild -version
+      - run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+      - name: Build the XCFramework and the Swift bindings
+        run: apps/ios/build-rust.sh
+      - name: Build the app for the simulator
+        run: xcodebuild -project apps/ios/Kite.xcodeproj -target Kite -configuration Debug -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO build
+      - name: Build the app for iPhones, unsigned
+        run: xcodebuild -project apps/ios/Kite.xcodeproj -target Kite -configuration Release -sdk iphoneos CODE_SIGNING_ALLOWED=NO build
+      - name: Sizes
+        run: |
+          ls -l target/aarch64-apple-ios/release/libkite_ffi.a
+          du -sh apps/ios/build/Release-iphoneos/Kite.app
