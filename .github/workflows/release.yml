@@ -6,7 +6,6 @@ name: Release
 on:
   push:
     tags: ["v*"]
-    branches: [ci/release-workflow] # TEMPORARY: dry run of this branch, removed before merge
   workflow_dispatch:
 
 permissions:
