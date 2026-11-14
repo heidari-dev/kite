@@ -20,8 +20,8 @@ use windows_sys::Win32::Security::Authorization::{
     SetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    GetSecurityDescriptorDacl, GetTokenInformation, LookupAccountNameW, SidTypeAlias, TokenUser,
-    ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+    GetSecurityDescriptorDacl, GetTokenInformation, LookupAccountNameW, SidTypeAlias, SidTypeUser,
+    TokenUser, ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
     PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
@@ -30,6 +30,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
+pub mod elevate;
 pub mod pipe;
 pub mod route;
 pub mod service;
@@ -142,6 +143,15 @@ pub fn is_system() -> io::Result<bool> {
 /// The SID of the local group `name`, or None when there is no such local group. A user or a
 /// domain group of that name does not count: only an administrator can create a local group.
 pub fn local_group_sid(name: &str) -> io::Result<Option<String>> {
+    account_sid(name, SidTypeAlias)
+}
+
+/// The SID of the user `name` (as the system writes it: with or without its domain), or None when there is no such user.
+pub fn user_sid(name: &str) -> io::Result<Option<String>> {
+    account_sid(name, SidTypeUser)
+}
+
+fn account_sid(name: &str, wanted: i32) -> io::Result<Option<String>> {
     let name = wide(name);
     let (mut sid_len, mut domain_len, mut kind) = (0u32, 0u32, 0);
     // SAFETY: null buffers of length 0 only ask for the sizes.
@@ -173,11 +183,97 @@ pub fn local_group_sid(name: &str) -> io::Result<Option<String>> {
             &mut kind,
         )
     };
-    if ok == 0 || kind != SidTypeAlias {
+    if ok == 0 || kind != wanted {
         return Ok(None);
     }
     // SAFETY: LookupAccountNameW wrote a valid SID into `sid`.
     unsafe { sid_string(sid.as_mut_ptr().cast()) }.map(Some)
+}
+
+/// A user SID in the form SDDL takes: `S-1-` and digits and dashes, nothing else.
+pub fn is_sid_text(s: &str) -> bool {
+    s.len() <= 184
+        && s.strip_prefix("S-1-").is_some_and(|rest| {
+            !rest.is_empty()
+                && rest.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+                && !rest.starts_with('-')
+                && !rest.ends_with('-')
+                && !rest.contains("--")
+        })
+}
+
+/// At most this many users in the file.
+const MAX_USERS: usize = 64;
+
+/// The users in `users` in the data directory: one SID per line. A missing file is nobody; a line
+/// that is not a valid SID is skipped (a byte order mark is ignored), so the file can put nothing
+/// but SIDs into the pipe's access list. Any other trouble reading it is an error.
+fn read_users() -> io::Result<Vec<String>> {
+    let mut file = match std::fs::File::open(data_dir().join("users")) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    // The directory is closed to others once `private_dir` has run, but it is made with the
+    // permissions of ProgramData first: a file somebody else made in that moment is theirs to
+    // change later, so it does not count.
+    if !trusted_owner(file.as_raw_handle(), &current_user_sid()?)? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "the list of allowed users belongs to another user; remove it",
+        ));
+    }
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut std::io::Read::take(&mut file, 64 * 1024), &mut text)?;
+    Ok(text
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .map(str::trim)
+        // A SID of the right shape that Windows does not accept would stop the pipe being made.
+        .filter(|l| is_sid_text(l) && Descriptor::parse(&format!("D:(A;;GA;;;{l})")).is_ok())
+        .take(MAX_USERS)
+        .map(String::from)
+        .collect())
+}
+
+/// The users the installer or `kite allow` let use the daemon, besides the group `kite`. A file
+/// that cannot be read means nobody, said on stderr.
+pub fn allowed_users() -> Vec<String> {
+    read_users().unwrap_or_else(|e| {
+        eprintln!("kite: cannot read the list of allowed users: {e}");
+        Vec::new()
+    })
+}
+
+/// Lets the user with `sid` use the daemon (from the next start of the service). Needs the
+/// rights to write the data directory, which are the administrators'.
+pub fn allow_user(sid: &str) -> io::Result<()> {
+    if !is_sid_text(sid) || Descriptor::parse(&format!("D:(A;;GA;;;{sid})")).is_err() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a SID"));
+    }
+    let dir = data_dir();
+    private_dir(&dir)?;
+    // An unreadable list is an error here: writing it again would lose the others.
+    let mut users = read_users()?;
+    if !users.iter().any(|u| u == sid) {
+        if users.len() >= MAX_USERS {
+            return Err(io::Error::other(format!(
+                "{MAX_USERS} users are allowed already"
+            )));
+        }
+        users.push(sid.to_string());
+    }
+    let text: String = users.iter().map(|u| format!("{u}\n")).collect();
+    let tmp = dir.join(format!("users.tmp{}", std::process::id()));
+    let written = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        std::io::Write::write_all(&mut f, text.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, dir.join("users"))
+    })();
+    written.inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 /// A security descriptor parsed from SDDL text.
@@ -207,6 +303,31 @@ impl Descriptor {
     }
 }
 
+/// Whether the file or directory behind `handle` is owned by SYSTEM, the Administrators or `me`.
+/// Its owner can change who may use it, so anyone else's is not to be trusted.
+fn trusted_owner(handle: HANDLE, me: &str) -> io::Result<bool> {
+    let mut owner: PSID = null_mut();
+    let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+    // SAFETY: the caller's handle is open for this call; the owner SID points into `sd`, freed
+    // below.
+    check(unsafe {
+        GetSecurityInfo(
+            handle,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &mut sd,
+        )
+    })?;
+    let _sd = Local(sd.cast());
+    // SAFETY: the call above succeeded, so `owner` is a valid SID.
+    let owner = unsafe { sid_string(owner) }?;
+    Ok(owner == me || owner == SYSTEM_SID || owner == ADMINISTRATORS_SID)
+}
+
 /// Creates `path` if it is missing and makes it usable by SYSTEM, Administrators and the current
 /// user only, for what is created in it from now on. Refuses a directory that somebody else owns
 /// (its owner could change the permissions back) and one that is a junction or a symbolic link.
@@ -227,26 +348,7 @@ pub fn private_dir(path: &Path) -> io::Result<()> {
     }
     let handle = dir.as_raw_handle();
 
-    let mut owner: PSID = null_mut();
-    let mut sd: PSECURITY_DESCRIPTOR = null_mut();
-    // SAFETY: `handle` belongs to `dir`, which is open until the end of this function; the owner
-    // SID points into `sd`, freed below.
-    check(unsafe {
-        GetSecurityInfo(
-            handle,
-            SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION,
-            &mut owner,
-            null_mut(),
-            null_mut(),
-            null_mut(),
-            &mut sd,
-        )
-    })?;
-    let _sd = Local(sd.cast());
-    // SAFETY: the call above succeeded, so `owner` is a valid SID.
-    let owner = unsafe { sid_string(owner) }?;
-    if owner != me && owner != SYSTEM_SID && owner != ADMINISTRATORS_SID {
+    if !trusted_owner(handle, &me)? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!("{} belongs to another user; remove it", path.display()),
@@ -324,6 +426,47 @@ mod tests {
         }
         assert!(text.contains("NT AUTHORITY\\SYSTEM"), "{text}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_sids_are_sids() {
+        for good in ["S-1-5-18", "S-1-5-21-1-2-3-1001", "S-1-5-32-544"] {
+            assert!(is_sid_text(good), "{good}");
+        }
+        for bad in [
+            "",
+            "S-1-",
+            "S-1-5-",
+            "S-1--5",
+            "x",
+            "S-1-5-18)(A;;GA;;;WD",
+            "S-1-5-18 ",
+            "s-1-5-18",
+            "S-2-5-18",
+            &format!("S-1-{}", "1".repeat(200)),
+        ] {
+            assert!(!is_sid_text(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_sid_of_the_right_shape_that_windows_refuses_is_not_a_user() {
+        // Too many sub-authorities, and a number that does not fit.
+        for bad in [
+            "S-1-5-1-2-3-4-5-6-7-8-9-10-11-12-13-14-15-16",
+            "S-1-99999999999999999999",
+        ] {
+            assert!(is_sid_text(bad));
+            assert!(allow_user(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn finds_the_user_but_not_a_group_or_a_stranger() {
+        let user = std::env::var("USERNAME").unwrap();
+        assert_eq!(user_sid(&user).unwrap(), Some(current_user_sid().unwrap()));
+        assert_eq!(user_sid("Administrators").unwrap(), None);
+        assert_eq!(user_sid("kite-no-such-user").unwrap(), None);
     }
 
     #[test]

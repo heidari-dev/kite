@@ -14,6 +14,7 @@ kite disconnect
 kite devices
 kite status
 kite restore
+kite allow USER
 kite --version | -V
 kite --help | -h | help
 ```
@@ -306,6 +307,19 @@ administrator on Windows. It fails while a TUN mode kite is running. On Linux it
 that exactly match the ones kite adds, so rules from other programs stay. On Windows it deletes the
 routes on the adapter `kite0`, the host route in `tun.state` and the DNS rule with the comment
 `kite`.
+
+## kite allow
+
+Windows only, from an administrator prompt: `kite allow USER` lets the user use the service, besides
+the members of the group `kite`. It looks the name up (a user, with or without its domain), adds its SID
+to the users file in `%ProgramData%\Kite` and says to restart the service, which reads the file when it
+starts: `sc stop Kite`, `sc start Kite`. The MSI does this for the person who installs. Allowed users
+may start and stop the tunnel; pairing stays for administrators. See [windows.md](windows.md).
+
+## Options for every command
+
+`--pause` keeps the window open until Enter is pressed, after the result is printed. The desktop app
+adds it when it opens `kite pair` in a window of its own.
 
 ## Exit codes
 

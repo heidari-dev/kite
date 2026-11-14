@@ -7,6 +7,8 @@
 #![deny(unsafe_code)]
 
 mod daemon;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod elevate;
 mod kite;
 mod present;
 mod settings;
@@ -50,6 +52,8 @@ struct State {
     last: Instant,
     /// `--reduced-motion`: the reduced variant whatever the system says.
     reduced: bool,
+    /// Windows: what the window says about the elevated pairing it started, and since when.
+    pair_note: Option<(String, Instant)>,
 }
 
 thread_local! {
@@ -234,6 +238,7 @@ fn main() -> Result<(), slint::PlatformError> {
         open: false,
         last: Instant::now(),
         reduced,
+        pair_note: None,
     }));
 
     let ui = AppWindow::new()?;
@@ -388,10 +393,22 @@ fn wire(ui: &AppWindow, tray: &Tray, cmds: &UnboundedSender<Cmd>, visible: &Arc<
         r();
     });
 
-    let c = cmds.clone();
+    let (c, r) = (cmds.clone(), redraw.clone());
     ui.on_pair_start(move || {
         if let Some(transport) = with_state(|s| transport(s, false)) {
-            let _ = c.send(Cmd::PairStart { transport });
+            // On Windows pairing needs an administrator, so it runs in a window of its own.
+            #[cfg(windows)]
+            {
+                let note = elevate::start(&transport).map_or_else(|m| m, |()| elevate::NOTE.into());
+                with_state(|s| s.pair_note = Some((note, Instant::now())));
+                r();
+                let _ = &c;
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = &r;
+                let _ = c.send(Cmd::PairStart { transport });
+            }
         }
     });
     let c = cmds.clone();
@@ -521,6 +538,13 @@ fn render(ui: &AppWindow, tray: &Tray) {
             Pair::Idle => (0, String::new(), String::new()),
             Pair::Waiting { fingerprint } => (1, fingerprint.clone(), String::new()),
             Pair::Done(key) => (2, String::new(), format!("Paired with phone {key}.")),
+        };
+        // The note of an elevated pairing stays for a few minutes, as long as that window might.
+        let note = match &s.pair_note {
+            Some((text, at)) if at.elapsed() < Duration::from_secs(300) && step == 0 => {
+                text.clone()
+            }
+            _ => note,
         };
         ui.set_pair_step(step);
         ui.set_fingerprint(fingerprint.into());

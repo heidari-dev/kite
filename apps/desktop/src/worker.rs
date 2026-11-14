@@ -30,6 +30,8 @@ pub enum Cmd {
         kill_switch: bool,
     },
     Disconnect,
+    // Not sent on Windows, where pairing runs elevated in its own window.
+    #[cfg_attr(windows, allow(dead_code))]
     PairStart {
         transport: Transport,
     },

@@ -151,6 +151,30 @@ jobs:
       - name: TUN mode smoke test
         run: scripts\tun-smoke.ps1 target\release\kite.exe target\release\examples\relay-dev.exe
 
+  # The installer: installs it on the runner, runs the TUN smoke test against the installed service
+  # (with its cut-down token), uninstalls it and checks that nothing is left.
+  msi-windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo build --release --locked -p kite-cli -p kite-desktop
+      - run: cargo build --release --locked -p kite-relay --example relay-dev
+      - run: scripts\fetch-wintun.ps1 target\wintun
+      - name: Build the installer
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages | Where-Object name -eq kite-cli | ForEach-Object version
+          scripts\build-msi.ps1 -Version $version -Bin target\release -Wintun target\wintun -Out dist
+      - name: Install, test the service, uninstall
+        run: scripts\msi-test.ps1 (Get-ChildItem dist\*.msi).FullName target\release\examples\relay-dev.exe
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kite-windows-installer
+          path: dist/*.msi
+          retention-days: 14
+
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 30

@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The Kite installer (WiX 3.14). Built by scripts/build-msi.ps1, which passes:
+    ProductVersion  a.b.c for Windows Installer (see the script)
+    Bin             directory with kite.exe and kite-desktop.exe
+    Wintun          directory with wintun.dll and wintun-LICENSE.txt (scripts/fetch-wintun.ps1)
+    Root            the repository
+
+  One prompt (UAC) installs for the whole computer. It installs the programs, the service Kite and a
+  Start menu entry, starts the service at boot and the app at every sign-in, makes the local group
+  "kite" and puts the person who installs in it. Uninstalling stops the service, runs `kite restore`,
+  and removes all of that and the service's data.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+  <Product Id="*" Name="Kite" Language="1033" Version="$(var.ProductVersion)" Manufacturer="Kite"
+           UpgradeCode="D883830F-81A5-41DF-AFD5-81261406E74F">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine"
+             Description="Kite shares your phone's connection with this computer"
+             Comments="https://github.com/heidari-dev/kite" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Kite is already installed."
+                  AllowSameVersionUpgrades="yes" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="kite.ico" SourceFile="$(var.Root)\packaging\windows\kite.ico" />
+    <Property Id="ARPPRODUCTICON" Value="kite.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/heidari-dev/kite" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <!-- Not upper case, so it is not a public property: it cannot be set on the command line. -->
+        <Directory Id="InstallFolder" Name="Kite" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="MenuFolder" Name="Kite" />
+      </Directory>
+    </Directory>
+
+    <Feature Id="Kite" Title="Kite" Level="1">
+      <ComponentRef Id="Cli" />
+      <ComponentRef Id="Wintun" />
+      <ComponentRef Id="Licenses" />
+      <ComponentRef Id="Desktop" />
+      <ComponentRef Id="StartMenu" />
+    </Feature>
+
+    <DirectoryRef Id="InstallFolder">
+      <!-- The command line and the service. It runs as LocalSystem, see docs/threat-model.md; the
+           privileges its token keeps are cut by the Privs action below. -->
+      <Component Id="Cli" Guid="*" Win64="yes">
+        <File Id="KiteExe" Source="$(var.Bin)\kite.exe" KeyPath="yes" />
+        <ServiceInstall Id="KiteService" Name="Kite" DisplayName="Kite"
+                        Description="Shares a phone's connection with this computer."
+                        Type="ownProcess" Start="auto" ErrorControl="normal"
+                        Account="LocalSystem" Arguments="daemon --service" Vital="yes">
+          <util:ServiceConfig FirstFailureActionType="restart" SecondFailureActionType="restart"
+                              ThirdFailureActionType="restart" RestartServiceDelayInSeconds="2"
+                              ResetPeriodInDays="1" />
+        </ServiceInstall>
+        <ServiceControl Id="KiteControl" Name="Kite" Start="install" Stop="both" Remove="uninstall"
+                        Wait="yes" />
+      </Component>
+
+      <!-- Never from this repository: scripts/fetch-wintun.ps1 downloads and checks it. -->
+      <Component Id="Wintun" Guid="*" Win64="yes">
+        <File Id="WintunDll" Source="$(var.Wintun)\wintun.dll" KeyPath="yes" />
+        <File Id="WintunLicense" Source="$(var.Wintun)\wintun-LICENSE.txt" />
+      </Component>
+
+      <Component Id="Licenses" Guid="*" Win64="yes">
+        <File Id="License" Name="LICENSE.txt" Source="$(var.Root)\LICENSE" KeyPath="yes" />
+      </Component>
+
+      <Component Id="Desktop" Guid="*" Win64="yes">
+        <File Id="DesktopExe" Source="$(var.Bin)\kite-desktop.exe" KeyPath="yes" />
+        <!-- Starts hidden in the tray at every sign-in, as the Linux package does. -->
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Run" Name="Kite"
+                       Type="string" Value="&quot;[InstallFolder]kite-desktop.exe&quot; --hidden" />
+      </Component>
+    </DirectoryRef>
+
+    <!-- A shortcut needs a per-user key path, see ICE43; the Start menu folder itself is the
+         computer's. -->
+    <DirectoryRef Id="MenuFolder">
+      <Component Id="StartMenu" Guid="*">
+        <Shortcut Id="StartMenuKite" Name="Kite"
+                  Description="Share your phone's connection with this computer"
+                  Target="[InstallFolder]kite-desktop.exe" WorkingDirectory="InstallFolder"
+                  Icon="kite.ico" />
+        <RemoveFolder Id="RemoveMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\Kite" Name="StartMenu" Type="integer" Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <!-- An app that is running would keep its file in use; it only lives in the tray. -->
+    <util:CloseApplication Id="CloseKiteDesktop" Target="kite-desktop.exe" CloseMessage="no"
+                           TerminateProcess="0" RebootPrompt="no" />
+
+    <!-- Each step below is a command line, run by WixQuietExec without a window: an immediate
+         action that sets a property to the command, and a deferred action of the same name that
+         runs it. -->
+    <CustomAction Id="AddGroup.Set" Property="AddGroup" Execute="immediate"
+        Value="&quot;[System64Folder]net.exe&quot; localgroup kite /add /comment:&quot;People who may use the Kite service&quot;" />
+    <CustomAction Id="AddGroup" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred"
+                  Impersonate="no" Return="ignore" />
+
+    <CustomAction Id="AddMember.Set" Property="AddMember" Execute="immediate"
+        Value="&quot;[System64Folder]net.exe&quot; localgroup kite &quot;[%USERDOMAIN]\[%USERNAME]&quot; /add" />
+    <CustomAction Id="AddMember" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred"
+                  Impersonate="no" Return="ignore" />
+
+    <!-- The group takes effect at the next sign-in; this lets the person who installs use the
+         service at once, through the users file the pipe's access list reads. -->
+    <CustomAction Id="Allow.Set" Property="Allow" Execute="immediate"
+        Value="&quot;[InstallFolder]kite.exe&quot; allow &quot;[%USERDOMAIN]\[%USERNAME]&quot;" />
+    <CustomAction Id="Allow" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred"
+                  Impersonate="no" Return="ignore" />
+
+    <!-- The service's token keeps only what it uses. -->
+    <CustomAction Id="Privs.Set" Property="Privs" Execute="immediate"
+        Value="&quot;[System64Folder]sc.exe&quot; privs Kite SeChangeNotifyPrivilege/SeCreateGlobalPrivilege/SeLoadDriverPrivilege/SeImpersonatePrivilege" />
+    <CustomAction Id="Privs" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred"
+                  Impersonate="no" Return="check" />
+
+    <CustomAction Id="Restore.Set" Property="Restore" Execute="immediate"
+        Value="&quot;[InstallFolder]kite.exe&quot; restore" />
+    <CustomAction Id="Restore" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred"
+                  Impersonate="no" Return="ignore" />
+
+    <CustomAction Id="RemoveData.Set" Property="RemoveData" Execute="immediate"
+        Value="&quot;[System64Folder]cmd.exe&quot; /c rd /s /q &quot;[CommonAppDataFolder]Kite&quot;" />
+    <CustomAction Id="RemoveData" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred"
+                  Impersonate="no" Return="ignore" />
+
+    <!-- Only the group this installer made: it has the comment given to AddGroup, a group of the
+         same name that somebody else made does not. -->
+    <CustomAction Id="RemoveGroup.Set" Property="RemoveGroup" Execute="immediate"
+        Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -Command &quot;if ((Get-LocalGroup -Name kite).Description -eq 'People who may use the Kite service') { Remove-LocalGroup -Name kite }&quot;" />
+    <CustomAction Id="RemoveGroup" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred"
+                  Impersonate="no" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="AddGroup.Set" After="CostFinalize">NOT Installed</Custom>
+      <Custom Action="AddMember.Set" After="AddGroup.Set">NOT Installed</Custom>
+      <Custom Action="Allow.Set" After="AddMember.Set">NOT Installed</Custom>
+      <Custom Action="Privs.Set" After="Allow.Set">NOT Installed</Custom>
+      <Custom Action="Restore.Set" After="Privs.Set">REMOVE="ALL"</Custom>
+      <Custom Action="RemoveData.Set" After="Restore.Set">REMOVE="ALL"</Custom>
+      <Custom Action="RemoveGroup.Set" After="RemoveData.Set">REMOVE="ALL"</Custom>
+
+      <!-- Installing: the group before the service starts, the person's access after the files
+           are there, the privileges after the service exists and before it starts (5800, 5900). -->
+      <Custom Action="AddGroup" Sequence="5750">NOT Installed</Custom>
+      <Custom Action="AddMember" Sequence="5760">NOT Installed</Custom>
+      <Custom Action="Allow" Sequence="4010">NOT Installed</Custom>
+      <Custom Action="Privs" Sequence="5810">NOT Installed</Custom>
+
+      <!-- Uninstalling, after the service stopped (1900): lift what a tunnel left, then remove the
+           files (3500), the data and the group, unless this is an upgrade, which keeps keys and
+           pairings. The data goes last, so an uninstall that fails earlier loses nothing. -->
+      <Custom Action="Restore" Sequence="1950">REMOVE="ALL"</Custom>
+      <Custom Action="RemoveData" Sequence="3510">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="RemoveGroup" Sequence="1970">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+    </InstallExecuteSequence>
+  </Product>
+</Wix>

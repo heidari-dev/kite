@@ -45,7 +45,10 @@ impl Pipe {
             Ok(computer) => crate::local_group_sid(&format!("{computer}\\{GROUP}"))?,
             Err(_) => None,
         };
-        let sddl = access(&crate::current_user_sid()?, group.as_deref());
+        let mut sddl = access(&crate::current_user_sid()?, group.as_deref());
+        for sid in crate::allowed_users() {
+            sddl += &format!("(A;;{MEMBER_RIGHTS};;;{sid})");
+        }
         Descriptor::parse(&sddl)?;
         Ok(Self {
             name: name.into(),
