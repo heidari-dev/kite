@@ -105,9 +105,12 @@ names the secret when one is missing or the keystore, password or alias does not
 | `kite-VERSION.apk` | The phone app, signed with the release key |
 | `kite-cli.cdx.json`, `kite-desktop.cdx.json`, `kite-ffi.cdx.json` | CycloneDX SBOMs of the Rust programs |
 | `SHA256SUMS` | SHA-256 of every file above |
-| `FILE.sigstore.json` | A Sigstore bundle for each of those files |
+| `kite-VERSION.intoto.jsonl` | The SLSA build provenance (an in-toto statement in a Sigstore bundle) for every file above |
+| `FILE.sigstore.json` | A Sigstore bundle for each of those files, the provenance included |
 
-Each file also has a GitHub build provenance attestation.
+The same provenance is also stored as a GitHub attestation. `SHA256SUMS` does not list the
+provenance or the `.sigstore.json` files: they are made from the digests in `SHA256SUMS`, so they
+cannot be in it, and each is signed itself.
 
 ## Checking a download
 
@@ -120,6 +123,18 @@ cosign verify-blob --bundle kite_0.1.0-rc.1_amd64.deb.sigstore.json \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com kite_0.1.0-rc.1_amd64.deb
 apksigner verify --print-certs kite-0.1.0-rc.1.apk
 ```
+
+The provenance file checks the same files without asking GitHub which attestations exist, so it
+works from a copy of the release kept offline:
+
+```
+gh attestation verify kite_0.1.0-rc.1_amd64.deb --repo heidari-dev/kite \
+  --bundle kite-0.1.0-rc.1.intoto.jsonl \
+  --signer-workflow heidari-dev/kite/.github/workflows/release.yml --source-ref refs/tags/v0.1.0-rc.1
+```
+
+It exits with 0 and prints nothing when the file is part of that release and was built by
+`release.yml` from that tag, and fails for any other file.
 
 (Downloading a draft needs a GitHub account with access to the repository; a published release does
 not.) The APK's certificate digest must be the same in every release; it is the SHA-256 line
