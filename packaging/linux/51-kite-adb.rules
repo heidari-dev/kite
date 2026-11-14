@@ -1,4 +1,5 @@
-# A phone's ADB interface (class ff, subclass 42, protocol 01) is for the kite group, which the
-# daemon runs in, and for the person at the console, so `kite connect --usb` works without an adb
-# server. Nothing else on the USB bus is touched: other devices do not have this interface.
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", IMPORT{builtin}="usb_id", ENV{ID_USB_INTERFACES}=="*:ff4201:*", GROUP="kite", MODE="0660", TAG+="uaccess"
+# A device that has an ADB interface (class ff, subclass 42, protocol 01) is for the kite group,
+# which the daemon runs in, and for the person at the console, so `kite connect --usb` works without
+# an adb server. USB access is per device, not per interface, so this covers the whole device; one
+# that also has a keyboard or mouse (HID) interface is left out.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", IMPORT{builtin}="usb_id", ENV{ID_USB_INTERFACES}=="*:ff4201:*", ENV{ID_USB_INTERFACES}!="*:03????:*", GROUP="kite", MODE="0660", TAG+="uaccess"

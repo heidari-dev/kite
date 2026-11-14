@@ -25,6 +25,8 @@ const LOCAL_ID: u32 = 1;
 const AUTH_TOKEN: u32 = 1;
 const AUTH_SIGNATURE: u32 = 2;
 const AUTH_PUBLIC_KEY: u32 = 3;
+/// Packets of an earlier session that are skipped while a new one starts.
+const MAX_STALE: usize = 8;
 /// A token is 20 bytes; this leaves room and nothing more.
 const MAX_TOKEN: usize = 256;
 
@@ -78,11 +80,21 @@ pub async fn connect<T: AsyncRead + AsyncWrite + Unpin>(
     send(io, CNXN, VERSION, MAX_DATA as u32, b"host::\0").await?;
     let (mut signed, mut offered) = (false, false);
     let mut wait = STEP;
+    let mut stale = 0;
     // The phone asks at most twice; anything more is a refusal or a confused device.
-    for _ in 0..4 {
+    let mut rounds = 0;
+    while rounds < 4 {
         let m = recv(io, wait).await?;
         match m.command {
+            // What an earlier session left in the pipe, before the phone answers this one.
+            OKAY | WRTE | CLSE if stale < MAX_STALE => {
+                stale += 1;
+                continue;
+            }
             CNXN => {
+                if m.arg0 < VERSION {
+                    return Err(bad("the phone speaks an ADB version that is too old"));
+                }
                 let max = usize::try_from(m.arg1).unwrap_or(0).min(MAX_DATA);
                 if max < 1024 {
                     return Err(bad("the phone allows packets that are too small"));
@@ -104,6 +116,7 @@ pub async fn connect<T: AsyncRead + AsyncWrite + Unpin>(
             }
             _ => return Err(bad("an unexpected packet while connecting to the phone")),
         }
+        rounds += 1;
     }
     Err(io::Error::new(
         io::ErrorKind::PermissionDenied,
@@ -116,15 +129,22 @@ pub async fn open_stream<T: AsyncRead + AsyncWrite + Unpin>(io: &mut T) -> io::R
     let mut name = SOCKET.as_bytes().to_vec();
     name.push(0);
     send(io, OPEN, LOCAL_ID, 0, &name).await?;
-    let m = recv(io, STEP).await?;
-    match m.command {
-        OKAY if m.arg1 == LOCAL_ID && m.arg0 != 0 => Ok(m.arg0),
-        CLSE => Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "the Kite app is not listening on the phone (open it and start sharing)",
-        )),
-        _ => Err(bad("an unexpected answer to opening the stream")),
+    // Packets of an earlier stream may still arrive first; they name another stream or none.
+    for _ in 0..=MAX_STALE {
+        let m = recv(io, STEP).await?;
+        match m.command {
+            OKAY if m.arg1 == LOCAL_ID && m.arg0 != 0 => return Ok(m.arg0),
+            CLSE if m.arg1 == LOCAL_ID => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "the Kite app is not listening on the phone (open it and start sharing)",
+                ))
+            }
+            OKAY | WRTE | CLSE => {}
+            _ => break,
+        }
     }
+    Err(bad("an unexpected answer to opening the stream"))
 }
 
 /// Moves bytes between the phone's stream and `local` until either ends. One packet of ours is in
@@ -137,7 +157,14 @@ where
     let (mut dev_r, mut dev_w) = tokio::io::split(io);
     // Reads happen in a task of their own: a read that is cut off half way would lose bytes.
     let (tx, mut rx) = mpsc::channel::<io::Result<Message>>(4);
-    let reader = tokio::spawn(async move {
+    // A task that is dropped with this future, so it never outlives the session.
+    struct Abort(tokio::task::JoinHandle<()>);
+    impl Drop for Abort {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let mut reader = Abort(tokio::spawn(async move {
         loop {
             let m = wire::read_message(&mut dev_r).await;
             let stop = m.is_err();
@@ -145,9 +172,10 @@ where
                 break;
             }
         }
-    });
+    }));
     let (mut local_r, mut local_w) = tokio::io::split(local);
-    // Never a multiple of 64: a USB transfer of such a length would need a zero-length packet.
+    // Not a multiple of 64, which most reads would not be either; a transfer of such a length gets
+    // its zero-length packet from the USB side.
     let size = if max.is_multiple_of(64) { max - 1 } else { max };
     let mut buf = vec![0u8; size];
     let mut deadline: Option<Instant> = None;
@@ -183,7 +211,9 @@ where
         }
     }
     .await;
-    reader.abort();
+    // Gone before this returns, so the interface is free for the next session.
+    reader.0.abort();
+    let _ = (&mut reader.0).await;
     result
 }
 
@@ -352,14 +382,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn skips_what_an_earlier_session_left_in_the_pipe() {
+        let key = key();
+        let (mut host, mut device) = duplex(1 << 16);
+        tokio::spawn(async move {
+            let _ = wire::read_message(&mut device).await;
+            for stale in [OKAY, WRTE, CLSE] {
+                let p = wire::encode(stale, 9, 9, b"x").unwrap();
+                device.write_all(&p).await.unwrap();
+            }
+            let hello = wire::encode(CNXN, VERSION, 4096, &[]).unwrap();
+            device.write_all(&hello).await.unwrap();
+            let _ = wire::read_message(&mut device).await;
+            let stale = wire::encode(WRTE, 9, 9, b"x").unwrap();
+            device.write_all(&stale).await.unwrap();
+            let ok = wire::encode(OKAY, 5, LOCAL_ID, &[]).unwrap();
+            device.write_all(&ok).await.unwrap();
+        });
+        connect(&mut host, &key).await.unwrap();
+        assert_eq!(open_stream(&mut host).await.unwrap(), 5);
+        // A phone that speaks an older version is refused with a reason.
+        let (mut host, mut device) = duplex(1 << 16);
+        tokio::spawn(async move {
+            let _ = wire::read_message(&mut device).await;
+            let old = wire::encode(CNXN, 0x0100_0000, 4096, &[]).unwrap();
+            device.write_all(&old).await.unwrap();
+        });
+        let e = connect(&mut host, &key).await.map(drop).unwrap_err();
+        assert!(e.to_string().contains("too old"));
+    }
+
+    #[tokio::test]
     async fn refuses_packets_that_do_not_belong() {
         let key = key();
         let (mut host, mut device) = duplex(1 << 16);
         tokio::spawn(async move {
             let _ = wire::read_message(&mut device).await;
-            // An OKAY where a CNXN or AUTH is expected.
+            // An OPEN where a CNXN or AUTH is expected.
             device
-                .write_all(&wire::encode(OKAY, 1, 1, &[]).unwrap())
+                .write_all(&wire::encode(OPEN, 1, 1, &[]).unwrap())
                 .await
                 .unwrap();
         });

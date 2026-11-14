@@ -3025,6 +3025,7 @@ dependencies = [
  "rsa",
  "sha1",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]

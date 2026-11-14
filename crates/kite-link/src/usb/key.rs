@@ -23,12 +23,13 @@ fn other(e: impl std::fmt::Display) -> io::Error {
 impl AdbKey {
     /// The key in `path`, made if it is missing. A file other users can read is refused.
     pub fn load_or_create(path: &Path) -> io::Result<Self> {
-        match std::fs::read(path) {
-            Ok(der) => {
+        match std::fs::File::open(path) {
+            Ok(mut file) => {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    if std::fs::metadata(path)?.permissions().mode() & 0o077 != 0 {
+                    // On the opened file, so it is the one that is read.
+                    if file.metadata()?.permissions().mode() & 0o077 != 0 {
                         return Err(io::Error::new(
                             io::ErrorKind::PermissionDenied,
                             format!(
@@ -38,16 +39,24 @@ impl AdbKey {
                         ));
                     }
                 }
+                // A key is a few hundred bytes; the cap only keeps a wrong file from being read whole.
+                let mut der = zeroize::Zeroizing::new(Vec::new());
+                std::io::Read::read_to_end(
+                    &mut std::io::Read::take(&mut file, 16 * 1024),
+                    &mut der,
+                )?;
                 let key = PrivateKey::from_pkcs1_der(&der).map_err(|_| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
                         "the ADB key file is damaged; remove it",
                     )
                 })?;
-                if key.size() != BITS / 8 {
+                if key.size() != BITS / 8
+                    || key.e().to_be_bytes_trimmed_vartime().as_ref() != [1, 0, 1]
+                {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "the ADB key is not 2048 bits; remove it",
+                        "the ADB key is not a 2048-bit key with exponent 65537; remove it",
                     ));
                 }
                 Ok(Self(key))

@@ -148,11 +148,12 @@ ways:
   owns the USB interface. Only phones connected by USB count; adb over WiFi is ignored.
 - Otherwise kite talks ADB to the phone's USB interface itself, with no adb installed. The first time
   it makes an RSA key (`adbkey` in the state directory, owner only) and shows it to the phone, which
-  asks "Allow USB debugging?": tap Allow, ideally "Always allow from this computer", and run kite
-  again if it gave up waiting (it waits 60 s). Linux needs access to the USB device: the `kite`
+  asks "Allow USB debugging?": tap Allow and run kite again if it gave up waiting (it waits 60 s).
+  Leave "Always allow from this computer" off unless you trust this computer: a phone that
+  remembers the key lets whoever holds `adbkey` run `adb shell` on it, not only use Kite. Linux needs access to the USB device: the `kite`
   package installs `51-kite-adb.rules`, which gives the group `kite` and the person at the console
-  the phone's ADB interface (class ff, subclass 42, protocol 01) and nothing else; replug the
-  phone after installing. Windows needs the WinUSB driver on the phone's ADB interface, see
+  any device with an ADB interface (class ff, subclass 42, protocol 01) unless it also has a keyboard
+  or mouse interface; replug the phone after installing. Windows needs the WinUSB driver on the phone's ADB interface, see
   [windows.md](windows.md). Only one program can hold the interface: close `adb` or run
   `adb start-server` to let it have it.
 
