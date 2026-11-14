@@ -1,4 +1,4 @@
-#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#![cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
 //! One connection of this computer to the phone, shared by `kite connect --foreground` and the
 //! daemon: dial and pair-check the relay, then serve the SOCKS5 proxy or TUN mode through it.
 //!
@@ -16,7 +16,7 @@ use kite_relay::pair;
 use std::convert::Infallible;
 use std::future::Future;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -113,14 +113,13 @@ struct Link {
 }
 
 impl Link {
-    /// A tunnel to the relay, once the phone proved to be a paired one.
-    async fn establish(&self) -> io::Result<Tunnel> {
-        pair::connect(
-            dial(&self.transport, self.tun).await?,
-            &self.key,
-            &self.phones,
-        )
-        .await
+    /// A tunnel to the relay, once the phone proved to be a paired one, and the address it
+    /// reaches the relay at (the adb server's, for USB).
+    async fn establish(&self) -> io::Result<(Tunnel, Option<IpAddr>)> {
+        let stream = dial(&self.transport, self.tun).await?;
+        let relay = stream.peer_addr().ok().map(|a| a.ip());
+        let tunnel = pair::connect(stream, &self.key, &self.phones).await?;
+        Ok((tunnel, relay))
     }
 }
 
@@ -128,6 +127,8 @@ impl Link {
 pub struct Started {
     link: Link,
     first: Tunnel,
+    /// Where `first` reached the relay, for TUN mode to keep that traffic out of the tunnel.
+    relay: Option<IpAddr>,
     listener: TcpListener,
     kill_switch: bool,
 }
@@ -156,10 +157,11 @@ pub async fn start(p: &Params, store: &Store) -> io::Result<Started> {
         key: store.key()?,
         phones,
     };
-    let first = link.establish().await?;
+    let (first, relay) = link.establish().await?;
     Ok(Started {
         link,
         first,
+        relay,
         listener,
         kill_switch: p.kill_switch,
     })
@@ -184,14 +186,16 @@ impl Started {
         let Self {
             link,
             first,
+            relay,
             listener,
             kill_switch,
         } = self;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         if link.tun {
             let addr = listener.local_addr()?;
             return crate::tun::run(
                 addr,
+                relay,
                 kill_switch,
                 |token| {
                     keep(
@@ -252,7 +256,7 @@ async fn keep(
                 () = &mut shutdown => return Ok(()),
                 never = refuse(listener) => match never {},
                 r = link.establish() => match r {
-                    Ok(t) => break t,
+                    Ok((t, _)) => break t,
                     Err(e) => shared.set(State::Reconnecting, Some(e.to_string())),
                 },
             }

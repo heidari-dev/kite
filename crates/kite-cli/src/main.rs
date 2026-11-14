@@ -10,9 +10,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 use tokio::net::{TcpSocket, TcpStream};
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod client;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod daemon;
 mod proxy;
 #[cfg(target_os = "linux")]
@@ -23,11 +23,14 @@ mod status;
 mod store;
 #[cfg(target_os = "linux")]
 mod tun;
+#[cfg(windows)]
+#[path = "tun_win.rs"]
+mod tun;
 
 const USAGE: &str = "usage:
   kite daemon [--state-dir DIR]
-      Run the background service that owns the tunnel (Linux). The commands below
-      talk to it on /run/kite/kite.sock.
+      Run the background service that owns the tunnel (Linux and Windows). The
+      commands below talk to it on /run/kite/kite.sock, or on \\\\.\\pipe\\kite on Windows.
   kite pair (--tcp HOST:PORT | --wifi [ADDR[:PORT]] | --usb [--serial SERIAL])
       Pair this computer with the phone: type the 6-digit code it shows.
   kite peers [remove KEY]
@@ -40,8 +43,9 @@ const USAGE: &str = "usage:
       (a loopback address, default 127.0.0.1:1080).
   kite connect (--tcp HOST:PORT | --wifi [ADDR[:PORT]] | --usb [--serial SERIAL]) --tun [--kill-switch]
       Send all traffic and DNS of this computer through the relay (Linux, needs
-      CAP_NET_ADMIN). With --kill-switch, block everything while the link is down
-      and reconnect when the phone is back, until kite disconnect.
+      CAP_NET_ADMIN; Windows, needs an administrator). With --kill-switch (Linux
+      only), block everything while the link is down and reconnect when the phone
+      is back, until kite disconnect.
   kite disconnect
       Close the tunnel and lift the kill switch.
   kite devices
@@ -49,7 +53,7 @@ const USAGE: &str = "usage:
   kite status
       Show the running tunnel.
   kite restore
-      Remove routing rules left behind by a TUN mode run that was killed.
+      Remove routes, rules and DNS settings left behind by a TUN mode run that was killed.
 
 pair, peers and connect run in the daemon; add --foreground to run them in this
 process instead, with this user's own key and phones. --socket PATH picks another
@@ -97,12 +101,12 @@ fn take_option(args: &mut Vec<String>, flag: &str) -> io::Result<Option<PathBuf>
     Ok(Some(PathBuf::from(value)))
 }
 
-#[cfg_attr(not(unix), allow(unused_variables))]
+#[cfg_attr(not(any(unix, windows)), allow(unused_variables))]
 fn run(args: &[String], socket: &Path, foreground: bool) -> io::Result<()> {
     match args.first().map(String::as_str) {
         Some("daemon") => daemon_command(&args[1..], socket),
         Some("connect") => parse_connect(&args[1..]).and_then(|c| {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             if !foreground {
                 return block_on(client::connect(socket, &c), false);
             }
@@ -113,14 +117,14 @@ fn run(args: &[String], socket: &Path, foreground: bool) -> io::Result<()> {
             if c.tun || c.kill_switch || c.listen != DEFAULT_LISTEN {
                 return Err(usage("pair takes only --tcp, --wifi, --usb and --serial"));
             }
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             if !foreground {
                 return block_on(client::pair(socket, &c.transport), false);
             }
             block_on(pair(c.transport), false)
         }),
         Some("peers") => {
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             if !foreground {
                 return block_on(client::peers(socket, &args[1..]), false);
             }
@@ -141,11 +145,17 @@ fn run(args: &[String], socket: &Path, foreground: bool) -> io::Result<()> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn daemon_command(args: &[String], socket: &Path) -> io::Result<()> {
     let mut args = args.to_vec();
-    let state =
-        take_option(&mut args, "--state-dir")?.unwrap_or_else(|| PathBuf::from("/var/lib/kite"));
+    #[cfg(windows)]
+    let service = take_flag(&mut args, "--service");
+    let state = take_option(&mut args, "--state-dir")?.unwrap_or_else(|| {
+        #[cfg(windows)]
+        return kite_win::data_dir();
+        #[cfg(not(windows))]
+        PathBuf::from("/var/lib/kite")
+    });
     if !args.is_empty() {
         return Err(usage("daemon takes only --state-dir and --socket"));
     }
@@ -153,19 +163,50 @@ fn daemon_command(args: &[String], socket: &Path) -> io::Result<()> {
         socket: socket.to_path_buf(),
         state,
     };
+    #[cfg(windows)]
+    if service {
+        return run_service(opts);
+    }
     block_on(daemon::run(opts, shutdown_signal()), false)
 }
 
-#[cfg(not(target_os = "linux"))]
+/// `kite daemon --service`: what the service manager starts. The log goes to `kite.log` in the
+/// state directory, since a service has no console.
+#[cfg(windows)]
+fn run_service(opts: daemon::Options) -> io::Result<()> {
+    kite_win::private_dir(&opts.state)?;
+    let log = opts.state.join("kite.log");
+    kite_win::service::run(&log, move |control| {
+        let kite_win::service::Control { stop, up } = control;
+        let stop = async {
+            let _ = stop.await;
+        };
+        block_on(
+            async {
+                // The DNS rule of a TUN run that was killed survives a reboot; take it away.
+                if let Err(e) = tun::restore().await {
+                    eprintln!("kite: cleaning up after an earlier run: {e}");
+                }
+                daemon::run_with(opts, stop, || {
+                    let _ = up.running();
+                })
+                .await
+            },
+            false,
+        )
+    })
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 fn daemon_command(_: &[String], _: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "the daemon is only available on Linux",
+        "the daemon is only available on Linux and Windows",
     ))
 }
 
 /// `disconnect` and `devices` only make sense against the daemon.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn daemon_only(args: &[String], socket: &Path) -> io::Result<()> {
     if args.len() != 1 {
         return Err(usage(format!("{} takes no arguments", args[0])));
@@ -182,25 +223,37 @@ fn daemon_only(args: &[String], socket: &Path) -> io::Result<()> {
     )
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn daemon_only(_: &[String], _: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "the daemon is only available on Linux",
+        "the daemon is only available on Linux and Windows",
     ))
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+#[cfg_attr(not(any(target_os = "linux", windows)), allow(unused_variables))]
 fn block_on<F: std::future::Future<Output = io::Result<()>>>(f: F, tun: bool) -> io::Result<()> {
     let mut rt = tokio::runtime::Builder::new_current_thread();
-    #[cfg(target_os = "linux")]
+    // Name lookups; in TUN mode block_in_place also takes a thread from this pool.
+    let mut blocking = 4;
+    #[cfg(any(target_os = "linux", windows))]
     if tun {
         // tun2proxy's TCP stack calls block_in_place, which a current_thread runtime refuses.
         rt = tokio::runtime::Builder::new_multi_thread();
         rt.worker_threads(1);
+        // Dropping a connection there blocks its thread until the connection's task is done, and
+        // that task needs a worker: the worker moves to another thread of this pool for as long
+        // as the first one waits. With the pool full the only worker is stuck for good and
+        // nothing runs, timers and the stop included, so a flood of connections ending together
+        // (a disconnect) could freeze the tunnel. Threads are made when needed and go when idle.
+        blocking = 512;
     }
-    // Name lookups; block_in_place also borrows a thread from this pool.
-    rt.enable_all().max_blocking_threads(4).build()?.block_on(f)
+    let rt = rt.enable_all().max_blocking_threads(blocking).build()?;
+    let result = rt.block_on(f);
+    // A task that does not stop must not keep the tunnel from ending: dropping the runtime would
+    // wait for it for ever.
+    rt.shutdown_timeout(Duration::from_secs(2));
+    result
 }
 
 fn usage(msg: impl Into<String>) -> io::Error {
@@ -294,12 +347,15 @@ fn parse_connect(args: &[String]) -> io::Result<Connect> {
     let mut it = args.iter().peekable();
     while let Some(flag) = it.next() {
         if flag == "--kill-switch" {
+            if cfg!(windows) {
+                return Err(usage("--kill-switch is not available on Windows yet"));
+            }
             kill_switch = true;
             continue;
         }
         if flag == "--tun" {
-            if !cfg!(target_os = "linux") {
-                return Err(usage("--tun is only available on Linux"));
+            if !cfg!(any(target_os = "linux", windows)) {
+                return Err(usage("--tun is only available on Linux and Windows"));
             }
             tun = true;
             continue;
@@ -474,7 +530,7 @@ fn peers(args: &[String]) -> io::Result<()> {
 }
 
 /// In TUN mode the socket carries the routing mark that keeps it out of the tunnel it carries.
-#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+#[cfg_attr(not(any(target_os = "linux", windows)), allow(unused_variables))]
 async fn dial_tcp(relay: &str, tun: bool) -> io::Result<TcpStream> {
     let connect = async {
         let mut last = io::Error::new(io::ErrorKind::NotFound, "relay name did not resolve");
@@ -484,12 +540,14 @@ async fn dial_tcp(relay: &str, tun: bool) -> io::Result<TcpStream> {
             } else {
                 TcpSocket::new_v6()?
             };
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", windows))]
             if tun {
-                // The DNS rules come before the mark check and would loop this socket.
+                // Every packet to port 53 is taken for DNS, so this socket would loop.
                 if addr.port() == 53 {
                     return Err(io::Error::other("TUN mode cannot reach a relay on port 53"));
                 }
+                // The mark keeps this socket out of the tunnel (Windows: a host route does).
+                #[cfg(target_os = "linux")]
                 socket2::SockRef::from(&sock).set_mark(route::TABLE)?;
             }
             match sock.connect(addr).await {
@@ -517,12 +575,12 @@ async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 async fn restore() -> io::Result<()> {
     tun::restore().await
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 async fn restore() -> io::Result<()> {
     Ok(())
 }
@@ -536,17 +594,27 @@ async fn status(socket: &Path) -> io::Result<()> {
     }
 }
 
-#[cfg(not(unix))]
+/// On Windows only the service answers; a `--foreground` tunnel does not.
+#[cfg(windows)]
+async fn status(socket: &Path) -> io::Result<()> {
+    client::status(socket).await
+}
+
+#[cfg(not(any(unix, windows)))]
 async fn status(_: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "status is only available on Linux",
+        "status is only available on Linux and Windows",
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{parse_connect, Transport};
+
+    /// TUN mode exists on Linux and Windows; the kill switch on Linux only.
+    const TUN: bool = cfg!(any(target_os = "linux", windows));
+    const KILL_SWITCH: bool = cfg!(target_os = "linux");
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
@@ -561,12 +629,27 @@ mod tests {
         assert_eq!(c.listen, "[::1]:9050".parse().unwrap());
         assert!(!c.tun);
         let c = parse_connect(&args("--tun --tcp 10.0.0.2:7000"));
-        assert_eq!(
-            c.is_ok_and(|c| c.tun && !c.kill_switch),
-            cfg!(target_os = "linux")
-        );
+        assert_eq!(c.is_ok_and(|c| c.tun && !c.kill_switch), TUN);
         let c = parse_connect(&args("--tun --kill-switch --usb"));
-        assert_eq!(c.is_ok_and(|c| c.kill_switch), cfg!(target_os = "linux"));
+        assert_eq!(c.is_ok_and(|c| c.kill_switch), KILL_SWITCH);
+    }
+
+    #[test]
+    fn a_task_that_does_not_stop_does_not_hold_the_runtime() {
+        let started = std::time::Instant::now();
+        super::block_on(
+            async {
+                tokio::task::spawn_blocking(|| {
+                    std::thread::sleep(std::time::Duration::from_secs(20))
+                });
+                // Let the blocking task start.
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                Ok(())
+            },
+            false,
+        )
+        .unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 
     #[test]
@@ -589,9 +672,7 @@ mod tests {
         let c = parse_connect(&args("--wifi --listen 127.0.0.1:9050")).unwrap();
         assert_eq!(c.transport, Transport::Wifi(None));
         assert_eq!(c.listen, "127.0.0.1:9050".parse().unwrap());
-        assert!(
-            parse_connect(&args("--wifi --tun --kill-switch")).is_ok() == cfg!(target_os = "linux")
-        );
+        assert!(parse_connect(&args("--wifi --tun --kill-switch")).is_ok() == KILL_SWITCH);
         for bad in [
             "--tcp 10.0.0.2 --tun --kill-switch",
             "--wifi --usb",

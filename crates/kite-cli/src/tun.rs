@@ -29,6 +29,8 @@ const DNS: IpAddr = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
 /// `shutdown`, so nothing leaks until the user runs `kite restore`.
 pub async fn run<F, Fut>(
     proxy: SocketAddr,
+    // The relay socket carries a firewall mark here; only Windows needs the address.
+    _relay: Option<IpAddr>,
     kill_switch: bool,
     serve_link: F,
     shutdown: impl Future<Output = ()>,

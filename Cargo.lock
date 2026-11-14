@@ -2836,6 +2836,7 @@ dependencies = [
  "kite-ipc",
  "kite-link",
  "kite-relay",
+ "kite-win",
  "netlink-packet-route",
  "rtnetlink",
  "socket2",
@@ -2851,6 +2852,7 @@ name = "kite-desktop"
 version = "0.1.0-rc.1"
 dependencies = [
  "kite-ipc",
+ "kite-win",
  "serde",
  "serde_json",
  "slint",
@@ -2894,6 +2896,15 @@ dependencies = [
  "tokio-util",
  "yamux",
  "zeroize",
+]
+
+[[package]]
+name = "kite-win"
+version = "0.1.0-rc.1"
+dependencies = [
+ "tokio",
+ "windows-service",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -34,6 +34,15 @@ jobs:
       - run: sudo apt-get install -y --no-install-recommends libfontconfig1-dev
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+  # The Windows-only code (kite-win, the pipe, TUN mode) is not built on Linux.
+  clippy-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
   test:
     strategy:
       fail-fast: false
@@ -127,6 +136,20 @@ jobs:
       - name: TUN mode end to end
         run: sudo bash scripts/tun-e2e.sh target/release/kite target/release/examples/relay-dev
 
+
+  # The runner is an administrator, so Wintun can make its adapter and the routes can change.
+  tun-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo build --release --locked -p kite-cli
+      - run: cargo build --release --locked -p kite-relay --example relay-dev
+      - run: scripts\fetch-wintun.ps1 target\release
+      - name: TUN mode smoke test
+        run: scripts\tun-smoke.ps1 target\release\kite.exe target\release\examples\relay-dev.exe
 
   android:
     runs-on: ubuntu-latest

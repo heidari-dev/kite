@@ -1,20 +1,28 @@
-//! One request to the Kite daemon (protocol in `kite-ipc`), with errors that say what to do.
+//! One request to the Kite daemon (protocol in `kite-ipc`), over its Unix socket or, on Windows,
+//! its named pipe, with errors that say what to do.
 //!
 //! Every answer is untrusted: one line of at most `MAX_RESPONSE` bytes, parsed strictly, and the
 //! wait for it has a timeout.
 
-#[cfg(unix)]
-use kite_ipc::{read_line, MAX_RESPONSE};
-use kite_ipc::{Request, Response};
-#[cfg(unix)]
+use kite_ipc::{read_line, Request, Response, MAX_RESPONSE};
 use std::io;
 use std::path::Path;
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite};
 
+#[cfg(unix)]
 pub const NOT_RUNNING: &str =
     "The Kite daemon is not running. Start it with: sudo systemctl start kite";
+#[cfg(unix)]
 pub const NO_PERMISSION: &str = "You are not allowed to use the Kite daemon. Add yourself to the \
      kite group with: sudo usermod -aG kite $USER, then log out and in again.";
+#[cfg(windows)]
+pub const NOT_RUNNING: &str =
+    "The Kite service is not running. Start it from Services (Kite), or reinstall Kite.";
+#[cfg(windows)]
+pub const NO_PERMISSION: &str =
+    "You are not allowed to use the Kite service. Ask an administrator \
+     to add you to the Windows group kite, then sign out and in again.";
 
 /// Why a request did not give an answer.
 #[derive(Debug, PartialEq, Eq)]
@@ -25,13 +33,22 @@ pub enum CallError {
     Refused(String),
 }
 
-/// Sends one request and waits at most `wait` for the answer.
+/// Opens the socket.
 #[cfg(unix)]
+async fn open(socket: &Path) -> io::Result<impl AsyncRead + AsyncWrite + Unpin> {
+    tokio::net::UnixStream::connect(socket).await
+}
+
+#[cfg(windows)]
+async fn open(socket: &Path) -> io::Result<impl AsyncRead + AsyncWrite + Unpin> {
+    kite_win::pipe::connect(socket).await
+}
+
+/// Sends one request and waits at most `wait` for the answer.
 pub async fn call(socket: &Path, req: &Request, wait: Duration) -> Result<Response, CallError> {
     use tokio::io::{AsyncWriteExt, BufReader};
-    use tokio::net::UnixStream;
     let exchange = async {
-        let mut s = UnixStream::connect(socket).await?;
+        let mut s = open(socket).await?;
         s.write_all(&req.line()).await?;
         let line = read_line(&mut BufReader::new(s), MAX_RESPONSE)
             .await?
@@ -57,14 +74,11 @@ pub async fn call(socket: &Path, req: &Request, wait: Duration) -> Result<Respon
 }
 
 /// Longest text shown from an answer, and most phones and keys kept.
-#[cfg(unix)]
 const MAX_TEXT: usize = 256;
-#[cfg(unix)]
 const MAX_LIST: usize = 32;
 
 /// Makes text from an answer fit for a window: short, with no control or direction characters
 /// that could make it read as something else.
-#[cfg(unix)]
 fn text(s: String) -> String {
     let odd = |c: &char| {
         c.is_control()
@@ -78,7 +92,6 @@ fn text(s: String) -> String {
     s.chars().filter(|c| !odd(c)).take(MAX_TEXT).collect()
 }
 
-#[cfg(unix)]
 fn clean(mut r: Response) -> Response {
     r.error = r.error.map(text);
     r.fingerprint = r.fingerprint.map(text);
@@ -99,16 +112,6 @@ fn clean(mut r: Response) -> Response {
     r
 }
 
-/// shortcut: the daemon only exists on Linux today; a named pipe client comes with the Windows
-/// phase.
-#[cfg(not(unix))]
-pub async fn call(_: &Path, _: &Request, _: Duration) -> Result<Response, CallError> {
-    Err(CallError::Unreachable(
-        "The Kite daemon is not available on this system yet.".into(),
-    ))
-}
-
-#[cfg(unix)]
 fn unreachable(e: io::Error) -> CallError {
     CallError::Unreachable(match e.kind() {
         io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => NOT_RUNNING.into(),
@@ -117,15 +120,59 @@ fn unreachable(e: io::Error) -> CallError {
     })
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use kite_ipc::{State, Status};
     use std::path::PathBuf;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    use tokio::net::UnixListener;
 
     const WAIT: Duration = Duration::from_secs(2);
+
+    /// Where a stand-in daemon listens, and a server for it that is not yet connected to.
+    #[cfg(unix)]
+    struct Place(tokio::net::UnixListener);
+    #[cfg(windows)]
+    struct Place(tokio::net::windows::named_pipe::NamedPipeServer, PathBuf);
+
+    #[cfg(unix)]
+    fn place(name: &str) -> (PathBuf, Place) {
+        let dir = std::env::temp_dir().join(format!("kite-desktop-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("kite.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        (path, Place(listener))
+    }
+
+    #[cfg(windows)]
+    fn place(name: &str) -> (PathBuf, Place) {
+        use tokio::net::windows::named_pipe::ServerOptions;
+        let name = format!(r"\\.\pipe\kite-desktop-{name}-{}", std::process::id());
+        let path = PathBuf::from(name);
+        let first = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(&path)
+            .unwrap();
+        (path.clone(), Place(first, path))
+    }
+
+    impl Place {
+        /// The next client, as a stream.
+        #[cfg(unix)]
+        async fn accept(&mut self) -> io::Result<tokio::net::UnixStream> {
+            Ok(self.0.accept().await?.0)
+        }
+
+        /// The next client, as a stream; a fresh instance is ready for the one after.
+        #[cfg(windows)]
+        async fn accept(&mut self) -> io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+            use tokio::net::windows::named_pipe::ServerOptions;
+            self.0.connect().await?;
+            let next = ServerOptions::new().create(&self.1)?;
+            Ok(std::mem::replace(&mut self.0, next))
+        }
+    }
 
     /// A socket in a fresh directory that answers each connection with the next canned reply
     /// and hands the request line it got to the test.
@@ -133,22 +180,19 @@ mod tests {
         name: &str,
         replies: Vec<Vec<u8>>,
     ) -> (PathBuf, tokio::sync::mpsc::UnboundedReceiver<String>) {
-        let dir = std::env::temp_dir().join(format!("kite-desktop-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("kite.sock");
-        let listener = UnixListener::bind(&path).unwrap();
+        let (path, mut place) = place(name);
         let (seen, requests) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
             for reply in replies {
-                let Ok((s, _)) = listener.accept().await else {
+                let Ok(s) = place.accept().await else {
                     return;
                 };
-                let (r, mut w) = s.into_split();
+                let (r, mut w) = tokio::io::split(s);
                 let mut line = String::new();
                 BufReader::new(r).read_line(&mut line).await.unwrap();
                 let _ = seen.send(line);
                 let _ = w.write_all(&reply).await;
+                let _ = w.flush().await;
             }
         });
         (path, requests)
@@ -192,7 +236,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_socket_says_the_daemon_is_not_running() {
+        #[cfg(unix)]
         let path = std::env::temp_dir().join("kite-desktop-nothing-here.sock");
+        #[cfg(windows)]
+        let path = PathBuf::from(r"\\.\pipe\kite-desktop-nothing-here");
         let e = call(&path, &Request::Status {}, WAIT).await.unwrap_err();
         assert_eq!(e, CallError::Unreachable(NOT_RUNNING.into()));
     }
@@ -246,13 +293,9 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_silent_daemon_times_out() {
-        let dir = std::env::temp_dir().join(format!("kite-desktop-silent-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("kite.sock");
-        let listener = UnixListener::bind(&path).unwrap();
+        let (path, mut place) = place("silent");
         tokio::spawn(async move {
-            let _held = listener.accept().await;
+            let _held = place.accept().await;
             std::future::pending::<()>().await;
         });
         let e = call(&path, &Request::Status {}, Duration::from_secs(5))

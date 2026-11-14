@@ -18,13 +18,13 @@ kite --version | -V
 kite --help | -h | help
 ```
 
-On Linux the tunnel is owned by the [daemon](#kite-daemon), and `pair`, `peers`, `connect`,
-`disconnect`, `devices` and `status` talk to it. `pair`, `peers` and `connect` also take
-`--foreground`: they then run in the `kite` process itself, with the key and the paired phones of the
-user who runs it, and need no daemon. Every command takes `--socket PATH` to reach a daemon that
-listens somewhere other than `/run/kite/kite.sock`. Everything below that says "kite" without
-saying more works the same either way. Outside Linux there is no daemon and the commands always run
-in the process.
+On Linux and Windows the tunnel is owned by the [daemon](#kite-daemon) (a systemd unit, a Windows
+service), and `pair`, `peers`, `connect`, `disconnect`, `devices` and `status` talk to it. `pair`,
+`peers` and `connect` also take `--foreground`: they then run in the `kite` process itself, with the
+key and the paired phones of the user who runs it, and need no daemon. Every command takes `--socket
+PATH` to reach a daemon that listens somewhere other than `/run/kite/kite.sock` (on Windows the pipe
+`\\.\pipe\kite`). Everything below that says "kite" without saying more works the same either way.
+Elsewhere there is no daemon and the commands always run in the process.
 
 ## kite daemon
 
@@ -40,6 +40,23 @@ with `hidepid`, a caller whose groups the daemon cannot read is refused. Members
 connect, disconnect and read status, but pairing and forgetting phones (`pair`, `peers remove`) are
 for root and the daemon's user only, because the phones decide where all of the computer's traffic
 can go: run them with `sudo`.
+On Windows the daemon is the service `Kite` (started by `kite daemon --service`, which only the
+service manager can run); `kite daemon` in an administrator's console runs the same daemon by hand.
+It listens on the named pipe `\\.\pipe\kite`. The pipe is closed to remote clients, and its access
+list lets in SYSTEM, the administrators and the members of the local group `kite`; the daemon also
+asks the system who is on the other end when a request would change the paired phones, and only an
+elevated administrator (or SYSTEM) may do that: run `kite pair` and `kite peers remove` from an
+administrator prompt. The daemon keeps its key, the paired phones, its log (`kite.log`) and the TUN
+state in `%ProgramData%\Kite`, a directory that only SYSTEM and the administrators can use (with
+`--state-dir` it keeps the key and the phones elsewhere; kite replaces that directory's permissions
+with the same ones, so give it a directory of its own). Add a user to the group with `net localgroup kite USER /add`; the person has to sign in again. The
+service is installed by the MSI; by hand, with an administrator prompt:
+
+```
+sc create Kite binPath= "\"C:\Program Files\Kite\kite.exe\" daemon --service" start= auto
+sc start Kite
+```
+
 The protocol is one JSON object per line (`crates/kite-ipc`): `status`, `devices`, `connect`,
 `disconnect`, `stats`, `pair_start`, `pair`, `peers` and `remove_peer`. Requests over 4 KiB, with
 unknown commands or unknown fields, or that take over 10 s to arrive, are refused; at most 8 clients
@@ -99,11 +116,11 @@ could not come up) and the tunnel lives on in the daemon until `kite disconnect`
 |--------|---------|---------|
 | `--tcp HOST:PORT` | Relay to connect to over the network. A name is resolved once; every address is tried for up to 10 s in total. One of `--tcp` and `--usb` is required. | none |
 | `--wifi [ADDR[:PORT]]` | Reach the phone on the same WiFi or on its hotspot. Without an address kite looks for the phone with mDNS. See [WiFi](#wifi). | off |
-| `--usb` | Reach the relay on a phone connected by USB, through a running adb server. | off |
+| `--usb` | Reach the relay on a phone connected by USB, through a running adb server (`adb.exe` on Windows). | off |
 | `--serial SERIAL` | With `--usb`: the phone to use when several are connected. | the only phone |
 | `--listen ADDR` | Proxy mode only. `IP:PORT` of the local SOCKS5 proxy. It must be a loopback address. | `127.0.0.1:1080` |
-| `--tun` | TUN mode (Linux only): send all traffic and DNS of this computer through the relay. Cannot be combined with `--listen`. | off |
-| `--kill-switch` | With `--tun`: while the link to the phone is down, block all traffic and reconnect, until `kite disconnect`. With `--tcp` or `--wifi ADDR` the relay must be an IP address: a name would be looked up again at every redial, into the block. See [Kill switch](#kill-switch). | off |
+| `--tun` | TUN mode (Linux and Windows): send all traffic and DNS of this computer through the relay. Cannot be combined with `--listen`. | off |
+| `--kill-switch` | Linux only. With `--tun`: while the link to the phone is down, block all traffic and reconnect, until `kite disconnect`. With `--tcp` or `--wifi ADDR` the relay must be an IP address: a name would be looked up again at every redial, into the block. See [Kill switch](#kill-switch). | off |
 
 Without `--tun` kite runs in proxy mode: it serves a SOCKS5 proxy on `--listen`, needs no special
 privileges, and only programs that use the proxy go through the phone. Use `socks5h://` (proxy
@@ -123,8 +140,9 @@ If the relay closes the tunnel or it fails, kite prints the error and exits with
 
 `--usb` asks the adb server on 127.0.0.1:5037 for the connected phones, picks one, and opens the
 abstract socket `kite` on it; that stream carries the same tunnel as `--tcp`, so proxy and TUN mode
-work the same. It needs `adb` installed with its server running (`adb start-server`), USB debugging
-turned on, and the Kite app listening on the phone. Only phones connected by USB count; adb over WiFi
+work the same. It needs `adb` installed with its server running (`adb start-server`; on Windows
+Android's platform-tools, with a driver for the phone), USB debugging turned on, and the Kite app
+listening on the phone. Only phones connected by USB count; adb over WiFi
 is ignored. Kite explains what is missing:
 
 - no phone found, or the adb server is not running;
@@ -169,6 +187,7 @@ added that `kite restore` would have to remove.
 
 ### TUN mode
 
+On Windows, see [TUN mode on Windows](#tun-mode-on-windows). On Linux
 `kite connect --tcp HOST:PORT --tun` needs `CAP_NET_ADMIN`, not full root:
 
 ```
@@ -210,9 +229,43 @@ How it is undone:
 Without `--kill-switch`, kite does not block traffic if the tunnel drops; it ends the tunnel and
 normal routing returns.
 
+### TUN mode on Windows
+
+`kite connect --usb --tun` needs an administrator, which the service is, so the usual way is the
+service (`kite connect` talks to it) or the desktop app. With `--foreground` run it from an
+administrator prompt. It needs `wintun.dll` next to `kite.exe`: the installer puts it there; for a
+build from source run `scripts\fetch-wintun.ps1 target\release`. Kite loads it from that directory
+only.
+
+What it changes on the system, and nothing else:
+
+- The Wintun adapter `kite0` (198.18.0.1/30, interface metric 1, DNS server 1.1.1.1), which goes away
+  with the process.
+- Four routes on that adapter: `0.0.0.0/1`, `128.0.0.0/1`, `::/1` and `8000::/1`. Together they take
+  everything that has no more specific route, so the local network and the other adapters' own
+  subnets keep working and the real default route is not touched.
+- A host route for the relay's address when the system reaches it through the default route (a
+  `--tcp` address on the Internet), with the next hop it had, so the connection to the phone does
+  not enter its own tunnel. A phone on the same WiFi or on its hotspot needs none. USB needs none:
+  adb is on the loopback address.
+- A catch-all DNS rule (NRPT, comment `kite`) that sends every name lookup to 1.1.1.1, which the
+  tunnel carries to the phone as DNS over TCP. Windows asks the DNS servers of all its adapters at
+  once; without the rule the local resolver would see the names and could answer first. Names that
+  only the local network knows (a router's `.lan` name) stop resolving while the tunnel is up.
+- `tun.lock` and `tun.state` in `%ProgramData%\Kite`: the first keeps two kites from setting up at
+  once, the second remembers the relay's host route.
+
+How it is undone: a normal stop (Ctrl+C, `kite disconnect`, the link lost, an error) removes the
+routes, the DNS rule and the state file. If kite was killed, the adapter goes away with the process
+and takes its routes with it; the DNS rule and the host route stay until the next TUN start or
+`kite restore`. Nothing else is touched.
+
+There is no kill switch on Windows yet (issue 88): `--kill-switch` is refused, and when the link to
+the phone is lost the tunnel ends and normal routing returns.
+
 ### Kill switch
 
-With `--kill-switch` a lost link (phone unplugged, WiFi gone, the app stopped) does not end the
+This is Linux only. With `--kill-switch` a lost link (phone unplugged, WiFi gone, the app stopped) does not end the
 tunnel. `kite0`, its rules and the DNS settings stay, so everything that is not loopback, the local
 network or the link to the phone keeps going into the tunnel and stops there: new connections are
 refused at once and nothing leaves the computer. kite dials the phone again after 1 s, then backs
@@ -244,13 +297,15 @@ shows a tunnel started with `--foreground` instead: that kite listens on
 `$XDG_RUNTIME_DIR/kite.sock` (a Unix socket, mode 0600) and only writes `relay`, `mode`, `streams`
 and `uptime`. If `XDG_RUNTIME_DIR` is unset or open to other users, such a kite still runs but
 prints `status unavailable`. `kite status` exits with 1 and prints `not connected` when nothing is
-running. Linux and other Unix systems only.
+running. On Windows only the service answers, not a `--foreground` tunnel.
 
 ## kite restore
 
-Removes policy rules left behind by a TUN mode kite that was killed. Linux only, needs
-`CAP_NET_ADMIN`. It fails while a TUN mode kite is running, and it only deletes rules that exactly
-match the ones kite adds, so rules from other programs stay.
+Removes what a TUN mode kite that was killed left behind. Needs `CAP_NET_ADMIN` on Linux, an
+administrator on Windows. It fails while a TUN mode kite is running. On Linux it only deletes rules
+that exactly match the ones kite adds, so rules from other programs stay. On Windows it deletes the
+routes on the adapter `kite0`, the host route in `tun.state` and the DNS rule with the comment
+`kite`.
 
 ## Exit codes
 

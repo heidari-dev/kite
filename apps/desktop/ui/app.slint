@@ -456,6 +456,8 @@ export component AppWindow inherits Window {
     in property <string> wifi-error;
     in property <int> mode;
     in property <bool> kill-switch;
+    // Off where there is no kill switch (Windows): the toggle is not shown at all.
+    in property <bool> kill-switch-available: true;
     // A tunnel is up: mode and kill switch show what runs and cannot change until it stops.
     in property <bool> locked;
     in property <string> speed-up;
@@ -665,7 +667,7 @@ export component AppWindow inherits Window {
                             ? "All traffic of this computer goes through the phone."
                             : "A SOCKS5 proxy on 127.0.0.1:1080. Only programs set to use it go through the phone.";
                     }
-                    Toggle {
+                    if root.kill-switch-available: Toggle {
                         text: "Block traffic if the phone disconnects";
                         enabled: root.mode == 0 && !root.locked;
                         checked: root.kill-switch;

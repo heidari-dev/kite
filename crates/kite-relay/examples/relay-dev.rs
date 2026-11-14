@@ -1,7 +1,8 @@
 //! Serves the relay on a TCP port, so the desktop side can be tested without a phone.
 //!
-//! Usage: `cargo run --release -p kite-relay --example relay-dev -- [ADDR] [--allow-loopback]`
-//! ADDR defaults to 127.0.0.1:7000. `--allow-loopback` lets tests reach servers on this machine.
+//! Usage: `cargo run --release -p kite-relay --example relay-dev -- [ADDR] [--allow-loopback] [--refuse-external]`
+//! ADDR defaults to 127.0.0.1:7000. `--allow-loopback` lets tests reach servers on this machine;
+//! `--refuse-external` refuses every other target, for a test whose computer is also the relay's.
 //! The relay key and the paired computers live only as long as the process: pairing stays open
 //! until the first computer runs `kite pair`, and the code is printed where a phone would show it.
 
@@ -15,6 +16,7 @@ fn main() -> std::io::Result<()> {
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--allow-loopback" => cfg.allow_loopback = true,
+            "--refuse-external" => cfg.refuse_external = true,
             _ => addr = arg,
         }
     }

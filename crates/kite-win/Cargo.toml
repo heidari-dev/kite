@@ -1,0 +1,30 @@
+[package]
+name = "kite-win"
+description = "Windows glue for Kite: private directories, the daemon's named pipe and routes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+tokio = { version = "1.53", features = ["net", "sync", "time"] }
+# tun2proxy already depends on it, for its own service.
+windows-service = "0.8"
+# The version tun and tun2proxy already use.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_Networking_WinSock",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Console",
+  "Win32_System_Pipes",
+  "Win32_System_Threading",
+] }
+
+[target.'cfg(windows)'.dev-dependencies]
+tokio = { version = "1.53", features = ["io-util", "macros", "rt"] }

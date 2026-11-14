@@ -11,6 +11,7 @@
 use kite_ipc::{read_line, Request, Response, MAX_REQUEST};
 #[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
+#[cfg(unix)]
 use std::path::PathBuf;
 #[cfg(unix)]
 use tokio::io::{AsyncWriteExt, BufReader};

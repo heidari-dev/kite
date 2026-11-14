@@ -26,7 +26,10 @@ impl Store {
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(fs::DirBuilder::new().recursive(true), 0o700)
             .create(&dir)?;
-        #[cfg(not(unix))]
+        // On Windows the directory gets a protected ACL: this user, SYSTEM and Administrators.
+        #[cfg(windows)]
+        kite_win::private_dir(&dir)?;
+        #[cfg(not(any(unix, windows)))]
         fs::create_dir_all(&dir)?;
         // Another user who can write the directory could swap the files.
         #[cfg(unix)]
@@ -188,8 +191,7 @@ fn open_private(path: &Path) -> io::Result<fs::File> {
             ));
         }
     }
-    // shortcut: on Windows the files rely on the per-user profile's ACL; check the ACL when the
-    // Windows client gets a release.
+    // On Windows the directory's protected ACL (see `Store::at`) is what keeps others out.
     Ok(file)
 }
 
