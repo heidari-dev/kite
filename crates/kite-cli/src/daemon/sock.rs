@@ -4,7 +4,9 @@
 
 use std::io;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::time::timeout;
