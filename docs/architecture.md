@@ -89,18 +89,44 @@ resolved (`set-dns-servers`, `set-domains`, `set-default-route`) and nothing els
 name the link, so the rule covers any link, and the daemon only touches its own. Without it TUN mode
 stops with an error instead of running with DNS that could leak.
 
+## Transports
+
+The session does not care what carries it, as long as it is one reliable byte stream. `kite-link`
+opens it:
+
+- **USB (Android)**: through a running adb server on the computer, which owns the USB device and the
+  authorization. kite switches an adb connection to the phone's transport and opens the abstract
+  socket `kite` that the app listens on. Talking to the phone without an adb server is
+  [#52](https://github.com/heidari-dev/kite/issues/52).
+- **WiFi**: a TCP connection to the phone's port 47810, on the phone's WiFi, hotspot or ethernet
+  address. It is off until the user turns on "Share over WiFi". `kite connect --wifi` finds the
+  phone with one mDNS question (`_kite._tcp`); the answer only gives a port, and the Noise
+  handshake decides whether it is the right phone.
+- **iPhone over USB** (usbmux) is planned, see the [roadmap](../ROADMAP.md).
+
+## Session and pairing
+
+Every transport carries the same thing: a Noise XX handshake (`snow`: 25519, ChaChaPoly, BLAKE2s),
+then yamux inside the encrypted frames. After the handshake each side holds the other's static key. A
+computer the phone has not paired is refused, unless the user has opened pairing in the app. Pairing
+shows a 6-digit code derived from the handshake on the phone, which the user types on the computer.
+Where the code comes from, why a man in the middle cannot match it, and the limits on attempts are in
+[`kite-relay/src/pair.rs`](../crates/kite-relay/src/pair.rs) and the
+[threat model](threat-model.md).
+
 ## Crates
 
 | Crate | Role |
 |-------|------|
-| `kite-relay` | Phone side: Noise and yamux server, SOCKS5 and UDP handling per stream (tokio) |
-| `kite-link` | Transports that yield one async byte stream: ADB, usbmux, TCP |
+| `kite-relay` | Phone side: Noise and yamux server, pairing, SOCKS5 and UDP handling per stream (tokio) |
+| `kite-link` | Transports that yield one async byte stream: adb, TCP, and mDNS discovery of the phone |
 | `kite-ipc` | The local protocol between the daemon and its clients: request and response types, strict parser |
 | `kite-cli` | The `kite` binary: daemon, proxy mode, TUN mode, status |
-| `kite-ffi` | Planned: bindings of the relay for Kotlin and Swift |
+| `kite-ffi` | Bindings of the relay (UniFFI), which the Android app calls through JNA |
 
-Apps live under `apps/`: a Slint desktop app, a Kotlin Views Android app with a foreground service, and
-a SwiftUI iOS app. The relay core is shared with the mobile apps through the bindings.
+Apps live under `apps/`: a Slint desktop app and a Kotlin Views Android app with a foreground
+service that runs the relay. An iOS app is planned. The relay core is shared with the mobile apps
+through the bindings.
 
 ## Daemon
 
