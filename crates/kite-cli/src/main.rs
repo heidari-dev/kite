@@ -2,20 +2,6 @@
 
 #![forbid(unsafe_code)]
 
-/// Temporary: timestamped lines to stderr, to follow how a stop goes.
-macro_rules! trace {
-    ($($a:tt)*) => { $crate::trace_line(format_args!($($a)*)) };
-}
-
-pub(crate) fn trace_line(args: std::fmt::Arguments) {
-    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    let t = START
-        .get_or_init(std::time::Instant::now)
-        .elapsed()
-        .as_secs_f64();
-    eprintln!("kite: [{t:8.3}s] {args}");
-}
-
 use kite_relay::pair;
 use std::io;
 use std::net::SocketAddr;
@@ -264,11 +250,9 @@ fn block_on<F: std::future::Future<Output = io::Result<()>>>(f: F, tun: bool) ->
     }
     let rt = rt.enable_all().max_blocking_threads(blocking).build()?;
     let result = rt.block_on(f);
-    trace!("block_on: the future is done");
     // A task that does not stop must not keep the tunnel from ending: dropping the runtime would
     // wait for it for ever.
     rt.shutdown_timeout(Duration::from_secs(2));
-    trace!("block_on: the runtime is dropped");
     result
 }
 
