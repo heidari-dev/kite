@@ -486,7 +486,7 @@ async fn connect(c: Connect) -> io::Result<()> {
 }
 
 /// Connects to the relay. Over TCP, keepalive notices a peer that vanished without closing.
-async fn dial(transport: &Transport, tun: bool) -> io::Result<TcpStream> {
+async fn dial(transport: &Transport, tun: bool, adb_key: &Path) -> io::Result<TcpStream> {
     let s = match &resolve(transport).await? {
         Transport::Wifi(_) => return Err(io::Error::other("the WiFi address was not resolved")),
         Transport::Tcp(relay) => {
@@ -501,7 +501,7 @@ async fn dial(transport: &Transport, tun: bool) -> io::Result<TcpStream> {
         // is answered by the local routing table before any TUN rule, and there is no IP path to a
         // USB phone to keep out of the tunnel. Keepalive would only be answered by the local
         // kernel, so it is skipped; an unplug or an adb crash closes the socket.
-        Transport::Usb(serial) => kite_link::adb::open(serial.as_deref()).await?,
+        Transport::Usb(serial) => kite_link::adb::open(serial.as_deref(), adb_key).await?,
     };
     s.set_nodelay(true)?;
     Ok(s)
@@ -514,7 +514,7 @@ type Tunnel = kite_relay::noise::Session<TcpStream>;
 async fn pair(transport: Transport) -> io::Result<()> {
     let store = store::Store::open()?;
     let key = store.key()?;
-    let attempt = pair::start(dial(&transport, false).await?, &key).await?;
+    let attempt = pair::start(dial(&transport, false, &store.adb_key_path()).await?, &key).await?;
     let name = pair::fingerprint(&key.public()?).ok_or_else(|| io::Error::other("no BLAKE2s"))?;
     println!("This computer is {name}.");
     println!("Allow it on the phone, then type the 6-digit code the phone shows and press Enter:");

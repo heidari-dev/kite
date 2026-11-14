@@ -110,13 +110,15 @@ struct Link {
     tun: bool,
     key: StaticKey,
     phones: Vec<[u8; KEY_LEN]>,
+    /// Where the ADB key is, for a phone reached directly over USB.
+    adb_key: std::path::PathBuf,
 }
 
 impl Link {
     /// A tunnel to the relay, once the phone proved to be a paired one, and the address it
     /// reaches the relay at (the adb server's, for USB).
     async fn establish(&self) -> io::Result<(Tunnel, Option<IpAddr>)> {
-        let stream = dial(&self.transport, self.tun).await?;
+        let stream = dial(&self.transport, self.tun, &self.adb_key).await?;
         let relay = stream.peer_addr().ok().map(|a| a.ip());
         let tunnel = pair::connect(stream, &self.key, &self.phones).await?;
         Ok((tunnel, relay))
@@ -156,6 +158,7 @@ pub async fn start(p: &Params, store: &Store) -> io::Result<Started> {
         tun: p.tun,
         key: store.key()?,
         phones,
+        adb_key: store.adb_key_path(),
     };
     let (first, relay) = link.establish().await?;
     Ok(Started {

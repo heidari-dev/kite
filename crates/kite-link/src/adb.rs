@@ -6,9 +6,8 @@
 //! Everything the server or the device says is untrusted: replies are length-capped and every
 //! exchange has a timeout.
 //!
-//! shortcut: talking to the device over USB without an adb server (the ADB wire protocol with RSA
-//! authorization and libusb) is not implemented; adb_client 3.2 cannot open a raw stream either.
-//! Upgrade when users need it without installing adb.
+//! When no adb server runs, the phone is reached directly over USB instead, see [`crate::usb`]; a
+//! running server always wins, since only one program can hold the USB interface.
 
 use std::future::Future;
 use std::io;
@@ -27,14 +26,24 @@ const STEP: Duration = Duration::from_secs(5);
 /// Longest device list or failure message accepted.
 const MAX_REPLY: usize = 16 * 1024;
 
-/// Opens the relay stream on the phone with serial `serial`, or on the only connected phone.
-pub async fn open(serial: Option<&str>) -> io::Result<TcpStream> {
-    open_with(|| TcpStream::connect(SERVER), serial).await
+/// Opens the relay stream on the phone with serial `serial`, or on the only connected phone:
+/// through the adb server if one runs, else directly over USB, with the ADB key in `key_path`.
+pub async fn open(serial: Option<&str>, key_path: &std::path::Path) -> io::Result<TcpStream> {
+    match open_with(|| TcpStream::connect(SERVER), serial).await {
+        Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+            crate::usb::open(serial, key_path).await
+        }
+        r => r,
+    }
 }
 
-/// The phones connected by USB as `(serial, adb state)`.
+/// The phones connected by USB as `(serial, adb state)`, from the adb server if one runs, else
+/// straight from the USB bus.
 pub async fn devices() -> io::Result<Vec<(String, String)>> {
-    devices_with(|| TcpStream::connect(SERVER)).await
+    match devices_with(|| TcpStream::connect(SERVER)).await {
+        Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => crate::usb::devices().await,
+        r => r,
+    }
 }
 
 /// [`open`] with a custom way to reach the server, for tests.

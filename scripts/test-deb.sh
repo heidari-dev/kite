@@ -20,6 +20,7 @@ files=(
   /usr/lib/systemd/system/kite.service
   /usr/lib/sysusers.d/kite.conf
   /usr/share/polkit-1/rules.d/50-kite.rules
+  /usr/lib/udev/rules.d/51-kite-adb.rules
   /usr/share/applications/kite.desktop
   /usr/share/icons/hicolor/scalable/apps/kite.svg
   /etc/xdg/autostart/kite-desktop.desktop
