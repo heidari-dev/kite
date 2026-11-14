@@ -2933,7 +2933,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kite-cli"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "kite-ipc",
  "kite-link",
@@ -2950,7 +2950,7 @@ dependencies = [
 
 [[package]]
 name = "kite-desktop"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "kite-ipc",
  "serde",
@@ -2962,7 +2962,7 @@ dependencies = [
 
 [[package]]
 name = "kite-ffi"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "kite-relay",
  "tokio",
@@ -2971,7 +2971,7 @@ dependencies = [
 
 [[package]]
 name = "kite-ipc"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2980,14 +2980,14 @@ dependencies = [
 
 [[package]]
 name = "kite-link"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "tokio",
 ]
 
 [[package]]
 name = "kite-relay"
-version = "0.0.0"
+version = "0.1.0-rc.1"
 dependencies = [
  "snow",
  "socket2",

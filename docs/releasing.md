@@ -66,7 +66,9 @@ names the secret when one is missing or the keystore, password or alias does not
 
 1. In one pull request, set the new version in `Cargo.toml` (`[workspace.package] version`), run
    `cargo update --workspace` so `Cargo.lock` follows, and set `versionName` (the same text) and
-   `versionCode` (one more than before) in `apps/android/app/build.gradle.kts`. Merge it.
+   `versionCode` in `apps/android/app/build.gradle.kts`. The code is `MAJOR*1000000 + MINOR*10000 +
+   PATCH*100 + R`, where R is the release candidate number, or 99 for the release itself: `0.1.0-rc.1`
+   is 10001, `0.1.0` is 10099 and `0.1.1-rc.1` is 10101, so the number only goes up. Merge it.
 2. Tag the merge commit on `main` and push the tag:
 
    ```

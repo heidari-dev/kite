@@ -12,9 +12,9 @@ name = "kite"
 path = "src/main.rs"
 
 [dependencies]
-kite-ipc = { path = "../kite-ipc", version = "0.0.0" }
-kite-link = { path = "../kite-link", version = "0.0.0" }
-kite-relay = { path = "../kite-relay", version = "0.0.0" }
+kite-ipc = { path = "../kite-ipc" }
+kite-link = { path = "../kite-link" }
+kite-relay = { path = "../kite-relay" }
 socket2 = { version = "0.6", features = ["all"] }
 tokio = { version = "1.53", features = ["io-util", "macros", "net", "rt", "signal", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["compat"] }

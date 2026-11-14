@@ -20,7 +20,7 @@ required-features = ["bindgen"]
 bindgen = ["uniffi/cli", "uniffi/cargo-metadata"]
 
 [dependencies]
-kite-relay = { path = "../kite-relay", version = "0.0.0" }
+kite-relay = { path = "../kite-relay" }
 tokio = { version = "1.53", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 uniffi = { version = "0.32.2", default-features = false }
 

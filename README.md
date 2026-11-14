@@ -13,11 +13,15 @@ Android and iPhone.
 
 ## Status
 
-Early development. On Linux the `kite` command works in proxy mode and in TUN mode against the
-development relay (`relay-dev`), which stands in for a phone. There is no phone app yet, WiFi is not
-supported, and USB (`--usb`, through adb) is only tested against a fake adb server. The link is
-encrypted with Noise and both sides are paired once with a 6-digit code. See
-the open issues and milestones for the roadmap.
+Heading for 0.1.0; the first release candidate is `0.1.0-rc.1`.
+
+What works: an Android phone and a Linux computer, over USB (through adb) or WiFi. The computer can
+send everything through the phone (TUN mode) or only what you point at a local SOCKS5 proxy (proxy
+mode). A kill switch that blocks traffic while the phone is disconnected is there and off until you
+turn it on. Linux has a desktop app with a tray icon, and `.deb` and AppImage packages. The link is
+encrypted with Noise, and both sides are paired once with a 6-digit code.
+
+Coming: Windows, iPhone and macOS. See the open issues and milestones for the roadmap.
 
 ## Install on Linux
 
