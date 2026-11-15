@@ -79,7 +79,19 @@ RULES
 
 # A connection and a DNS query that do not use the tunnel's routes, to servers outside this machine.
 reach() { curl -sS -o /dev/null --connect-timeout 5 -m 8 http://1.1.1.1/ >/dev/null 2>&1; }
-reach_dns() { [ -n "$(dig +time=3 +tries=1 +short @8.8.8.8 example.com 2>/dev/null)" ]; }
+# An answer is an address: dig prints its errors ("no servers could be reached") on stdout too.
+reach_dns() { dig +time=3 +tries=1 +short @8.8.8.8 example.com 2>/dev/null | grep -Eq '^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$'; }
+# What got out, and what pf did about it, for the log of a failure.
+explain_leak() {
+  echo "--- dig @8.8.8.8 example.com" >&2
+  dig +time=3 +tries=1 @8.8.8.8 example.com >&2 2>&1 || true
+  echo "--- pf rules of the kill switch, with counters" >&2
+  pfctl -a com.apple/kite -s rules -v >&2 2>&1 || true
+  echo "--- pf main ruleset" >&2
+  pfctl -s rules >&2 2>&1 || true
+  echo "--- routes to 8.8.8.8" >&2
+  route -n get 8.8.8.8 >&2 2>&1 || true
+}
 # As if the device were gone: the routes of the tunnel off, the rest of the tunnel as it was.
 drop_routes() {
   for half in 0.0.0.0/1 128.0.0.0/1; do route -n delete -inet "$half" >/dev/null 2>&1 || true; done
@@ -92,7 +104,10 @@ assert_open() {
 }
 assert_blocked() {
   if reach; then fail "$1: a connection to 1.1.1.1 got out of the computer"; fi
-  if reach_dns; then fail "$1: a DNS query to 8.8.8.8 got out of the computer"; fi
+  if reach_dns; then
+    explain_leak
+    fail "$1: a DNS query to 8.8.8.8 got out of the computer"
+  fi
 }
 
 is_up() {
