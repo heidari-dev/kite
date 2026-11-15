@@ -102,7 +102,10 @@ opens it:
   address. It is off until the user turns on "Share over WiFi". `kite connect --wifi` finds the
   phone with one mDNS question (`_kite._tcp`); the answer only gives a port, and the Noise
   handshake decides whether it is the right phone.
-- **iPhone over USB** (usbmux) is planned, see the [roadmap](../ROADMAP.md).
+- **iPhone over USB** (usbmux): the computer asks usbmuxd, the system service that owns the USB link
+  to Apple devices, for a connection to TCP port 47810 of the iPhone, where the app listens on its
+  loopback address while it shares (`kite-link::usbmux`). After the reply the socket is the byte
+  stream. The Noise handshake decides whether it is the right phone.
 
 ## Session and pairing
 
@@ -125,7 +128,7 @@ Where the code comes from, why a man in the middle cannot match it, and the limi
 | `kite-ffi` | Bindings of the relay (UniFFI), which the Android app calls through JNA |
 
 Apps live under `apps/`: a Slint desktop app and a Kotlin Views Android app with a foreground
-service that runs the relay. An iOS app is planned. The relay core is shared with the mobile apps
+service that runs the relay. An iOS app (SwiftUI, foreground only) is sideloaded. The relay core is shared with the mobile apps
 through the bindings.
 
 ## Daemon

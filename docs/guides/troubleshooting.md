@@ -81,6 +81,18 @@ name does not resolve. Disconnect to get them back. Addresses still work.
 Run `kite restore` (with `sudo` on Linux and macOS, in an administrator terminal on Windows). It
 removes leftover routing rules and the DNS rule. Connecting again in Full mode clears them too.
 
+## iPhone
+
+- **Over USB, Kite does not find the iPhone.** Unlock the iPhone and tap Trust This Computer. The
+  computer needs the Apple USB service: `sudo apt install usbmuxd` on Linux, Apple Mobile Device
+  Support (installed with iTunes or Apple Devices) on Windows. A Mac has it. Kite says which of
+  these is missing.
+- **It says the Kite app is not listening.** Open Kite on the iPhone and tap Start sharing, and
+  leave it on the screen.
+- **The iPhone shows "wants to find devices on your local network" or computers cannot find it over
+  WiFi.** Allow it in Settings, Kite, Local Network.
+- **Sharing stopped when you switched apps.** That is how iOS works. Open Kite again.
+
 ## Linux
 
 - **The window says the daemon is not running.** `sudo systemctl status kite`, and `sudo systemctl

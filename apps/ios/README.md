@@ -1,8 +1,8 @@
 # Kite for iPhone
 
 The phone side of Kite on iOS: a SwiftUI app that runs the relay (`crates/kite-relay`, through
-`crates/kite-ffi`) while it is open. Computers reach it over TCP on the iPhone's Personal Hotspot or
-on a WiFi network both are on. iOS 17 or newer.
+`crates/kite-ffi`) while it is open. Computers reach it over USB, or over TCP on the iPhone's
+Personal Hotspot or on a WiFi network both are on. iOS 17 or newer.
 
 The relay runs only while Kite is on the screen. iOS suspends apps in the background, so sharing
 stops when you leave the app and starts again when you come back. The screen stays on while
@@ -21,7 +21,28 @@ There is no App Store build. Each CI run of the `iOS` workflow attaches an unsig
 4. Open Kite. The first time it shares, iOS asks to let Kite find and connect to devices on the
    local network: allow it, or computers cannot find the iPhone.
 
-## Try it
+## Try it over USB
+
+1. Connect the iPhone to the computer, unlock it and tap Trust This Computer. The computer needs
+   usbmuxd: macOS has it, Linux needs the `usbmuxd` package, and Windows needs Apple Mobile Device
+   Support (installed with iTunes or Apple Devices).
+2. Open Kite and tap Start sharing.
+3. The first time, tap Pair a computer and run `kite pair --usb` on the computer. Kite asks whether
+   to allow the computer and shows its fingerprint, which `kite pair` printed too; tap Allow, then
+   type the code Kite shows.
+4. Then, each time:
+
+```
+kite connect --usb
+```
+
+`kite devices` lists the iPhone with its UDID; use `--serial UDID` if several phones are connected.
+usbmuxd reaches the app on port 47810 of the iPhone's loopback address, which Kite opens as soon as
+it shares, so no WiFi is needed. The iPhone's mobile data or its WiFi, and its VPN if one is on,
+carry the traffic. If kite says the app is not listening, Kite is not open on the screen: sharing
+stops when you leave the app.
+
+## Try it over the Personal Hotspot or WiFi
 
 1. Turn on Personal Hotspot with Allow Others to Join, and join it from the computer over WiFi
    or USB. A WiFi network both are on works too.

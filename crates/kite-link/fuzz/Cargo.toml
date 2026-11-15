@@ -28,3 +28,10 @@ path = "fuzz_targets/adb_packet.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "usbmux_plist"
+path = "fuzz_targets/usbmux_plist.rs"
+test = false
+doc = false
+bench = false

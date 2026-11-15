@@ -1,0 +1,147 @@
+/* Kite site. Colours are the brand's (assets/brand/README.md); the kite's motion follows docs/design/motion.md. */
+:root {
+  --bg: #F6F1E7; --surface: #EEE7D8; --ink: #1F2630; --muted: #4F5866; --line: #8A8372;
+  --accent: #B63E1C; --on-accent: #fff; --link: #B63E1C; --focus: #1F2630;
+  --out: cubic-bezier(0.23, 1, 0.32, 1); --sine: cubic-bezier(0.37, 0, 0.63, 1);
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #13161C; --surface: #1B2028; --ink: #F6F1E7; --muted: #A9B0BC; --line: #6B7380;
+    --accent: #FF7A50; --on-accent: #1F2630; --link: #FF8F6B; --focus: #F6F1E7;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 1.0625rem/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3 { margin: 0; line-height: 1.1; letter-spacing: -0.02em; text-wrap: balance; }
+h1 { font-size: clamp(2.5rem, 5.4vw, 4.5rem); letter-spacing: -0.035em; font-weight: 750; }
+h2 { font-size: clamp(1.75rem, 3.2vw, 2.5rem); font-weight: 700; margin-bottom: 1.25rem; }
+h3 { font-size: 1.125rem; font-weight: 650; letter-spacing: -0.01em; }
+p { margin: 0 0 1em; max-width: 62ch; text-wrap: pretty; }
+code { font: 0.95em ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+ul, ol { margin: 0; padding: 0; list-style: none; }
+
+.wrap { width: 100%; max-width: 1120px; margin-inline: auto; padding-inline: 24px; }
+section { padding-block: clamp(72px, 10vw, 128px); }
+.band { background: var(--surface); }
+
+.skip { position: absolute; left: 12px; top: -64px; background: var(--ink); color: var(--bg); padding: 10px 14px; border-radius: 8px; z-index: 10; }
+.skip:focus-visible { top: 12px; }
+
+a { color: inherit; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; border-radius: 4px; }
+
+/* Links draw their underline from the left on hover. */
+.link {
+  color: var(--link); text-decoration: none;
+  background: linear-gradient(currentColor, currentColor) 0 100% / 100% 1px no-repeat;
+}
+@media (hover: hover) {
+  .link { background-size: 0 1px; transition: background-size 220ms var(--out); }
+  .link:hover { background-size: 100% 1px; }
+}
+
+.top { padding-block: 18px; }
+.bar { display: flex; align-items: center; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+.bar nav { display: flex; gap: 22px; flex-wrap: wrap; }
+.brand { display: inline-flex; align-items: center; min-height: 44px; gap: 10px; font-weight: 750; font-size: 1.25rem; text-decoration: none; letter-spacing: -0.02em; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 24px;
+  border-radius: 12px; border: 2px solid var(--accent); background: var(--accent); color: var(--on-accent);
+  font: inherit; font-weight: 650; text-decoration: none; cursor: pointer;
+  transition: transform 160ms var(--out), background-color 160ms var(--out);
+}
+.btn.ghost { background: transparent; color: var(--link); }
+.btn.small { min-height: 44px; padding: 0 16px; font-size: 0.9375rem; }
+@media (hover: hover) {
+  .btn:hover { transform: translateY(-1px); }
+  .btn.ghost:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+}
+.btn:active { transform: scale(0.97); }
+
+.actions { display: flex; gap: 12px; flex-wrap: wrap; }
+
+/* Hero */
+.hero { min-height: calc(100svh - 72px); display: grid; align-items: center; padding-block: 32px 64px; }
+.hero-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 48px; align-items: center; }
+.lead { font-size: clamp(1.1875rem, 1.6vw, 1.375rem); color: var(--muted); margin: 1.5rem 0 2rem; }
+.fact { margin: 2rem 0 0; color: var(--muted); font-size: 0.9375rem; }
+.hero-art { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+.kite { width: min(100%, 460px); height: auto; overflow: visible; }
+.kite .slack, .kite .taut, .kite .tail { fill: none; stroke: #B63E1C; stroke-width: 2; stroke-linecap: round; }
+
+/* The kite: connect from rest, then sway and flutter (docs/design/motion.md). Everything animated is a transform or an opacity. */
+.kite .rig, .kite .pose, .kite .rock, .kite .tail { transform-box: view-box; }
+.kite .rig { transform-origin: 6px 62px; }
+.kite .pose, .kite .rock, .kite .tail { transform-origin: 38px 41px; }
+.kite .slack { animation: fade-out 250ms var(--out) 150ms both; }
+.kite .taut { animation: fade-in 250ms var(--out) 150ms both; }
+.kite .pose { animation: lift 450ms var(--out) both; }
+/* Sine loops: alternate between -A and A with a sine ease, offset so each crosses zero when the lift ends at 450 ms. */
+.kite .rig { animation: sway-rig 2400ms var(--sine) -750ms infinite alternate; }
+.kite .rock { animation: sway-rock 2400ms var(--sine) -150ms infinite alternate; }
+.kite .tail { animation: flutter 700ms var(--sine) -600ms infinite alternate; }
+@keyframes lift { from { transform: translate(-18px, 9px) rotate(72deg); } }
+@keyframes fade-out { to { opacity: 0; } }
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes sway-rig { from { transform: rotate(-1.6deg); } to { transform: rotate(1.6deg); } }
+@keyframes sway-rock { from { transform: rotate(-3.5deg); } to { transform: rotate(3.5deg); } }
+@keyframes flutter { from { transform: rotate(-10deg); } to { transform: rotate(10deg); } }
+
+/* Reduced motion, or the page's own pause switch: the connected pose, no loops, no travel. */
+@media (prefers-reduced-motion: reduce) {
+  .kite * { animation: none !important; }
+  .kite .slack { opacity: 0; }
+  .kite { animation: fade-in 200ms linear both; }
+  html { scroll-behavior: auto; }
+  .btn, .card, .link { transition: none !important; }
+}
+:root[data-still] .kite * { animation: none !important; }
+:root[data-still] .kite .slack { opacity: 0; }
+
+/* Sections */
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 64px; align-items: center; }
+.split.wide { grid-template-columns: 0.85fr 1.15fr; }
+.shots { display: flex; gap: 16px; align-items: flex-start; justify-content: center; }
+.shots picture { flex: 1 1 0; min-width: 0; }
+.shots img { display: block; width: 100%; height: auto; border-radius: 14px; border: 1px solid var(--line); }
+
+.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; counter-reset: step; margin-top: 40px; }
+.steps li { counter-increment: step; border-top: 3px solid var(--accent); padding-top: 20px; }
+.steps li::before { content: counter(step); display: block; font-size: 2.5rem; font-weight: 750; line-height: 1; margin-bottom: 12px; color: var(--link); }
+.steps p { margin: 8px 0 0; color: var(--muted); }
+.after { margin: 40px 0 0; color: var(--muted); }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-top: 40px; }
+.card {
+  display: block; height: 100%; padding: 24px; border-radius: 14px; background: var(--bg);
+  border: 1px solid var(--line); text-decoration: none;
+  transition: transform 200ms var(--out), border-color 200ms var(--out);
+}
+.card p { margin: 8px 0 0; color: var(--muted); font-size: 0.9375rem; }
+@media (hover: hover) { .card:hover { transform: translateY(-2px); border-color: var(--accent); } }
+
+.plain { display: grid; gap: 16px; }
+.plain li { padding-left: 20px; border-left: 3px solid var(--accent); }
+
+footer { padding-block: 40px; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.9375rem; }
+footer p { margin: 0; }
+footer p + p { display: flex; gap: 20px; flex-wrap: wrap; }
+
+@media (max-width: 860px) {
+  .hero-grid, .split, .split.wide { grid-template-columns: 1fr; gap: 40px; }
+  .hero { min-height: 0; }
+  .hero-art { order: -1; }
+  .kite { width: min(62%, 260px); }
+  .steps { grid-template-columns: 1fr; gap: 24px; }
+  .bar nav { gap: 6px 20px; }
+  .link, .bar nav a { padding-block: 10px; }
+  .actions .btn { flex: 1 1 100%; }
+}
