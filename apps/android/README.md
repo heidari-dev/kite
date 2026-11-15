@@ -36,7 +36,10 @@ cd apps/android
 gradle --write-verification-metadata sha256 help assembleDebug assembleRelease
 ```
 
-Commit the file with the change that needed it. Only checksums are kept, no PGP keys.
+Commit the file with the change that needed it. Only checksums are kept, no PGP keys. Delete the file
+before regenerating so versions no longer used drop out. `settings.gradle.kts` forces patched
+versions of a few libraries the Android Gradle Plugin uses for the build itself; check that list when
+upgrading the plugin.
 
 ## Try it
 
