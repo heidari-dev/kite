@@ -112,7 +112,7 @@ screen and keeps the screen on while sharing. See the [iPhone guide](iphone.md).
 
 On the phone, remove the computer under Paired computers. On the computer, `kite peers` lists the
 paired phones and `kite peers remove KEY` forgets one. Remove the pairing on both sides.
-Removing a computer in the app does not end a tunnel it already has up; stop sharing to cut it off.
+Removing a computer in the app also ends the tunnel it has open.
 
 ## It does not work
 

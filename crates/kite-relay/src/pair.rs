@@ -27,7 +27,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::Notify;
+use tokio::sync::{watch, Notify};
 use tokio::time::Instant;
 
 /// The computer is known: the tunnel starts.
@@ -55,6 +55,8 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct Pairing {
     state: Mutex<State>,
     answered: Notify,
+    /// Bumped on every removal, so a tunnel can notice its computer was unpaired.
+    removals: watch::Sender<()>,
 }
 
 #[derive(Default)]
@@ -85,6 +87,7 @@ impl Pairing {
                 ..State::default()
             }),
             answered: Notify::new(),
+            removals: watch::channel(()).0,
         }
     }
 
@@ -133,12 +136,28 @@ impl Pairing {
         self.lock().peers.clone()
     }
 
-    /// Unpairs a computer. A tunnel it has up keeps running until it closes.
+    /// Unpairs a computer. Tunnels it has up end through [`serve`].
     pub fn remove(&self, key: &[u8; KEY_LEN]) -> bool {
         let mut state = self.lock();
         let before = state.peers.len();
         state.peers.retain(|k| k != key);
-        state.peers.len() != before
+        let removed = state.peers.len() != before;
+        drop(state);
+        if removed {
+            self.removals.send_replace(());
+        }
+        removed
+    }
+
+    /// Completes once `key` is not paired.
+    async fn unpaired(&self, key: &[u8; KEY_LEN]) {
+        // Subscribing first means a removal after the check below still wakes the wait.
+        let mut removals = self.removals.subscribe();
+        while self.knows(key) {
+            if removals.changed().await.is_err() {
+                return;
+            }
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -327,6 +346,21 @@ where
     send(&mut s, &[OK]).await?;
     slot.store(peer.key);
     Ok(s)
+}
+
+/// Phone side: serves the tunnel of `session` (see [`crate::serve`]) until it ends or its
+/// computer is removed from `pairing`, which drops every stream at once.
+pub async fn serve<T>(session: Session<T>, cfg: crate::Config, pairing: &Pairing) -> io::Result<()>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    let Some(key) = session.peer_key() else {
+        return Err(denied("session without a peer key"));
+    };
+    tokio::select! {
+        r = crate::serve(session, cfg) => r,
+        () = pairing.unpaired(&key) => Err(denied("computer was unpaired")),
+    }
 }
 
 /// Computer side: runs the handshake with a phone whose key is in `phones` and returns the
@@ -586,6 +620,41 @@ mod tests {
         assert_eq!(pairing.peers().len(), 2);
         assert!(pairing.remove(&stranger.public().unwrap()));
         assert_eq!(pairing.peers(), vec![ck.public().unwrap()]);
+    }
+
+    #[tokio::test]
+    async fn removing_a_computer_ends_only_its_tunnels() {
+        let (pk, a, b) = (key(), key(), key());
+        let (pa, pb) = (a.public().unwrap(), b.public().unwrap());
+        let pairing = Arc::new(Pairing::new(vec![pa, pb]));
+        let mut tunnels = Vec::new();
+        for ck in [&a, &b] {
+            let (near, far) = duplex(64 * 1024);
+            let (key, p) = (pk.clone(), pairing.clone());
+            let task = tokio::spawn(async move {
+                let s = accept(far, &key, &p).await?;
+                serve(s, crate::Config::default(), &p).await
+            });
+            let session = connect(near, ck, &[pk.public().unwrap()]).await.unwrap();
+            tunnels.push((task, session));
+        }
+        assert!(pairing.remove(&pa));
+        let (task_a, _a) = tunnels.remove(0);
+        let e = tokio::time::timeout(Duration::from_secs(5), task_a)
+            .await
+            .expect("tunnel of the removed computer is still up")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
+        let (task_b, _b) = &mut tunnels[0];
+        assert!(tokio::time::timeout(Duration::from_millis(200), task_b)
+            .await
+            .is_err());
+
+        // The removed key is refused like any stranger.
+        let (io, task) = phone(&pairing, &pk);
+        assert!(connect(io, &a, &[pk.public().unwrap()]).await.is_err());
+        assert!(task.await.unwrap().is_err());
     }
 
     #[tokio::test]

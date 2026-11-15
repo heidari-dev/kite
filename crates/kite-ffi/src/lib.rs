@@ -170,7 +170,7 @@ impl Relay {
         self.pairing.peers().iter().map(|k| k.to_vec()).collect()
     }
 
-    /// Unpairs a computer. A tunnel it has up keeps running until it closes.
+    /// Unpairs a computer and ends the tunnels it has up.
     pub fn remove_peer(&self, key: Vec<u8>) -> bool {
         key.try_into().is_ok_and(|k| self.pairing.remove(&k))
     }
@@ -260,7 +260,8 @@ impl Shared {
         let Some(_slot) = self.counters.admit() else {
             return;
         };
-        let _ = kite_relay::serve(session, kite_relay::Config::default()).await;
+        let _ =
+            kite_relay::pair::serve(session, kite_relay::Config::default(), &self.pairing).await;
     }
 }
 
@@ -491,7 +492,7 @@ async fn accept(
                             let Ok(session) = kite_relay::pair::accept(stream, &key, &pairing).await else {
                                 return;
                             };
-                            let _ = kite_relay::serve(session, kite_relay::Config::default()).await;
+                            let _ = kite_relay::pair::serve(session, kite_relay::Config::default(), &pairing).await;
                         });
                     }
                 }
