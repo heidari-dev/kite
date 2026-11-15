@@ -53,9 +53,9 @@ const NAME: &str = "Kite kill switch";
 
 const UDP: u8 = 17;
 const ICMPV6: u8 = 58;
-/// Neighbour discovery: router solicitation and advertisement, neighbour solicitation and
-/// advertisement, redirect.
-const ND_TYPES: (u16, u16) = (133, 137);
+/// ICMPv6 that keeps an IPv6 link up: multicast listener discovery (130 to 132, 143) and neighbour
+/// discovery (133 to 137: router and neighbour solicitation and advertisement, redirect).
+const LINK_TYPES: [(u16, u16); 2] = [(130, 137), (143, 143)];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Layer {
@@ -101,6 +101,8 @@ struct Spec {
 
 /// Every filter, in the order their keys are numbered.
 fn specs(tunnel: u64, relay: Option<IpAddr>) -> Vec<Spec> {
+    // WFP sees a connection to ::ffff:a.b.c.d on the IPv4 layers, as a.b.c.d.
+    let relay = relay.map(|ip| ip.to_canonical());
     let mut out = Vec::new();
     let mut add = |layer, permit, conds: Vec<Cond>| {
         out.push(Spec {
@@ -126,23 +128,30 @@ fn specs(tunnel: u64, relay: Option<IpAddr>) -> Vec<Spec> {
         add(
             connect,
             true,
-            vec![Cond::Protocol(UDP), Cond::RemotePort(server)],
+            vec![
+                Cond::Protocol(UDP),
+                Cond::LocalPort(client),
+                Cond::RemotePort(server),
+            ],
         );
         add(
             recv,
             true,
-            vec![Cond::Protocol(UDP), Cond::LocalPort(client)],
+            vec![
+                Cond::Protocol(UDP),
+                Cond::LocalPort(client),
+                Cond::RemotePort(server),
+            ],
         );
         if v6 {
             for layer in [connect, recv] {
-                add(
-                    layer,
-                    true,
-                    vec![
-                        Cond::Protocol(ICMPV6),
-                        Cond::IcmpType(ND_TYPES.0, ND_TYPES.1),
-                    ],
-                );
+                for (low, high) in LINK_TYPES {
+                    add(
+                        layer,
+                        true,
+                        vec![Cond::Protocol(ICMPV6), Cond::IcmpType(low, high)],
+                    );
+                }
             }
         }
     }
@@ -159,7 +168,9 @@ struct Engine(HANDLE);
 impl Engine {
     fn open() -> io::Result<Self> {
         // SAFETY: plain data; all zeroes is the documented default (not dynamic).
-        let session: FWPM_SESSION0 = unsafe { std::mem::zeroed() };
+        let mut session: FWPM_SESSION0 = unsafe { std::mem::zeroed() };
+        // Another program's open transaction must not hold up this one (and the tunnel) for long.
+        session.txnWaitTimeoutInMSec = 5000;
         let mut engine: HANDLE = null_mut();
         // SAFETY: the local engine (null server), the default authentication, a valid session and
         // a writable out value.
@@ -446,6 +457,47 @@ mod tests {
     }
 
     #[test]
+    fn conditions_carry_the_values_wfp_expects() {
+        use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FWP_DATA_TYPE;
+        // Only the program condition reads this, and it is not used here.
+        let program = std::mem::ManuallyDrop::new(AppId(null_mut()));
+        let mut held = Held::default();
+        let mut one = |cond: Cond| condition(&cond, &mut held, &program);
+        let v4 = one(Cond::Remote("203.0.113.9".parse().unwrap()));
+        assert_eq!(v4.conditionValue.r#type, FWP_UINT32 as FWP_DATA_TYPE);
+        // SAFETY: the type says which member was set.
+        assert_eq!(unsafe { v4.conditionValue.Anonymous.uint32 }, 0xcb00_7109);
+        let port = one(Cond::RemotePort(67));
+        assert_eq!(port.conditionValue.r#type, FWP_UINT16);
+        // SAFETY: as above.
+        assert_eq!(unsafe { port.conditionValue.Anonymous.uint16 }, 67);
+        let proto = one(Cond::Protocol(UDP));
+        assert_eq!(proto.conditionValue.r#type, FWP_UINT8);
+        let loopback = one(Cond::Loopback);
+        assert_eq!(loopback.matchType, FWP_MATCH_FLAGS_ALL_SET);
+        let icmp = one(Cond::IcmpType(133, 137));
+        assert_eq!(icmp.matchType, FWP_MATCH_RANGE);
+        // SAFETY: the type says which member was set; the range lives in `held`.
+        let range = unsafe { &*icmp.conditionValue.Anonymous.rangeValue };
+        assert_eq!(unsafe { range.valueLow.Anonymous.uint16 }, 133);
+        assert_eq!(unsafe { range.valueHigh.Anonymous.uint16 }, 137);
+    }
+
+    #[test]
+    fn a_mapped_relay_address_is_the_ipv4_one() {
+        let mapped: IpAddr = "::ffff:203.0.113.9".parse().unwrap();
+        let want = vec![Cond::Program, Cond::Remote("203.0.113.9".parse().unwrap())];
+        let all = specs(7, Some(mapped));
+        assert!(all
+            .iter()
+            .any(|s| s.layer == Layer::Connect4 && s.conds == want));
+        let loopback: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        assert!(!specs(7, Some(loopback))
+            .iter()
+            .any(|s| s.conds.contains(&Cond::Program)));
+    }
+
+    #[test]
     fn there_is_no_relay_rule_without_a_relay_or_for_loopback() {
         for relay in [
             None,
@@ -462,23 +514,23 @@ mod tests {
     fn dhcp_and_neighbour_discovery_keep_the_link_up() {
         let all = specs(7, None);
         let has = |layer, want: &[Cond]| all.iter().any(|s| s.layer == layer && s.conds == want);
-        assert!(has(
-            Layer::Connect4,
-            &[Cond::Protocol(UDP), Cond::RemotePort(67)]
-        ));
-        assert!(has(
-            Layer::Recv4,
-            &[Cond::Protocol(UDP), Cond::LocalPort(68)]
-        ));
-        assert!(has(
-            Layer::Connect6,
-            &[Cond::Protocol(UDP), Cond::RemotePort(547)]
-        ));
+        let dhcp = |client, server| {
+            vec![
+                Cond::Protocol(UDP),
+                Cond::LocalPort(client),
+                Cond::RemotePort(server),
+            ]
+        };
+        assert!(has(Layer::Connect4, &dhcp(68, 67)));
+        assert!(has(Layer::Recv4, &dhcp(68, 67)));
+        assert!(has(Layer::Connect6, &dhcp(546, 547)));
         for layer in [Layer::Connect6, Layer::Recv6] {
-            assert!(has(
-                layer,
-                &[Cond::Protocol(ICMPV6), Cond::IcmpType(133, 137)]
-            ));
+            for (low, high) in [(130, 137), (143, 143)] {
+                assert!(has(
+                    layer,
+                    &[Cond::Protocol(ICMPV6), Cond::IcmpType(low, high)]
+                ));
+            }
         }
         assert!(!all
             .iter()

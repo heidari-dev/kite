@@ -219,7 +219,11 @@ Besides the abstract socket, the relay's only listener is the optional WiFi one 
   there, and the computer then uses its own connection until the next connect. They decide on the
   first packet of a flow, so a connection that was open before the kill switch went up is not cut by
   it, and a program that holds a socket bound to the physical adapter can keep using it until it
-  closes. Another driver that permits traffic with a hard permit can also let it through.
+  closes. Another driver that permits traffic with a hard permit can also let it through, and
+  traffic that does not pass the ALE layers (virtual machines on an external Hyper-V switch,
+  Internet Connection Sharing) is not covered. The DHCP and ICMPv6 link permits match any address, so
+  a program that sends from UDP port 68 (546) to port 67 (547), or raw ICMPv6 as administrator, can
+  still get out.
 - `kite pair --wifi` without an address, while a TUN session is up, sends its mDNS question into
   the tunnel and finds nothing; pair before connecting, or give the address.
 - The mDNS question tells everyone on the link that this computer looks for a Kite phone. It

@@ -372,25 +372,27 @@ impl Daemon {
         if let Some(stop) = stop {
             let _ = stop.send(());
         }
-        // A tunnel that ended with the kill switch on left its block behind; this lifts it.
+        let down = async {
+            while !self.inner().session.as_ref().is_none_or(Active::idle) {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
+        if timeout(STOP_TIMEOUT, down).await.is_err() {
+            return Response::err("the tunnel did not stop in time");
+        }
+        // A tunnel that ended with the kill switch on left its block behind; this lifts it. So does
+        // a service that started again after a crash and knows of no session (Windows keeps the
+        // block on purpose).
         let leftover = match &mut self.inner().session {
-            Some(a) if a.kill_switch && a.idle() => std::mem::take(&mut a.kill_switch),
-            _ => false,
+            Some(a) => std::mem::take(&mut a.kill_switch),
+            None => cfg!(windows),
         };
         if leftover {
             if let Err(e) = crate::tun::restore().await {
                 return Response::err(e.to_string());
             }
         }
-        let down = async {
-            while !self.inner().session.as_ref().is_none_or(Active::idle) {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        };
-        match timeout(STOP_TIMEOUT, down).await {
-            Ok(()) => Response::ok(),
-            Err(_) => Response::err("the tunnel did not stop in time"),
-        }
+        Response::ok()
     }
 
     async fn pair_start(&self, transport: Transport) -> Response {

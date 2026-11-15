@@ -328,8 +328,9 @@ connection and every new inbound flow, IPv4 and IPv6, except loopback, anything 
 neighbour discovery, so the link to the router or the phone stays up and DNS cannot go out of the
 physical adapter either. Windows Firewall needs to be running (the Base Filtering Engine service,
 which it always is by default). The filters belong to no session, so they outlive the Kite process:
-after a crash, a stopped service or an error of the tunnel traffic stays blocked until `kite restore`
-or the next `kite connect`, as on Linux. They are not persistent, so a reboot (or restarting that
+after a crash (or a service that was killed) or an error of the tunnel traffic stays blocked until
+`kite restore`, `kite disconnect` or the next `kite connect` without `--kill-switch`, as on Linux; an
+orderly stop lifts it. They are not persistent, so a reboot (or restarting that
 service) removes them and the computer is never left offline for good. Connections that were
 already open when the block went up are not cut by it.
 

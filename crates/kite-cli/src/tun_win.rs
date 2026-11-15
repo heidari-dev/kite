@@ -80,9 +80,12 @@ where
     F: FnOnce(CancellationToken) -> Fut,
     Fut: Future<Output = io::Result<()>>,
 {
+    // A dual-stack connection reports the relay as ::ffff:a.b.c.d; it is a.b.c.d to routes and filters.
+    let relay = relay.map(|ip| ip.to_canonical());
     let _lock = lock()?;
-    // Whatever a kite that was killed left behind, a block included.
-    undo(true).await?;
+    // Whatever a kite that was killed left behind. A block stays for the kill switch to replace
+    // atomically; without the kill switch it goes.
+    undo(!kill_switch).await?;
     let device = create()?;
     serve(device, proxy, relay, kill_switch, serve_link, shutdown).await
 }
