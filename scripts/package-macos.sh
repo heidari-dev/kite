@@ -40,7 +40,14 @@ codesign --force --sign - "$app"
 scripts=$work/scripts
 mkdir "$scripts"
 install -m 0755 "$pkg/preinstall" "$pkg/postinstall" "$scripts/"
+# Without this Installer would update any copy of the app it finds, wherever it is, instead of
+# writing /Applications/Kite.app.
+pkgbuild --analyze --root "$p" "$work/components.plist"
+for i in $(seq 0 9); do
+  /usr/libexec/PlistBuddy -c "Set :$i:BundleIsRelocatable false" "$work/components.plist" 2>/dev/null || break
+done
 pkgbuild --root "$p" --scripts "$scripts" --identifier "$id.pkg" --version "$version" \
-  --ownership recommended --install-location / "$work/component.pkg"
+  --component-plist "$work/components.plist" --ownership recommended --install-location / \
+  "$work/component.pkg"
 productbuild --package "$work/component.pkg" "$out/Kite-$version.pkg"
 ls -l "$out"

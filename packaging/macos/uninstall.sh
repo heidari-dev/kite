@@ -21,10 +21,16 @@ if [ -n "$uid" ] && [ "$uid" != 0 ]; then
 fi
 /usr/bin/pkill -x kite-desktop 2>/dev/null
 /bin/launchctl bootout "system/$label" 2>/dev/null
-"$support/kite" restore 2>/dev/null
+# Only a program that root owns and nobody else can replace is run as root.
+if [ -x "$support/kite" ] && [ ! -L "$support/kite" ] && [ "$(/usr/bin/stat -f %u "$support/kite")" = 0 ]; then
+  "$support/kite" restore 2>/dev/null
+fi
 
-/bin/rm -f "/Library/LaunchDaemons/$label.plist" "/Library/LaunchAgents/$label.desktop.plist" \
-  /usr/local/bin/kite /var/log/kite.log
+/bin/rm -f "/Library/LaunchDaemons/$label.plist" "/Library/LaunchAgents/$label.desktop.plist" /var/log/kite.log
+# /usr/local/bin is Homebrew's on an Intel Mac: only the link the package made.
+if [ "$(/usr/bin/readlink /usr/local/bin/kite 2>/dev/null)" = "$support/kite" ]; then
+  /bin/rm -f /usr/local/bin/kite
+fi
 /bin/rm -rf /Applications/Kite.app /var/run/kite
 if [ "$purge" = yes ]; then
   /bin/rm -rf /var/db/kite

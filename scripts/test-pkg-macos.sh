@@ -27,7 +27,13 @@ for _ in $(seq 1 40); do
 done
 [ -S /var/run/kite/kite.sock ] || fail "the daemon has no socket"
 [ "$(stat -f '%Su' "$support/kite")" = root ] || fail "the kite binary is not owned by root"
-[ "$(stat -f '%Su' "$support")" = root ] || fail "the install directory is not owned by root"
+for f in "$support" "$support/kite" /Library/LaunchDaemons/$label.plist /Library/LaunchAgents/$label.desktop.plist; do
+  [ "$(stat -f '%Su:%Sg' "$f")" = root:wheel ] || fail "$f is not owned by root:wheel"
+  mode=$(stat -f '%Lp' "$f")
+  [ $((0$mode & 022)) -eq 0 ] || fail "$f can be written by others ($mode)"
+done
+[ "$(readlink /usr/local/bin/kite)" = "$support/kite" ] || fail "/usr/local/bin/kite is not the link to the install"
+[ -d /Applications/Kite.app ] || fail "the app is not in /Applications"
 [ -x /usr/local/bin/kite ] || fail "no kite command"
 [ -x /Applications/Kite.app/Contents/MacOS/kite-desktop ] || fail "no desktop app"
 codesign --verify --deep /Applications/Kite.app || fail "the app's signature is broken"
