@@ -124,7 +124,7 @@ struct KiteView: View {
             if from == .error { hideBadge() }
             runLoops(to, delay: 0)
         case .lost:
-            fall(then: [(Motion.lost, { if shown == .dropped { shown = .disconnected } })])
+            fall(then: [(Motion.lost, { @MainActor in if shown == .dropped { shown = .disconnected } })])
             stringSlack(delay: Motion.stringDelayLost)
             runLoops(to, delay: 0)
         case .fail:
@@ -134,7 +134,7 @@ struct KiteView: View {
                 snapString()
                 showBadge(delay: 0)
             } else {
-                fall(then: [(Motion.snapDelay, snapString)])
+                fall(then: [(Motion.snapDelay, { @MainActor in snapString() })])
                 stringSlack(delay: Motion.stringDelayLost)
                 showBadge(delay: Motion.badgeDelay)
             }
@@ -145,7 +145,7 @@ struct KiteView: View {
     /// Lost and Fail: a quick dip, then a drift down to Rest. One transition: an event cancels both.
     private func fall(then steps: [(Double, @MainActor () -> Void)]) {
         withAnimation(Motion.out(Motion.lostDip)) { pose = Motion.dip }
-        let drift: (Double, @MainActor () -> Void) = (Motion.lostDip, {
+        let drift: (Double, @MainActor () -> Void) = (Motion.lostDip, { @MainActor in
             withAnimation(Motion.sine(Motion.lost - Motion.lostDip)) { pose = Motion.rest }
         })
         later = Task {
