@@ -4,7 +4,7 @@ import Darwin
 
 var failures = 0
 
-func check(_ ok: Bool, _ what: String, line: Int = #line) {
+@MainActor func check(_ ok: Bool, _ what: String, line: Int = #line) {
     if !ok {
         print("FAIL line \(line): \(what)")
         failures += 1
