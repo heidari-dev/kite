@@ -47,7 +47,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -55,20 +55,6 @@ jobs:
           persist-credentials: false
       - if: runner.os == 'Linux'
         run: sudo apt-get install -y --no-install-recommends libfontconfig1-dev
-      - run: cargo test --workspace
-
-  # GitHub's macOS runners often fail to start on pull requests ("job was not acquired"), which
-  # blocks unrelated PRs, so they run on main, weekly and by hand. A separate job (a job-level `if`
-  # cannot read the matrix) with the matrix's check name: on a PR it reports "skipped", which
-  # satisfies the required check. Move it back into the matrix when macOS support work starts.
-  test-macos:
-    name: test (macos-latest)
-    if: github.event_name != 'pull_request'
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
       - run: cargo test --workspace
 
   deny:
@@ -153,6 +139,22 @@ jobs:
       - run: scripts\fetch-wintun.ps1 target\release
       - name: TUN mode smoke test
         run: scripts\tun-smoke.ps1 target\release\kite.exe target\release\examples\relay-dev.exe
+
+  # The runner has passwordless sudo, so a utun device can be made and the routes and DNS settings
+  # can change. The macOS-only code is linted here, since the Linux and Windows jobs do not build it.
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: plutil -lint packaging/macos/*.plist
+      - run: cargo build --release --locked -p kite-cli
+      - run: cargo build --release --locked -p kite-relay --example relay-dev
+      - name: TUN mode smoke test
+        run: sudo bash scripts/tun-smoke-macos.sh target/release/kite target/release/examples/relay-dev
 
   # The installer: installs it on the runner, runs the TUN smoke test against the installed service
   # (with its cut-down token), uninstalls it and checks that nothing is left.

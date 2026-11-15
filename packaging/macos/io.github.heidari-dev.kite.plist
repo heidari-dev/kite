@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- The Kite daemon. It runs as root: a utun device and routes need it. Its socket in
+       /var/run/kite is for the admin group, and the daemon checks every caller again. -->
+  <key>Label</key>
+  <string>io.github.heidari-dev.kite</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Library/Application Support/Kite/kite</string>
+    <string>daemon</string>
+  </array>
+  <key>UserName</key>
+  <string>root</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>StandardErrorPath</key>
+  <string>/var/log/kite.log</string>
+  <key>StandardOutPath</key>
+  <string>/dev/null</string>
+</dict>
+</plist>

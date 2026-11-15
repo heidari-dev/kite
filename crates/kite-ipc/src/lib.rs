@@ -11,8 +11,11 @@ use std::net::SocketAddr;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
 /// Where the daemon listens unless told otherwise: a Unix socket, or a named pipe on Windows.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub const DEFAULT_SOCKET: &str = "/run/kite/kite.sock";
+/// /run does not exist on macOS.
+#[cfg(target_os = "macos")]
+pub const DEFAULT_SOCKET: &str = "/var/run/kite/kite.sock";
 #[cfg(windows)]
 pub const DEFAULT_SOCKET: &str = r"\\.\pipe\kite";
 /// Longest request line, newline included.

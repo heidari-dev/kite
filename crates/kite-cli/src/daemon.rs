@@ -320,6 +320,9 @@ impl Daemon {
         if kill_switch && cfg!(windows) {
             return Response::err("the kill switch is not available on Windows yet");
         }
+        if kill_switch && cfg!(target_os = "macos") {
+            return Response::err("the kill switch is not available on macOS yet");
+        }
         let mut inner = self.inner();
         if inner.closing {
             return Response::err("the daemon is shutting down");

@@ -45,10 +45,17 @@ impl Drop for SocketFile {
 }
 
 fn path() -> io::Result<PathBuf> {
+    // macOS has no XDG_RUNTIME_DIR; its per-user TMPDIR is owner-only.
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .or_else(|| std::env::var_os("TMPDIR").filter(|_| cfg!(target_os = "macos")))
         .map(PathBuf::from)
         .filter(|dir| dir.is_absolute())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "XDG_RUNTIME_DIR is not set"))?;
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "XDG_RUNTIME_DIR (TMPDIR on macOS) is not set",
+            )
+        })?;
     // Other users must not be able to replace or pre-create the socket.
     if std::fs::metadata(&dir)?.permissions().mode() & 0o077 != 0 {
         return Err(io::Error::new(

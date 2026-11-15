@@ -14,6 +14,16 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(35);
 /// How long `connect` waits for the tunnel to come up.
 const CONNECT_WAIT: Duration = Duration::from_secs(60);
 
+/// How to start the daemon, and who may use it, for the errors below.
+#[cfg(target_os = "macos")]
+const START: &str = "sudo launchctl kickstart system/io.github.heidari-dev.kite";
+#[cfg(target_os = "macos")]
+const WHO: &str = "use an administrator account";
+#[cfg(all(unix, not(target_os = "macos")))]
+const START: &str = "systemctl start kite";
+#[cfg(all(unix, not(target_os = "macos")))]
+const WHO: &str = "join the kite group";
+
 /// Connects to the daemon, with an error that says what to do when it cannot be reached.
 #[cfg(unix)]
 async fn open(socket: &Path) -> io::Result<impl AsyncRead + AsyncWrite + Unpin> {
@@ -22,11 +32,11 @@ async fn open(socket: &Path) -> io::Result<impl AsyncRead + AsyncWrite + Unpin> 
         .map_err(|e| match e.kind() {
             io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => io::Error::new(
                 e.kind(),
-                "the kite daemon is not running; start it (systemctl start kite) or use --foreground",
+                format!("the kite daemon is not running; start it ({START}) or use --foreground"),
             ),
             io::ErrorKind::PermissionDenied => io::Error::new(
                 e.kind(),
-                "no permission to use the kite daemon; join the kite group, or use --foreground",
+                format!("no permission to use the kite daemon; {WHO}, or use --foreground"),
             ),
             _ => e,
         })
