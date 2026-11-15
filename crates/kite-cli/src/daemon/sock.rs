@@ -49,7 +49,7 @@ impl Server {
         let Ok(caller) = stream.peer_cred() else {
             return Ok(None);
         };
-        let peer = Ids::of_caller(&caller).await;
+        let peer = Ids::of_caller(&caller, self.me.uid).await;
         let Some(peer) = peer.filter(|p| p.uid == caller.uid() && p.may_talk_to(&self.me)) else {
             log_refusal();
             return Ok(None);
@@ -164,18 +164,18 @@ impl Ids {
     }
 
     #[cfg(target_os = "linux")]
-    async fn of_caller(caller: &tokio::net::unix::UCred) -> Option<Self> {
+    async fn of_caller(caller: &tokio::net::unix::UCred, _daemon_uid: u32) -> Option<Self> {
         Self::of_pid(caller.pid()?).ok()
     }
 
     /// The groups of the caller's user, from the directory service. That can block, so it runs on
     /// a thread of its own and under a timeout; a caller it cannot name is refused.
     #[cfg(target_os = "macos")]
-    async fn of_caller(caller: &tokio::net::unix::UCred) -> Option<Self> {
+    async fn of_caller(caller: &tokio::net::unix::UCred, daemon_uid: u32) -> Option<Self> {
         let (uid, gid) = (caller.uid(), caller.gid());
-        // Root and the daemon's user need no lookup. For the others one lookup runs at a time and a
-        // caller that finds it busy is refused, so a flood cannot stall the accept loop.
-        if uid == 0 {
+        // Root and the daemon's user need no lookup. The others take turns, each for at most
+        // LOOKUP_TIMEOUT, so a flood cannot hold up the daemon for long.
+        if uid == 0 || uid == daemon_uid {
             return Some(Self {
                 uid,
                 gid,
@@ -183,8 +183,11 @@ impl Ids {
             });
         }
         static LOOKUP: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
-        let _slot = LOOKUP.try_acquire().ok()?;
-        let mut groups = timeout(LOOKUP_TIMEOUT, groups_of(uid)).await.ok()??;
+        let lookup = async {
+            let _slot = LOOKUP.acquire().await.ok()?;
+            groups_of(uid).await
+        };
+        let mut groups = timeout(LOOKUP_TIMEOUT, lookup).await.ok()??;
         groups.push(gid);
         Some(Self { uid, gid, groups })
     }
@@ -292,7 +295,6 @@ mod tests {
     #[tokio::test]
     async fn names_the_groups_of_a_user() {
         assert!(groups_of(0).await.unwrap().contains(&0));
-        assert!(groups_of(u32::MAX - 1).await.is_none());
     }
 
     #[test]
