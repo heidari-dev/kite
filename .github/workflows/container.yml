@@ -1,0 +1,100 @@
+name: Container
+
+# The image of the command line at ghcr.io/heidari-dev/kite (docs/docker.md). Pull requests build and
+# test it; main publishes the edge tag and a v* tag publishes that version. Nothing else pushes it.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "crates/**"
+      - Cargo.toml
+      - Cargo.lock
+      - packaging/container/**
+      - scripts/container-test.sh
+      - .github/workflows/container.yml
+  pull_request:
+    paths:
+      - "crates/**"
+      - Cargo.toml
+      - Cargo.lock
+      - packaging/container/**
+      - scripts/container-test.sh
+      - .github/workflows/container.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: packaging/container/Dockerfile
+          load: true
+          tags: kite:test
+      - run: docker image ls kite:test
+      - run: command -v dig || sudo apt-get install -y --no-install-recommends bind9-dnsutils
+      - run: cargo build --release --locked -p kite-relay --example relay-dev
+      - name: Pairing, proxy mode and TUN mode in containers
+        run: bash scripts/container-test.sh kite:test target/release/examples/relay-dev
+
+  # The only job that can write packages, and only after the test passed.
+  publish:
+    needs: test
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # keyless signing of the provenance
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: A tagged commit must be on main
+        if: github.ref_type == 'tag'
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::The tagged commit is not on main."; exit 1; }
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # edge for main; 1.2.3 and latest for v1.2.3, and only 1.2.3-rc.1 for v1.2.3-rc.1.
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/heidari-dev/kite
+          tags: |
+            type=edge,branch=main
+            type=semver,pattern={{version}}
+          labels: org.opencontainers.image.licenses=GPL-3.0-or-later
+      - id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: packaging/container/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/heidari-dev/kite
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
