@@ -10,6 +10,7 @@ on:
       - crates/kite-ffi/**
       - crates/kite-relay/**
       - Cargo.lock
+      - scripts/ios-screens.sh
       - .github/workflows/ios.yml
   workflow_dispatch:
 
@@ -31,11 +32,36 @@ jobs:
       - run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
       - name: Build the XCFramework and the Swift bindings
         run: apps/ios/build-rust.sh
+      - name: Check the app's logic
+        run: |
+          xcrun swiftc -swift-version 6 -target arm64-apple-macos14 -o target/ios-checks             apps/ios/Kite/KiteMotion.swift apps/ios/Kite/Network.swift apps/ios/Tests/main.swift
+          target/ios-checks
       - name: Build the app for the simulator
         run: xcodebuild -project apps/ios/Kite.xcodeproj -target Kite -configuration Debug -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO build
       - name: Build the app for iPhones, unsigned
         run: xcodebuild -project apps/ios/Kite.xcodeproj -target Kite -configuration Release -sdk iphoneos CODE_SIGNING_ALLOWED=NO build
+      # Unsigned: SideStore or AltStore signs it on the phone with the user's own Apple ID.
+      - name: Package the IPA
+        run: |
+          mkdir -p dist/Payload
+          cp -R apps/ios/build/Release-iphoneos/Kite.app dist/Payload/
+          (cd dist && zip -qry Kite-unsigned.ipa Payload)
       - name: Sizes
         run: |
-          ls -l target/aarch64-apple-ios/release/libkite_ffi.a
+          ls -l target/aarch64-apple-ios/release/libkite_ffi.a dist/Kite-unsigned.ipa
           du -sh apps/ios/build/Release-iphoneos/Kite.app
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kite-ios-unsigned-ipa
+          path: dist/Kite-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+      - name: Screenshots of every screen state
+        run: scripts/ios-screens.sh apps/ios/build/Debug-iphonesimulator/Kite.app screens
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: ios-screens
+          path: screens/
+          if-no-files-found: warn
+          retention-days: 14

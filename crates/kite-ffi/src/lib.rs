@@ -1,13 +1,13 @@
-//! Bindings of the phone relay for the mobile apps (uniffi; Kotlin today).
+//! Bindings of the phone relay for the mobile apps (uniffi: Kotlin and Swift).
 //!
-//! The relay listens on the abstract Unix socket that `kite connect --usb` opens through adb,
-//! runs on its own thread with a single-threaded tokio runtime, and opens every outbound socket in
+//! On Android the relay listens on the abstract Unix socket that `kite connect --usb` opens through
+//! adb; on both phones it listens on TCP on the addresses the app gives it. It runs on its own thread with a single-threaded tokio runtime, and opens every outbound socket in
 //! the app's process, so the phone's VPN applies to them. No file descriptor crosses the FFI.
 //! Every computer runs the Noise handshake and must be paired (see `kite_relay::pair`).
 
 // uniffi's generated scaffolding needs `allow`, which `forbid` would refuse.
 #![deny(unsafe_code)]
-// The relay itself only runs where abstract Unix sockets exist.
+// The USB socket only exists where abstract Unix sockets do.
 #![cfg_attr(not(any(target_os = "linux", target_os = "android")), allow(dead_code))]
 
 use kite_relay::noise::{StaticKey, KEY_LEN};
@@ -102,65 +102,17 @@ impl Relay {
     #[uniffi::constructor]
     pub fn start(
         socket_name: String,
-        mut key: Vec<u8>,
+        key: Vec<u8>,
         peers: Vec<Vec<u8>>,
     ) -> Result<Arc<Self>, RelayError> {
-        let key = StaticKey::from_bytes(&mut key)?;
-        if socket_name.is_empty() || socket_name.len() > 100 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "bad socket name").into());
-        }
-        let peers = peers
-            .into_iter()
-            .map(|p| p.try_into())
-            .collect::<Result<Vec<[u8; KEY_LEN]>, _>>()
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "bad peer key"))?;
-        let pairing = Arc::new(Pairing::new(peers));
-        // Bound before the runtime exists: dropping a runtime panics if the caller is async.
-        let listener = listen(&socket_name)?;
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            // Name lookups run on blocking threads; the default allows 512 of them.
-            .max_blocking_threads(8)
-            .build()?;
-        let registered = {
-            let _guard = rt.enter();
-            register(listener)
-        };
-        let listener = match registered {
-            Ok(listener) => listener,
-            Err(e) => {
-                rt.shutdown_background();
-                return Err(e.into());
-            }
-        };
-        let counters = Arc::new(Counters::default());
-        let (stop, stopped) = oneshot::channel();
-        let shared = Shared {
-            key: Arc::new(key),
-            pairing: pairing.clone(),
-            counters: counters.clone(),
-            admission: Admission::default(),
-        };
-        let handle = rt.handle().clone();
-        let thread = {
-            let shared = shared.clone();
-            std::thread::Builder::new()
-                .name("kite-relay".into())
-                .spawn(move || {
-                    rt.block_on(accept(listener, shared, stopped));
-                    // Lookups still running on blocking threads must not hold up the app.
-                    rt.shutdown_timeout(Duration::from_secs(2));
-                })?
-        };
-        Ok(Arc::new(Relay {
-            stop: Mutex::new(Some(stop)),
-            thread: Mutex::new(Some(thread)),
-            counters,
-            pairing,
-            shared,
-            handle,
-            wifi: Mutex::new(HashMap::new()),
-        }))
+        Self::run(Some(socket_name), key, peers)
+    }
+
+    /// Like [`Relay::start`] without the abstract socket, for phones that have none (the iPhone):
+    /// computers reach this relay only through the addresses given to [`Relay::share_wifi`].
+    #[uniffi::constructor]
+    pub fn start_tcp(key: Vec<u8>, peers: Vec<Vec<u8>>) -> Result<Arc<Self>, RelayError> {
+        Self::run(None, key, peers)
     }
 
     /// Makes the relay listen for computers on exactly these addresses, the phone's own on WiFi,
@@ -303,6 +255,78 @@ impl Shared {
 }
 
 impl Relay {
+    fn run(
+        socket_name: Option<String>,
+        mut key: Vec<u8>,
+        peers: Vec<Vec<u8>>,
+    ) -> Result<Arc<Self>, RelayError> {
+        let key = StaticKey::from_bytes(&mut key)?;
+        if socket_name
+            .as_ref()
+            .is_some_and(|n| n.is_empty() || n.len() > 100)
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "bad socket name").into());
+        }
+        let peers = peers
+            .into_iter()
+            .map(|p| p.try_into())
+            .collect::<Result<Vec<[u8; KEY_LEN]>, _>>()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "bad peer key"))?;
+        let pairing = Arc::new(Pairing::new(peers));
+        // Bound before the runtime exists: dropping a runtime panics if the caller is async.
+        let listener = socket_name.as_deref().map(listen).transpose()?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            // Name lookups run on blocking threads; the default allows 512 of them.
+            .max_blocking_threads(8)
+            .build()?;
+        let registered = {
+            let _guard = rt.enter();
+            listener.map(register).transpose()
+        };
+        let listener = match registered {
+            Ok(listener) => listener,
+            Err(e) => {
+                rt.shutdown_background();
+                return Err(e.into());
+            }
+        };
+        let counters = Arc::new(Counters::default());
+        let (stop, stopped) = oneshot::channel();
+        let shared = Shared {
+            key: Arc::new(key),
+            pairing: pairing.clone(),
+            counters: counters.clone(),
+            admission: Admission::default(),
+        };
+        let handle = rt.handle().clone();
+        let thread = {
+            let shared = shared.clone();
+            std::thread::Builder::new()
+                .name("kite-relay".into())
+                .spawn(move || {
+                    rt.block_on(async {
+                        match listener {
+                            Some(listener) => accept(listener, shared, stopped).await,
+                            // The WiFi listeners run on this runtime until the stop.
+                            None => drop(stopped.await),
+                        }
+                    });
+                    // Lookups still running on blocking threads must not hold up the app.
+                    rt.shutdown_timeout(Duration::from_secs(2));
+                })?
+        };
+        Ok(Arc::new(Relay {
+            stop: Mutex::new(Some(stop)),
+            thread: Mutex::new(Some(thread)),
+            counters,
+            pairing,
+            shared,
+            handle,
+            wifi: Mutex::new(HashMap::new()),
+        }))
+    }
+
     fn share_wifi_on(&self, addresses: Vec<String>, port: u16) -> Result<Vec<String>, RelayError> {
         let want = addresses
             .iter()
@@ -502,7 +526,6 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Counted<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_os = "linux")]
     use kite_relay::pair;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -543,7 +566,6 @@ mod tests {
 
     /// A private IPv4 address of this machine, if it has one. The OS picks the source address of a
     /// UDP socket "connected" to a TEST-NET address; nothing is sent.
-    #[cfg(target_os = "linux")]
     fn private_address() -> Option<IpAddr> {
         let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
         sock.connect("192.0.2.1:9").ok()?;
@@ -551,7 +573,6 @@ mod tests {
         wifi::shareable(ip).then_some(ip)
     }
 
-    #[cfg(target_os = "linux")]
     fn free_port() -> u16 {
         std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -636,6 +657,36 @@ mod tests {
         relay.share_wifi_on(vec![], port).unwrap();
         relay.share_wifi_on(vec![ip.to_string()], port).unwrap();
         drop(session);
+    }
+
+    /// The iPhone's relay: no abstract socket, computers come in over TCP only.
+    #[tokio::test]
+    async fn serves_over_tcp_without_the_usb_socket() {
+        let Some(ip) = private_address() else {
+            return; // no private address on this machine
+        };
+        let computer = StaticKey::generate().unwrap();
+        let phone = key();
+        let phone_public = StaticKey::from_bytes(&mut phone.clone())
+            .unwrap()
+            .public()
+            .unwrap();
+        let relay = Relay::start_tcp(phone, vec![computer.public().unwrap().to_vec()]).unwrap();
+        assert!(Relay::start_tcp(vec![1; 31], vec![]).is_err());
+        let port = free_port();
+        relay.share_wifi_on(vec![ip.to_string()], port).unwrap();
+
+        let stream = tokio::net::TcpStream::connect((ip, port)).await.unwrap();
+        let session = pair::connect(stream, &computer, &[phone_public]).await;
+        assert!(session.is_ok(), "paired computer refused");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while relay.stats().tunnels != 1 {
+            assert!(std::time::Instant::now() < deadline, "tunnel not counted");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        drop(session);
+        relay.stop();
+        relay.stop(); // twice is fine
     }
 
     #[test]
