@@ -19,11 +19,11 @@ kite --version | -V
 kite --help | -h | help
 ```
 
-On Linux and Windows the tunnel is owned by the [daemon](#kite-daemon) (a systemd unit, a Windows
+On Linux, macOS and Windows the tunnel is owned by the [daemon](#kite-daemon) (a systemd unit, a launchd daemon, a Windows
 service), and `pair`, `peers`, `connect`, `disconnect`, `devices` and `status` talk to it. `pair`,
 `peers` and `connect` also take `--foreground`: they then run in the `kite` process itself, with the
 key and the paired phones of the user who runs it, and need no daemon. Every command takes `--socket
-PATH` to reach a daemon that listens somewhere other than `/run/kite/kite.sock` (on Windows the pipe
+PATH` to reach a daemon that listens somewhere other than `/run/kite/kite.sock` (`/var/run/kite/kite.sock` on macOS; on Windows the pipe
 `\\.\pipe\kite`). Everything below that says "kite" without saying more works the same either way.
 Elsewhere there is no daemon and the commands always run in the process.
 
@@ -41,6 +41,7 @@ with `hidepid`, a caller whose groups the daemon cannot read is refused. Members
 connect, disconnect and read status, but pairing and forgetting phones (`pair`, `peers remove`) are
 for root and the daemon's user only, because the phones decide where all of the computer's traffic
 can go: run them with `sudo`.
+On macOS it is a launchd daemon that runs as root, with its state in `/var/db/kite` and its socket in `/var/run/kite` for the group `admin`; see [macos.md](macos.md).
 On Windows the daemon is the service `Kite` (started by `kite daemon --service`, which only the
 service manager can run); `kite daemon` in an administrator's console runs the same daemon by hand.
 It listens on the named pipe `\\.\pipe\kite`. The pipe is closed to remote clients, and its access
@@ -120,7 +121,7 @@ could not come up) and the tunnel lives on in the daemon until `kite disconnect`
 | `--usb` | Reach the relay on a phone connected by USB, through a running adb server (`adb.exe` on Windows). | off |
 | `--serial SERIAL` | With `--usb`: the phone to use when several are connected. | the only phone |
 | `--listen ADDR` | Proxy mode only. `IP:PORT` of the local SOCKS5 proxy. It must be a loopback address. | `127.0.0.1:1080` |
-| `--tun` | TUN mode (Linux and Windows): send all traffic and DNS of this computer through the relay. Cannot be combined with `--listen`. | off |
+| `--tun` | TUN mode (Linux, macOS and Windows): send all traffic and DNS of this computer through the relay. Cannot be combined with `--listen`. | off |
 | `--kill-switch` | Linux only. With `--tun`: while the link to the phone is down, block all traffic and reconnect, until `kite disconnect`. With `--tcp` or `--wifi ADDR` the relay must be an IP address: a name would be looked up again at every redial, into the block. See [Kill switch](#kill-switch). | off |
 
 Without `--tun` kite runs in proxy mode: it serves a SOCKS5 proxy on `--listen`, needs no special
@@ -202,7 +203,7 @@ added that `kite restore` would have to remove.
 
 ### TUN mode
 
-On Windows, see [TUN mode on Windows](#tun-mode-on-windows). On Linux
+On Windows, see [TUN mode on Windows](#tun-mode-on-windows); on macOS, [macos.md](macos.md). On Linux
 `kite connect --tcp HOST:PORT --tun` needs `CAP_NET_ADMIN`, not full root:
 
 ```
@@ -280,7 +281,7 @@ the phone is lost the tunnel ends and normal routing returns.
 
 ### Kill switch
 
-This is Linux only. With `--kill-switch` a lost link (phone unplugged, WiFi gone, the app stopped) does not end the
+This is Linux only (Windows: issue 88, macOS: issue 101). With `--kill-switch` a lost link (phone unplugged, WiFi gone, the app stopped) does not end the
 tunnel. `kite0`, its rules and the DNS settings stay, so everything that is not loopback, the local
 network or the link to the phone keeps going into the tunnel and stops there: new connections are
 refused at once and nothing leaves the computer. kite dials the phone again after 1 s, then backs
@@ -312,11 +313,11 @@ shows a tunnel started with `--foreground` instead: that kite listens on
 `$XDG_RUNTIME_DIR/kite.sock` (a Unix socket, mode 0600) and only writes `relay`, `mode`, `streams`
 and `uptime`. If `XDG_RUNTIME_DIR` is unset or open to other users, such a kite still runs but
 prints `status unavailable`. `kite status` exits with 1 and prints `not connected` when nothing is
-running. On Windows only the service answers, not a `--foreground` tunnel.
+running. On Windows only the service answers, not a `--foreground` tunnel. On macOS a `--foreground` kite listens on `kite.sock` in `TMPDIR`.
 
 ## kite restore
 
-Removes what a TUN mode kite that was killed left behind. Needs `CAP_NET_ADMIN` on Linux, an
+Removes what a TUN mode kite that was killed left behind. Needs `CAP_NET_ADMIN` on Linux, root on macOS, an
 administrator on Windows. It fails while a TUN mode kite is running. On Linux it only deletes rules
 that exactly match the ones kite adds, so rules from other programs stay. On Windows it deletes the
 routes on the adapter `kite0`, the host route in `tun.state` and the DNS rule with the comment
