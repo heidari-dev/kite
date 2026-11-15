@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
+<title>Kite: tethering that keeps your phone's VPN</title>
+<meta name="description" content="Kite shares your phone's internet with your computer over USB or WiFi, and the computer's traffic leaves through the phone's VPN, proxy or mobile network. Free and open source.">
+<meta name="theme-color" content="#F6F1E7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#13161C" media="(prefers-color-scheme: dark)">
+<meta property="og:title" content="Kite: tethering that keeps your phone's VPN">
+<meta property="og:description" content="Share your phone's internet with your computer over USB or WiFi, through the phone's VPN or proxy.">
+<meta property="og:type" content="website">
+<link rel="icon" href="kite.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#what">Skip to content</a>
+
+<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="./" aria-label="Kite, home">
+      <svg viewBox="0 0 64 64" width="28" height="28" aria-hidden="true"><path d="M38 1 21 17l17 24z" fill="#E4572E"/><path d="M38 1 55 17 38 41z" fill="#B63E1C"/></svg>
+      Kite
+    </a>
+    <nav aria-label="Main">
+      <a class="link" href="#how">How it works</a>
+      <a class="link" href="#platforms">Platforms</a>
+      <a class="link" href="#security">Security</a>
+      <a class="link" href="https://github.com/heidari-dev/kite">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <h1>Tethering that keeps your phone's VPN</h1>
+      <p class="lead">Kite shares your phone's internet with your computer over USB or WiFi. The computer's traffic leaves through the phone's VPN, proxy or mobile network, not around it.</p>
+      <div class="actions">
+        <a class="btn" href="https://github.com/heidari-dev/kite/releases/latest">Get Kite</a>
+        <a class="btn ghost" href="https://github.com/heidari-dev/kite/blob/main/docs/guides/README.md">Read the guides</a>
+      </div>
+      <p class="fact">Free and open source under the GPL-3.0. Android and iPhone phones. Linux, Windows and macOS computers.</p>
+    </div>
+    <div class="hero-art">
+      <svg class="kite" viewBox="0 0 64 64" role="img" aria-label="A kite flying on its string">
+        <path class="slack" d="M6 62Q12 67 20 50"/>
+        <g class="rig">
+          <path class="taut" d="M6 62Q24 55 38 41"/>
+          <g class="pose"><g class="rock">
+            <path d="M38 1 21 17l17 24z" fill="#E4572E"/>
+            <path d="M38 1 55 17 38 41z" fill="#B63E1C"/>
+            <path class="tail" d="M38 41c4 3-2 6 3 11"/>
+          </g></g>
+        </g>
+      </svg>
+      <button class="btn ghost small" id="still" type="button" aria-pressed="false" hidden>Pause animation</button>
+    </div>
+  </div>
+</section>
+
+<section id="what" class="band">
+  <div class="wrap split wide">
+    <div>
+      <h2>The phone's connection, with the phone's VPN</h2>
+      <p>Normal USB and WiFi tethering is routed by the phone's operating system, and on most phones it skips the VPN. Kite is an app on the phone that opens a real connection for every connection the computer makes. A website sees what it would see if you had opened it on the phone.</p>
+      <p>Names are looked up on the phone too, so DNS follows the VPN. There is no root and no jailbreak.</p>
+    </div>
+    <div class="shots">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="img/android-dark.webp">
+        <img src="img/android-light.webp" width="360" height="710" alt="The Kite app on Android, waiting for a computer, with Stop and Pair a computer buttons" loading="lazy">
+      </picture>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="img/iphone-dark.webp">
+        <img src="img/iphone-light.webp" width="360" height="716" alt="The Kite app on iPhone, sharing with one computer at 2.4 megabytes per second down" loading="lazy">
+      </picture>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="img/desktop-dark.png">
+        <img src="img/desktop-light.png" width="380" height="760" alt="The Kite desktop window, connected, with all traffic going through the phone" loading="lazy">
+      </picture>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <h2>Three steps the first time, one after that</h2>
+    <ol class="steps">
+      <li><h3>Install</h3><p>Put the Kite app on the phone and Kite on the computer.</p></li>
+      <li><h3>Pair once</h3><p>The phone shows a 6-digit code. You type it on the computer, so the two only trust each other.</p></li>
+      <li><h3>Connect</h3><p>Press Connect. The computer's traffic and DNS go through the phone.</p></li>
+    </ol>
+    <p class="after">To check it, open <code>https://ifconfig.me</code> before and after. It shows the address the phone's VPN or mobile network gives it. <a class="link" href="https://github.com/heidari-dev/kite/blob/main/docs/guides/README.md">Step by step in the guides</a></p>
+  </div>
+</section>
+
+<section id="platforms" class="band">
+  <div class="wrap">
+    <h2>Phones and computers it runs on</h2>
+    <ul class="cards">
+      <li><a class="card" href="https://github.com/heidari-dev/kite/blob/main/docs/guides/android-linux.md"><h3>Android and Linux</h3><p>A .deb or an AppImage. Debian 12 and Ubuntu 22.04 or newer.</p></a></li>
+      <li><a class="card" href="https://github.com/heidari-dev/kite/blob/main/docs/guides/android-windows.md"><h3>Android and Windows</h3><p>An MSI for Windows 10 and 11. Not signed yet.</p></a></li>
+      <li><a class="card" href="https://github.com/heidari-dev/kite/blob/main/docs/guides/android-macos.md"><h3>Android and macOS</h3><p>A package for macOS 12 or newer. It needs testers.</p></a></li>
+      <li><a class="card" href="https://github.com/heidari-dev/kite/blob/main/docs/guides/iphone.md"><h3>iPhone</h3><p>Over WiFi or the Personal Hotspot, signed by you with SideStore or AltStore.</p></a></li>
+    </ul>
+    <p class="after"><a class="link" href="https://github.com/heidari-dev/kite/releases/latest">Latest release</a> with all downloads, checksums and build provenance.</p>
+  </div>
+</section>
+
+<section id="security">
+  <div class="wrap split">
+    <div>
+      <h2>What it can and cannot do</h2>
+      <p>Kite is early software and says so. The threat model lists what is done, what is planned and the gaps we know about.</p>
+      <p><a class="link" href="https://github.com/heidari-dev/kite/blob/main/docs/threat-model.md">Read the threat model</a></p>
+    </div>
+    <ul class="plain">
+      <li>The link between phone and computer is encrypted with Noise. Kite has no cryptography of its own.</li>
+      <li>Each side trusts only the one it paired with. The pairing code expires after two minutes, and five wrong tries lock pairing for a minute.</li>
+      <li>The phone refuses connections to itself, so the computer cannot reach the phone's own services. Other devices on the phone's network stay reachable, because your traffic needs them.</li>
+      <li>There is no server of ours and no account. Traffic goes between your phone and your computer, then out from the phone.</li>
+      <li>Installers are not signed, because certificates cost money. You can check each file against its checksum and build attestation.</li>
+    </ul>
+  </div>
+</section>
+
+<section class="band">
+  <div class="wrap split">
+    <div>
+      <h2>Open source, GPL-3.0</h2>
+      <p>Read the code, report a bug, send a patch. The apps are native and use little memory: no WebView, no Electron.</p>
+    </div>
+    <div class="actions">
+      <a class="btn" href="https://github.com/heidari-dev/kite">View the source</a>
+      <a class="btn ghost" href="https://github.com/heidari-dev/kite/discussions">Ask a question</a>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap bar">
+    <p>Kite is licensed under the <a class="link" href="https://github.com/heidari-dev/kite/blob/main/LICENSE">GPL-3.0-or-later</a>.</p>
+    <p><a class="link" href="https://github.com/heidari-dev/kite/issues">Issues</a> <a class="link" href="https://github.com/heidari-dev/kite/blob/main/docs/guides/faq.md">FAQ</a> <a class="link" href="https://github.com/heidari-dev/kite/blob/main/SECURITY.md">Report a security problem</a></p>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
