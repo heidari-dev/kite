@@ -18,9 +18,9 @@ gh attestation verify oci://ghcr.io/heidari-dev/kite:edge --repo heidari-dev/kit
 
 The container runs `kite --foreground`: there is no daemon, every command runs in the container's
 own process. It runs as user 65532. Its key and the list of paired phones are in `/data/kite`,
-readable by that user only. Keep `/data` on a named volume, as below, so pairing survives a new
-container; a new named volume starts with the right owner. A bind mount works if the directory
-belongs to 65532 and has mode 700.
+which Kite creates readable by that user only and refuses to use if others can read or write it.
+Keep `/data` on a named volume, as below, so pairing survives a new container; a new named volume
+starts out owned by 65532. A bind mount works if the directory belongs to 65532.
 
 `docker exec kite kite status` shows the running tunnel.
 

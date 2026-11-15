@@ -69,11 +69,13 @@ for _ in $(seq 100); do
 done | docker run -i --rm -v "$VOLUME:/data" "$IMAGE" pair --tcp "$RELAY" >"$LOG/pair.log" 2>&1 ||
   fail "kite pair"
 
-# The volume starts as a copy of the image's /data, so the image's user owns it and the keys in it.
+# The volume starts as a copy of the image's /data, so the image's user owns it; kite keeps the key
+# and the phones in kite/ there, owner-only.
 data=$(docker volume inspect -f '{{.Mountpoint}}' "$VOLUME")
-perms=$(sudo stat -c '%u:%g %a' "$data" "$data/kite" "$data/kite/key" "$data/kite/phones" | tr '\n' ' ')
-[ "$perms" = "65532:65532 700 65532:65532 700 65532:65532 600 65532:65532 600 " ] ||
-  fail "owner and mode of the volume, its directory, key and phones: $perms"
+owner=$(sudo stat -c '%u:%g' "$data")
+perms=$(sudo stat -c '%u:%g %a' "$data/kite" "$data/kite/key" "$data/kite/phones" | tr '\n' ' ')
+[ "$owner" = 65532:65532 ] && [ "$perms" = "65532:65532 700 65532:65532 600 65532:65532 600 " ] ||
+  fail "owner of the volume ($owner), owner and mode of kite/, key and phones: $perms"
 
 # Proxy mode.
 docker run -d --name kite-proxy -v "$VOLUME:/data" "$IMAGE" connect --tcp "$RELAY" >/dev/null

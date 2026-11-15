@@ -23,13 +23,16 @@ RUN case "$TARGETARCH" in \
         --config "target.$target.linker='rust-lld'" \
         --config "target.$target.rustflags=['-L', '/stub']" \
     && install -D -m 0755 "target/$target/release/kite" /out/usr/local/bin/kite \
-    && install -d -m 0700 /out/data /out/run
+    && install -d /out/data && install -d -m 0700 /out/run/user/65532
 
 FROM scratch
 COPY --from=build /out/usr /usr
-# Owner-only, as kite requires. A new named volume on /data starts as a copy of this directory.
+# kite keeps its key and paired phones in /data/kite, which it creates owner-only and checks. A new
+# named volume on /data starts as a copy of this directory, so it belongs to the image's user.
 COPY --from=build --chown=65532:65532 /out/data /data
-COPY --from=build --chown=65532:65532 /out/run /run/user/65532
+# COPY makes the directory it copies into 755 but keeps the modes of what it copies, so the
+# runtime directory, which kite wants owner-only, comes in as an entry of /run/user.
+COPY --from=build --chown=65532:65532 /out/run/user /run/user
 LABEL org.opencontainers.image.title="kite" \
       org.opencontainers.image.description="Use a phone's internet connection, including its VPN, from a computer over USB or WiFi" \
       org.opencontainers.image.source="https://github.com/heidari-dev/kite" \
