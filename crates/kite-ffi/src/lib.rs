@@ -43,6 +43,8 @@ pub struct Relay {
     handle: tokio::runtime::Handle,
     /// The WiFi listeners. Dropping the runtime ends them as well.
     wifi: Mutex<HashMap<SocketAddr, Task<()>>>,
+    /// The loopback listener that usbmuxd reaches over USB (iPhone).
+    usb: Mutex<Option<Task<()>>>,
 }
 
 /// A new private key for the relay. The app stores it and passes it to [`Relay::start`].
@@ -123,6 +125,14 @@ impl Relay {
     /// connect this way go through the same handshake and pairing as over USB.
     pub fn share_wifi(&self, addresses: Vec<String>) -> Result<Vec<String>, RelayError> {
         self.share_wifi_on(addresses, wifi::PORT)
+    }
+
+    /// Makes the relay listen on the phone's loopback address, port 47810, which is where usbmuxd
+    /// brings the computers that connect over USB to an iPhone. Nothing but the phone's own
+    /// programs and usbmuxd can reach it. Does nothing if it already listens. The handshake,
+    /// pairing and admission caps are those of the WiFi listeners.
+    pub fn share_usb(&self) -> Result<(), RelayError> {
+        self.share_usb_on(wifi::PORT)
     }
 
     /// Lets one more computer pair for two minutes. Call it only when the user asks to pair.
@@ -324,6 +334,7 @@ impl Relay {
             shared,
             handle,
             wifi: Mutex::new(HashMap::new()),
+            usb: Mutex::new(None),
         }))
     }
 
@@ -364,12 +375,32 @@ impl Relay {
         }
     }
 
+    fn share_usb_on(&self, port: u16) -> Result<(), RelayError> {
+        let mut usb = self.usb.lock().unwrap_or_else(PoisonError::into_inner);
+        if usb.as_ref().is_some_and(|task| !task.is_finished()) {
+            return Ok(());
+        }
+        *usb = Some(self.listen_on(|| {
+            let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))?;
+            listener.set_nonblocking(true)?;
+            Ok(listener)
+        })?);
+        Ok(())
+    }
+
     fn listen_wifi(&self, addr: SocketAddr) -> io::Result<Task<()>> {
+        self.listen_on(|| wifi::bind(addr.ip(), addr.port()))
+    }
+
+    fn listen_on(
+        &self,
+        bind: impl Fn() -> io::Result<std::net::TcpListener>,
+    ) -> io::Result<Task<()>> {
         // A listener stopped a moment ago closes its socket when the relay thread next runs, so
         // the address may be busy for a few milliseconds. Called from the app's worker thread.
         let mut tries = 0;
         let std = loop {
-            match wifi::bind(addr.ip(), addr.port()) {
+            match bind() {
                 Err(e) if e.kind() == io::ErrorKind::AddrInUse && tries < 50 => {
                     tries += 1;
                     std::thread::sleep(Duration::from_millis(20));
@@ -687,6 +718,52 @@ mod tests {
         drop(session);
         relay.stop();
         relay.stop(); // twice is fine
+    }
+
+    /// The iPhone's USB path: usbmuxd connects to the app's loopback port.
+    #[tokio::test]
+    async fn serves_paired_computers_on_loopback_for_usbmuxd() {
+        let (computer, stranger) = (
+            StaticKey::generate().unwrap(),
+            StaticKey::generate().unwrap(),
+        );
+        let phone = key();
+        let phone_public = StaticKey::from_bytes(&mut phone.clone())
+            .unwrap()
+            .public()
+            .unwrap();
+        let relay = Relay::start_tcp(phone, vec![computer.public().unwrap().to_vec()]).unwrap();
+        let port = free_port();
+        relay.share_usb_on(port).unwrap();
+        relay.share_usb_on(port).unwrap(); // already listening
+
+        let dial = || async {
+            tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap()
+        };
+        assert!(pair::start(dial().await, &stranger).await.is_err());
+        let session = pair::connect(dial().await, &computer, &[phone_public]).await;
+        assert!(session.is_ok(), "paired computer refused");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while relay.stats().tunnels != 1 {
+            assert!(std::time::Instant::now() < deadline, "tunnel not counted");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // The WiFi listeners' list does not touch it, and stopping the relay ends it.
+        relay.share_wifi_on(vec![], port).unwrap();
+        drop(session);
+        relay.stop();
+        loop {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_err()
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "listener still up");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     #[test]

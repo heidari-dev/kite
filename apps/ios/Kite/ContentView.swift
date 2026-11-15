@@ -158,10 +158,10 @@ struct ContentView: View {
     private var detail: String {
         if let error = sharing.error { return error }
         if sharing.stats == nil {
-            return sharing.serving ? "" : "Start sharing, then run kite connect --wifi on the computer."
+            return sharing.serving ? "" : "Start sharing, then run kite connect --usb or kite connect --wifi on the computer."
         }
         return tunnels == 0
-            ? "Put the computer on this iPhone's Personal Hotspot or on the same WiFi, then run kite connect --wifi."
+            ? "Connect the iPhone to the computer by USB and tap Trust, or put the computer on this iPhone's Personal Hotspot or the same WiFi. Then run kite connect --usb or kite connect --wifi."
             : ""
     }
 
@@ -172,15 +172,16 @@ struct ContentView: View {
     private var pairing: String {
         if sharing.code != nil { return "Type this code on the computer." }
         return sharing.pairingOpen
-            ? "Pairing is open for two minutes. On the computer, run kite pair --wifi, then allow it here."
+            ? "Pairing is open for two minutes. On the computer, run kite pair --usb or kite pair --wifi, then allow it here."
             : ""
     }
 
     private var listeningLine: String {
         guard sharing.stats != nil, sharing.synced else { return "" }
+        if let error = sharing.usbError { return "Could not listen for USB: \(error)" }
         if let error = sharing.listenError { return "Could not listen: \(error)" }
         if sharing.listening.isEmpty {
-            return "No WiFi or hotspot network found. Turn on Personal Hotspot or join a WiFi network."
+            return "No WiFi or hotspot network found. Connecting by USB works without one."
         }
         return "Listening on \(sharing.listening.joined(separator: ", "))"
     }

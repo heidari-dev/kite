@@ -25,6 +25,8 @@ final class Sharing {
     /// The `address:port` pairs the relay listens on.
     private(set) var listening: [String] = []
     private(set) var listenError: String?
+    /// Why the loopback port for USB could not be opened, or nil.
+    private(set) var usbError: String?
     /// False from a start until the relay has answered about its addresses, so no stale line shows.
     private(set) var synced = false
     /// Bytes per second the computers download and upload.
@@ -84,6 +86,10 @@ final class Sharing {
                 self.relay = relay
                 paired = relay.peers()
                 refresh()
+                // usbmuxd brings a computer on USB to this port on the loopback address.
+                if case .failure(let failure) = await run({ try relay.shareUsb() }), relay === self.relay {
+                    usbError = Self.describe(failure)
+                }
                 await syncAddresses()
             case .failure(let failure):
                 error = Self.describe(failure)
@@ -156,6 +162,7 @@ final class Sharing {
         openedAt = nil
         listening = []
         listenError = nil
+        usbError = nil
         synced = false
         asked = nil
         measure(nil)

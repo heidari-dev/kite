@@ -1,9 +1,8 @@
 //! Finding phones on USB (usbfs on Linux, WinUSB on Windows, through `nusb`), claiming the ADB
 //! interface and handing the stream to the session code.
 //!
-//! The tunnel code wants a TCP stream, so the USB side is bridged to one on the loopback address:
-//! a socket pair made here, one end given back and the other served by a task. Only the end that
-//! this function connected can be the one the task serves.
+//! The tunnel code wants a TCP stream, so the USB side is bridged to one on the loopback address
+//! (see [`crate::bridge`]): one end given back and the other served by a task.
 
 use super::key::AdbKey;
 use super::session;
@@ -12,13 +11,12 @@ use nusb::transfer::{Bulk, Direction, In, Out};
 use nusb::DeviceInfo;
 use std::collections::HashSet;
 use std::io;
-use std::net::Ipv4Addr;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::{Mutex, PoisonError};
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 
 /// Class, subclass and protocol of the interface adb talks to.
 const ADB: (u8, u8, u8) = (0xff, 0x42, 0x01);
@@ -234,18 +232,7 @@ pub async fn open(serial: Option<&str>, key_path: &Path) -> io::Result<TcpStream
     let connected = session::connect(&mut usb, &key).await?;
     let remote = session::open_stream(&mut usb).await?;
 
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    let (client, accepted) = tokio::try_join!(
-        TcpStream::connect(listener.local_addr()?),
-        listener.accept()
-    )?;
-    let (server, peer) = accepted;
-    if peer != client.local_addr()? {
-        return Err(io::Error::other(
-            "another program connected to the USB bridge",
-        ));
-    }
-    drop(listener);
+    let (client, server) = crate::bridge::loopback_pair().await?;
     tokio::spawn(async move {
         // The claim, the interface and the device stay open for as long as the stream does.
         let _held = (claim, device, interface);
