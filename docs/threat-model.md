@@ -227,7 +227,12 @@ Besides the abstract socket, the relay's only listener is the optional WiFi one 
   another VPN client or `pfctl -F all` or `-d`) can change: the block is gone then, and Kite does not
   notice. Its DHCP permit matches any address, so a program that sends from UDP port 68 to port 67 can
   still get out, and the ICMPv6 link permits match any address. The relay is passed by address and
-  port, so any program can reach that one port on the phone.
+  port, so any program can reach that one port on the phone. Rules earlier in a customised main
+  ruleset (for example a `pass out quick` from another VPN's pf.conf) win over the anchor; Kite only
+  checks that the `anchor "com.apple/*" all` line is there. Packets of states that existed before and
+  were created by the user's own stateful rules keep passing. A block left by a crash also stops a
+  connect to a different phone until `kite restore`. Stopping the daemon (package upgrade, shutdown)
+  lifts the block, and uninstalling flushes the anchor.
 - `kite pair --wifi` without an address, while a TUN session is up, sends its mDNS question into
   the tunnel and finds nothing; pair before connecting, or give the address.
 - The mDNS question tells everyone on the link that this computer looks for a Kite phone. It

@@ -267,16 +267,25 @@ async fn setup(name: &str, relay: Option<SocketAddr>, kill_switch: bool) -> io::
         Some(dest) => default_via(&route_get(dest).await?)?.map(|via| Bypass { dest, via }),
         None => None,
     };
-    let old = State::load()?.pf_token;
-    let mut state = State {
-        bypass,
-        pf_token: old,
-    };
+    let old = State::load()?.pf;
+    let mut state = State { bypass, pf: old };
     state.save()?;
     if kill_switch {
-        // Before the routes change, so nothing leaks between the two.
-        state.pf_token = Some(pf_enable().await?);
-        state.save()?;
+        // Before the routes change, so nothing leaks between the two. What was there before the
+        // first reference stays in the state, for the release.
+        let was_on = match old {
+            Some(old) => old.was_on,
+            None => pf_is_on().await,
+        };
+        let new = Pf {
+            token: pf_enable().await?,
+            was_on,
+        };
+        state.pf = Some(new);
+        if let Err(e) = state.save() {
+            pf_release(new).await;
+            return Err(e);
+        }
         if let Some(old) = old {
             pf_release(old).await;
         }
@@ -314,13 +323,13 @@ async fn undo(lift: bool) -> io::Result<()> {
             first = r;
         }
     };
-    let mut token = None;
+    let mut pf = None;
     match State::load() {
-        Ok(State { bypass, pf_token }) => {
+        Ok(State { bypass, pf: held }) => {
             if let Some(b) = bypass {
                 note(route(&b.args("delete")).await);
             }
-            token = pf_token;
+            pf = held;
         }
         Err(e) => note(Err(e)),
     }
@@ -329,14 +338,14 @@ async fn undo(lift: bool) -> io::Result<()> {
     if lift {
         // Flushing also works when the rules are not there; the token is given back either way.
         note(pf_flush().await);
-        if let Some(t) = token {
-            pf_release(t).await;
+        if let Some(held) = pf {
+            pf_release(held).await;
         }
     }
     if first.is_ok() {
         let keep = State {
             bypass: None,
-            pf_token: token.filter(|_| !lift),
+            pf: pf.filter(|_| !lift),
         };
         if keep.text().is_empty() {
             let _ = std::fs::remove_file(dir()?.join("tun.state"));
@@ -351,11 +360,13 @@ async fn undo(lift: bool) -> io::Result<()> {
 /// relay is refused (with a reset, so programs fail at once), except DHCP and IPv6 link discovery,
 /// which keep the link to the router or the phone up.
 fn rules(utun: &str, relay: Option<SocketAddr>) -> String {
-    let mut r = format!("pass quick on lo0 all\npass quick on {utun} all\n");
+    // Stateless, so the link to the relay that was dialled before the rules existed (it has no pf
+    // state) keeps working.
+    let mut r = format!("pass quick on lo0 all no state\npass quick on {utun} all no state\n");
     // A relay on the loopback is passed above.
     if let Some(a) = relay.filter(|a| !a.ip().is_loopback()) {
         r += &format!(
-            "pass out quick proto tcp from any to {} port {}\n",
+            "pass out quick proto tcp from any to {} port {} no state\n",
             a.ip(),
             a.port()
         );
@@ -385,13 +396,26 @@ fn parse_token(text: &str) -> Option<u64> {
         .and_then(|n| n.trim().parse().ok())
 }
 
+async fn pf_is_on() -> bool {
+    exec(PFCTL, &["-s", "info"], "").await.is_ok_and(|out| {
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .any(|l| l.trim_start().starts_with("Status: Enabled"))
+    })
+}
+
 /// Gives the reference back. Failing leaves pf enabled, which is no leak, so it only says so.
-async fn pf_release(token: u64) {
-    let arg = token.to_string();
+/// `-X` switches pf off with the last reference, also when the user had switched it on with
+/// `pfctl -e`; then it is switched on again.
+async fn pf_release(pf: Pf) {
+    let arg = pf.token.to_string();
     match exec(PFCTL, &["-X", &arg], "").await {
         Ok(out) if out.status.success() => {}
         Ok(out) => eprintln!("kite: releasing pf: {}", said(&out)),
         Err(e) => eprintln!("kite: releasing pf: {e}"),
+    }
+    if pf.was_on && !pf_is_on().await {
+        let _ = exec(PFCTL, &["-e"], "").await;
     }
 }
 
@@ -407,10 +431,10 @@ async fn pf_load(rules: &str) -> io::Result<()> {
     let main = exec(PFCTL, &["-s", "rules"], "").await?;
     if !String::from_utf8_lossy(&main.stdout)
         .lines()
-        .any(|l| l.trim_start().starts_with("anchor \"com.apple/*\""))
+        .any(|l| l.trim() == "anchor \"com.apple/*\" all")
     {
         return Err(io::Error::other(
-            "pf's main ruleset has no `anchor \"com.apple/*\"` line, so the kill switch would not \
+            "pf's main ruleset has no `anchor \"com.apple/*\" all` line, so the kill switch would not \
              apply; restore /etc/pf.conf or leave the kill switch off",
         ));
     }
@@ -494,11 +518,18 @@ fn default_via(text: &str) -> io::Result<Option<Via>> {
 
 /// What `undo` cannot work out from the system: the host route for the relay and the pf token.
 /// Up to two lines, in this order: `bypass DESTINATION via GATEWAY` or `bypass DESTINATION dev
-/// INTERFACE`, and `pf TOKEN`; or an empty file.
+/// INTERFACE`, and `pf TOKEN WAS_ON` (`1` when pf was enabled before the token); or an empty file.
 #[derive(Debug, Default, PartialEq)]
 struct State {
     bypass: Option<Bypass>,
-    pf_token: Option<u64>,
+    pf: Option<Pf>,
+}
+
+/// The reference on pf being enabled that the kill switch holds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Pf {
+    token: u64,
+    was_on: bool,
 }
 
 impl State {
@@ -510,8 +541,8 @@ impl State {
                 Via::Gateway(g) => format!("bypass {} via {g}\n", b.dest),
                 Via::Interface(i) => format!("bypass {} dev {i}\n", b.dest),
             });
-        if let Some(t) = self.pf_token {
-            text += &format!("pf {t}\n");
+        if let Some(pf) = self.pf {
+            text += &format!("pf {} {}\n", pf.token, u8::from(pf.was_on));
         }
         text
     }
@@ -524,10 +555,19 @@ impl State {
         }
         if let Some(line) = lines.next() {
             let mut words = line.split(' ');
-            let (Some("pf"), Some(token), None) = (words.next(), words.next(), words.next()) else {
+            let (Some("pf"), Some(token), Some(was_on), None) =
+                (words.next(), words.next(), words.next(), words.next())
+            else {
                 return None;
             };
-            state.pf_token = Some(token.parse().ok()?);
+            state.pf = Some(Pf {
+                token: token.parse().ok()?,
+                was_on: match was_on {
+                    "0" => false,
+                    "1" => true,
+                    _ => return None,
+                },
+            });
         }
         lines.next().is_none().then_some(state)
     }
@@ -684,7 +724,7 @@ mod tests {
         ] {
             let state = State {
                 bypass: Some(b),
-                pf_token: None,
+                pf: None,
             };
             assert_eq!(State::parse(&state.text()), Some(state));
         }
@@ -701,38 +741,35 @@ mod tests {
         for state in [
             State {
                 bypass: Some(via.clone()),
-                pf_token: Some(1_234_567_890),
+                pf: Some(Pf {
+                    token: 1_234_567_890,
+                    was_on: true,
+                }),
             },
             State {
                 bypass: None,
-                pf_token: Some(7),
+                pf: Some(Pf {
+                    token: 7,
+                    was_on: false,
+                }),
             },
         ] {
             assert_eq!(State::parse(&state.text()), Some(state));
         }
         assert_eq!(
-            State::parse(
-                "pf 7
-"
-            )
-            .map(|s| s.pf_token),
+            State::parse("pf 7 0\n").map(|s| s.pf.map(|p| p.token)),
             Some(Some(7))
         );
         for bad in [
             "pf",
             "pf x",
             "pf -1",
-            "pf 7 8",
-            "pf 7
-pf 8
-",
-            "pf 7
-bypass 203.0.113.9 via 192.168.1.1
-",
-            "bypass 203.0.113.9 via 192.168.1.1
-pf 7
-extra
-",
+            "pf 7",
+            "pf 7 2",
+            "pf 7 0 1",
+            "pf 7\npf 8\n",
+            "pf 7 0\nbypass 203.0.113.9 via 192.168.1.1\n",
+            "bypass 203.0.113.9 via 192.168.1.1\npf 7 0\nextra\n",
         ] {
             assert_eq!(State::parse(bad), None, "{bad:?}");
         }
@@ -740,12 +777,7 @@ extra
 
     #[test]
     fn pfctl_says_its_token() {
-        let said = "No ALTQ support in kernel
-ALTQ related functions disabled
-pf enabled
-
-Token : 3846205941
-";
+        let said = "No ALTQ support in kernel\nALTQ related functions disabled\npf enabled\n\nToken : 3846205941\n";
         assert_eq!(parse_token(said), Some(3_846_205_941));
         for bad in ["", "Token", "Token : x", "pf enabled", "Token 5"] {
             assert_eq!(parse_token(bad), None, "{bad:?}");
@@ -757,17 +789,17 @@ Token : 3846205941
         let relay: SocketAddr = "203.0.113.9:47810".parse().unwrap();
         let text = rules("utun4", Some(relay));
         let lines: Vec<_> = text.lines().collect();
-        assert_eq!(lines.first(), Some(&"pass quick on lo0 all"));
-        assert!(lines.contains(&"pass quick on utun4 all"));
-        assert!(lines.contains(&"pass out quick proto tcp from any to 203.0.113.9 port 47810"));
+        assert_eq!(lines.first(), Some(&"pass quick on lo0 all no state"));
+        assert!(lines.contains(&"pass quick on utun4 all no state"));
+        assert!(
+            lines.contains(&"pass out quick proto tcp from any to 203.0.113.9 port 47810 no state")
+        );
         // `quick` makes the first match final, so the block must be last.
         assert_eq!(lines.last(), Some(&"block return out quick all"));
         assert_eq!(lines.iter().filter(|l| l.starts_with("block")).count(), 1);
         let v6: SocketAddr = "[2001:db8::9]:47810".parse().unwrap();
-        assert!(rules("utun4", Some(v6)).contains(
-            "pass out quick proto tcp from any to 2001:db8::9 port 47810
-"
-        ));
+        assert!(rules("utun4", Some(v6))
+            .contains("pass out quick proto tcp from any to 2001:db8::9 port 47810 no state\n"));
     }
 
     #[test]

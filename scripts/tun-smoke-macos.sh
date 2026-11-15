@@ -64,6 +64,19 @@ anchor_rules() { pfctl -a com.apple/kite -s rules 2>/dev/null; }
 pf_status() { pfctl -s info 2>/dev/null | awk '/^Status:/ { print $2 }'; }
 PF_BEFORE=$(pf_status)
 
+# The rules kite loads, for a sample IPv4 and IPv6 relay, must parse under this pfctl (the loopback
+# relay of this test never loads the relay line). Keep in step with rules() in tun_mac.rs.
+pfctl -n -f - >/dev/null 2>"$WORK/pf-syntax.log" <<'RULES' || { cat "$WORK/pf-syntax.log" >&2; echo "FAIL: pfctl does not parse the kill switch's rules" >&2; exit 1; }
+pass quick on lo0 all no state
+pass quick on utun9 all no state
+pass out quick proto tcp from any to 203.0.113.9 port 47810 no state
+pass out quick proto tcp from any to 2001:db8::9 port 47810 no state
+pass out quick proto udp from any port 68 to any port 67
+pass out quick inet6 proto udp from any port 546 to any port 547
+pass out quick inet6 proto icmp6 all icmp6-type { 130, 131, 132, 133, 134, 135, 136, 137, 143 }
+block return out quick all
+RULES
+
 # A connection and a DNS query that do not use the tunnel's routes, to servers outside this machine.
 reach() { curl -sS -o /dev/null --connect-timeout 5 -m 8 http://1.1.1.1/ >/dev/null 2>&1; }
 reach_dns() { [ -n "$(dig +time=3 +tries=1 +short @8.8.8.8 example.com 2>/dev/null)" ]; }
@@ -165,6 +178,9 @@ assert_clean "after disconnect"
 kite connect --tcp "$RELAY" --tun --kill-switch
 assert_up
 kite status | grep -q 'kill switch: on' || fail "status does not show the kill switch"
+# The link to the relay was dialled before the rules went up; it must survive them.
+sleep 3
+kite status | grep -q 'state: connected' || fail "the tunnel dropped when the kill switch went up"
 kill -9 "$relay"
 wait "$relay" 2>/dev/null || true
 reconnecting() { kite status | grep -q 'state: reconnecting'; }
@@ -181,6 +197,18 @@ echo "kill switch: lifted by disconnect"
 # A new relay, a new pairing.
 start_relay relay2
 pair relay2
+
+# A firewall the user switched on stays on, and one that was off goes off again (checked above).
+if [ "$PF_BEFORE" != Enabled ]; then pfctl -e >/dev/null 2>&1 || true; fi
+kite connect --tcp "$RELAY" --tun --kill-switch
+assert_up
+kite disconnect
+gone() { [ -z "$(tunnel_device)" ] && [ -z "$(anchor_rules)" ]; }
+wait_for "the tunnel to be removed" gone
+[ "$(pf_status)" = Enabled ] || fail "kite switched off a firewall that was on"
+if [ "$PF_BEFORE" != Enabled ]; then pfctl -d >/dev/null 2>&1 || true; fi
+wait_for "names to resolve again" resolves
+echo "pf stays on when it was on"
 
 # A daemon that is killed leaves the resolver and the block behind; restore takes them away.
 kite connect --tcp "$RELAY" --tun --kill-switch

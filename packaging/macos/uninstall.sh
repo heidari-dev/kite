@@ -25,6 +25,8 @@ fi
 if [ -x "$support/kite" ] && [ ! -L "$support/kite" ] && [ "$(/usr/bin/stat -f %u "$support/kite")" = 0 ]; then
   "$support/kite" restore 2>/dev/null
 fi
+# Whatever the above did not do: the kill switch's rules must not outlive the program that lifts them.
+/sbin/pfctl -a com.apple/kite -F rules 2>/dev/null
 
 /bin/rm -f "/Library/LaunchDaemons/$label.plist" "/Library/LaunchAgents/$label.desktop.plist" /var/log/kite.log
 # /usr/local/bin is Homebrew's on an Intel Mac: only the link the package made.

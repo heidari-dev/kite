@@ -341,12 +341,18 @@ programs fail at once). The anchor sits under `com.apple` because the main rules
 `anchor "com.apple/*"`, so Kite does not rewrite your main ruleset; if that line is missing, Kite
 refuses to start with the kill switch instead of running a block that does nothing. pf is enabled
 with `pfctl -E`, which takes a reference (kept in `tun.state`) instead of switching it on, and
-released with `pfctl -X`, so a firewall you had on stays on and one that was off goes off again. The
+released with `pfctl -X`; Kite notes whether pf was on before, so a firewall you had on stays on and
+one that was off goes off again. The main ruleset must have the line `anchor "com.apple/*" all`
+(the default has). The
 rules go up before the routes and come off after them. They are kernel state, so they outlive the
 Kite process: after a crash, a daemon that was killed or an error of the tunnel, traffic stays
 blocked until `sudo kite restore`, `kite disconnect` or the next `kite connect` without
 `--kill-switch`, and launchd starting the daemon again does not lift them. A reboot clears them.
-Packets of connections that were open before are blocked too, since they have no pf state.
+Packets of connections that were open before are blocked too, since they have no pf state; Kite's own
+pass rules keep no state for that reason. A block that a crash left also stops a `kite connect
+--kill-switch` to a different phone (it passes only the old relay): run `sudo kite restore` first.
+Stopping the daemon (a package upgrade, `launchctl bootout`, shutdown) is an orderly stop and lifts
+the block.
 
 ## kite status
 
