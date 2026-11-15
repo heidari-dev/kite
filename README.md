@@ -15,13 +15,13 @@ Android and iPhone.
 
 Heading for 0.1.0; the first release candidate is `0.1.0-rc.1`.
 
-What works: an Android phone and a Linux computer, over USB (through adb) or WiFi. The computer can
+What works: an Android phone or an iPhone and a Linux computer, over USB (through adb, or usbmuxd for the iPhone) or WiFi. The computer can
 send everything through the phone (TUN mode) or only what you point at a local SOCKS5 proxy (proxy
 mode). A kill switch that blocks traffic while the phone is disconnected is there and off until you
 turn it on. Linux has a desktop app with a tray icon, and `.deb` and AppImage packages. The link is
 encrypted with Noise, and both sides are paired once with a 6-digit code.
 
-Windows has the same, with an MSI installer: see [Kite on Windows](docs/windows.md). Coming: iPhone and macOS. See the [roadmap](ROADMAP.md).
+Windows has the same, with an MSI installer: see [Kite on Windows](docs/windows.md). The iPhone app is sideloaded: see [Kite for iPhone](apps/ios/README.md). Coming: macOS. See the [roadmap](ROADMAP.md).
 
 ## Install on Linux
 

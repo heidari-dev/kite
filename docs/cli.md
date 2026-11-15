@@ -73,7 +73,8 @@ kite disconnect
 ```
 
 `kite disconnect` closes the tunnel and, with it, the routes it set up. `kite devices` lists the
-phones the adb server sees, as `serial state`.
+phones connected by USB as `serial state`: iPhones (state `iPhone`, the serial is the UDID) and the
+Android phones the adb server sees.
 
 ## kite pair
 
@@ -117,8 +118,8 @@ could not come up) and the tunnel lives on in the daemon until `kite disconnect`
 |--------|---------|---------|
 | `--tcp HOST:PORT` | Relay to connect to over the network. A name is resolved once; every address is tried for up to 10 s in total. One of `--tcp` and `--usb` is required. | none |
 | `--wifi [ADDR[:PORT]]` | Reach the phone on the same WiFi or on its hotspot. Without an address kite looks for the phone with mDNS. See [WiFi](#wifi). | off |
-| `--usb` | Reach the relay on a phone connected by USB, through a running adb server (`adb.exe` on Windows). | off |
-| `--serial SERIAL` | With `--usb`: the phone to use when several are connected. | the only phone |
+| `--usb` | Reach the relay on a phone connected by USB: an iPhone through usbmuxd, else an Android phone through a running adb server or directly. See [USB](#usb). | off |
+| `--serial SERIAL` | With `--usb`: the phone to use when several are connected, an iPhone's UDID or an Android serial. | the only phone |
 | `--listen ADDR` | Proxy mode only. `IP:PORT` of the local SOCKS5 proxy. It must be a loopback address. | `127.0.0.1:1080` |
 | `--tun` | TUN mode (Linux and Windows): send all traffic and DNS of this computer through the relay. Cannot be combined with `--listen`. | off |
 | `--kill-switch` | Linux only. With `--tun`: while the link to the phone is down, block all traffic and reconnect, until `kite disconnect`. With `--tcp` or `--wifi ADDR` the relay must be an IP address: a name would be looked up again at every redial, into the block. See [Kill switch](#kill-switch). | off |
@@ -138,6 +139,32 @@ Stop kite with Ctrl+C or SIGTERM. It closes local connections, closes the tunnel
 If the relay closes the tunnel or it fails, kite prints the error and exits with 1.
 
 ### USB
+
+An iPhone connected by USB wins: `--usb` and `--usb --serial UDID` use it when usbmuxd lists one, and
+Android phones are tried otherwise. With several iPhones, or an iPhone and an Android phone and a
+`--serial` that names the Android one, give `--serial`.
+
+#### iPhone
+
+`--usb` asks usbmuxd, the service that owns the USB link to Apple devices, to open a connection to
+port 47810 of the iPhone. The Kite app listens on that port on its loopback address while it shares,
+and it is the only thing there; the stream carries the same tunnel as `--tcp`, so proxy and TUN mode
+work the same. usbmuxd is the one macOS ships, `usbmuxd` on Linux (`apt install usbmuxd`, which also
+lets the phone's "Trust This Computer" prompt appear) and Apple Mobile Device Support on Windows
+(it comes with iTunes or Apple Devices). Kite does not ask for any key: the iPhone must be unlocked
+and trusted by the computer, as for any tool that uses it. Only iPhones attached by USB count, not
+the ones usbmuxd sees over WiFi sync. Open Kite on the iPhone and tap Start sharing first.
+
+```
+kite pair --usb       # once: allow the computer in Kite, type the code Kite shows
+kite connect --usb
+```
+
+If the iPhone is not found, kite says whether usbmuxd is missing, the iPhone is not trusted, or the
+Kite app is not listening (open it and start sharing). Unplugging the iPhone, or leaving the app,
+closes the tunnel: kite prints the error and exits with 1.
+
+#### Android
 
 `--usb` finds the connected phones, picks one, and opens the abstract socket `kite` on it; that
 stream carries the same tunnel as `--tcp`, so proxy and TUN mode work the same. It needs USB
