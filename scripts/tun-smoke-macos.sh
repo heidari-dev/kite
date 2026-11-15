@@ -7,8 +7,14 @@
 # the connection is then closed by the relay) and that name lookups no longer reach the resolvers
 # of the network.
 #
+# It also tests the kill switch: with the tunnel's routes taken away, as if the device were gone, a
+# connection to 1.1.1.1 and a DNS query to 8.8.8.8 must fail while the kill switch is on and the
+# relay is dead, and work again after disconnect. A daemon that is killed leaves the block up until
+# `kite restore`. It needs a working Internet connection for that, and pf must be as it was (off
+# or on) before and after.
+#
 # Usage: sudo bash scripts/tun-smoke-macos.sh path/to/kite path/to/relay-dev
-# It changes this machine's routes and DNS settings while it runs, and puts them back.
+# It changes this machine's routes, DNS settings and pf rules while it runs, and puts them back.
 set -euo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "run this as root" >&2; exit 1; }
@@ -54,6 +60,27 @@ route_device() { route -n get "$1" | awk '/interface:/ { print $2 }'; }
 dns_key() { scutil <<<'show State:/Network/Service/kite/DNS' | grep -q 'ServerAddresses'; }
 resolver_listed() { scutil --dns | grep -q 'nameserver\[[0-9]*\] : 1\.1\.1\.1'; }
 resolves() { [ -n "$(dscacheutil -q host -a name example.com)" ]; }
+anchor_rules() { pfctl -a com.apple/kite -s rules 2>/dev/null; }
+pf_status() { pfctl -s info 2>/dev/null | awk '/^Status:/ { print $2 }'; }
+PF_BEFORE=$(pf_status)
+
+# A connection and a DNS query that do not use the tunnel's routes, to servers outside this machine.
+reach() { curl -sS -o /dev/null --connect-timeout 5 -m 8 http://1.1.1.1/ >/dev/null 2>&1; }
+reach_dns() { [ -n "$(dig +time=3 +tries=1 +short @8.8.8.8 example.com 2>/dev/null)" ]; }
+# As if the device were gone: the routes of the tunnel off, the rest of the tunnel as it was.
+drop_routes() {
+  for half in 0.0.0.0/1 128.0.0.0/1; do route -n delete -inet "$half" >/dev/null 2>&1 || true; done
+  for half in ::/1 8000::/1; do route -n delete -inet6 "$half" >/dev/null 2>&1 || true; done
+  sleep 1
+}
+assert_open() {
+  reach || fail "$1: a connection to 1.1.1.1 does not get out"
+  reach_dns || fail "$1: a DNS query to 8.8.8.8 gets no answer"
+}
+assert_blocked() {
+  if reach; then fail "$1: a connection to 1.1.1.1 got out of the computer"; fi
+  if reach_dns; then fail "$1: a DNS query to 8.8.8.8 got out of the computer"; fi
+}
 
 is_up() {
   local dev
@@ -64,6 +91,7 @@ is_up() {
 is_clean() {
   [ -z "$(tunnel_device)" ] && ! dns_key && ! resolver_listed \
     && ! route_device 1.1.1.1 | grep -q '^utun' \
+    && [ -z "$(anchor_rules)" ] && [ "$(pf_status)" = "$PF_BEFORE" ] \
     && [ ! -s /var/db/kite/tun.state ]
 }
 
@@ -92,41 +120,77 @@ assert_clean() {
 resolves || fail "this machine cannot resolve names before the test"
 assert_clean "before the test"
 
-"$RELAY_DEV" "$RELAY" --refuse-external >"$WORK/relay.log" 2>&1 &
-pids="$pids $!"
-wait_for "relay-dev" grep -q listening "$WORK/relay.log"
+start_relay() { # log name
+  "$RELAY_DEV" "$RELAY" --refuse-external >"$WORK/$1.log" 2>&1 &
+  relay=$!
+  pids="$pids $relay"
+  wait_for "relay-dev" grep -q listening "$WORK/$1.log"
+}
+
+# Pairing: kite pair asks for the code the phone would show.
+pair() { # log name
+  {
+    for _ in $(seq 1 100); do
+      code=$(grep -o 'pairing code [0-9]*' "$WORK/$1.log" | tail -1 | grep -o '[0-9]*$' || true)
+      if [ -n "$code" ]; then
+        echo "$code"
+        break
+      fi
+      sleep 0.3
+    done
+  } | kite pair --tcp "$RELAY" || fail "pairing failed"
+}
+
+start_relay relay
 "$KITE" daemon --socket "$SOCK" --state-dir "$WORK/state" >"$WORK/daemon.log" 2>&1 &
 daemon=$!
 pids="$pids $daemon"
 wait_for "the daemon" grep -q 'daemon ready' "$WORK/daemon.log"
 [ "$(stat -f '%Lp' "$SOCK")" = 660 ] || fail "the socket is not 0660"
 
-# Pairing: kite pair asks for the code the phone would show.
-{
-  for _ in $(seq 1 100); do
-    code=$(grep -o 'pairing code [0-9]*' "$WORK/relay.log" | tail -1 | grep -o '[0-9]*$' || true)
-    if [ -n "$code" ]; then
-      echo "$code"
-      break
-    fi
-    sleep 0.3
-  done
-} | kite pair --tcp "$RELAY" || fail "pairing failed"
+pair relay
 
 # A clean disconnect takes everything away.
 kite connect --tcp "$RELAY" --tun
 assert_up
 kite status
+# Without the kill switch nothing stops a connection that does not use the tunnel's routes; this is
+# what the next part must see blocked.
+drop_routes
+assert_open "without the kill switch, tunnel routes gone"
 kite disconnect
 assert_clean "after disconnect"
 
-# A daemon that is killed leaves the resolver behind; restore takes it away.
-kite connect --tcp "$RELAY" --tun
+# The kill switch: the phone goes away, the tunnel's routes go too, and nothing may leave.
+kite connect --tcp "$RELAY" --tun --kill-switch
+assert_up
+kite status | grep -q 'kill switch: on' || fail "status does not show the kill switch"
+kill -9 "$relay"
+wait "$relay" 2>/dev/null || true
+reconnecting() { kite status | grep -q 'state: reconnecting'; }
+wait_for "the tunnel to notice the lost relay" reconnecting
+anchor_rules | grep -q 'block return out quick all' || fail "the kill switch's rules are not in pf"
+drop_routes
+assert_blocked "kill switch on, relay gone"
+echo "kill switch: nothing gets out while the relay is gone"
+kite disconnect
+assert_clean "after disconnect with the kill switch"
+assert_open "after disconnect with the kill switch"
+echo "kill switch: lifted by disconnect"
+
+# A new relay, a new pairing.
+start_relay relay2
+pair relay2
+
+# A daemon that is killed leaves the resolver and the block behind; restore takes them away.
+kite connect --tcp "$RELAY" --tun --kill-switch
 assert_up
 kill -9 "$daemon"
 wait "$daemon" 2>/dev/null || true
 sleep 2
 echo "after the kill: device=$(tunnel_device) resolver=$(dns_key && echo yes || echo no)"
+assert_blocked "after the daemon was killed with the kill switch on"
 "$KITE" restore || fail "kite restore failed"
 assert_clean "after kill and restore"
+assert_open "after kill and restore"
 echo "ok"
