@@ -245,7 +245,13 @@ impl Daemon {
                 Err(e) => Response::err(e.to_string()),
             },
             Request::RemovePeer { key } => match self.store.remove_phone(&key) {
-                Ok(phone) => peers(vec![hex(&phone)]),
+                Ok(phone) => {
+                    // The open tunnel to it ends too, and it is not dialled again.
+                    if let Some(active) = &self.inner().session {
+                        active.shared.unpair(&phone);
+                    }
+                    peers(vec![hex(&phone)])
+                }
                 Err(e) => Response::err(e.to_string()),
             },
         }
@@ -494,7 +500,7 @@ async fn session(
     };
     tokio::pin!(stopped);
     let started = tokio::select! {
-        r = session::start(&p, &store) => r?,
+        r = session::start(&p, &store, &shared) => r?,
         () = &mut stopped => return Ok(()),
     };
     started.serve(&shared, stopped).await
@@ -627,6 +633,80 @@ mod tests {
             let r = ask(&d.socket, start).await;
             assert!(!r.ok && !r.error.unwrap().contains("already"));
         }
+        d.end().await;
+    }
+
+    #[tokio::test]
+    async fn removing_a_phone_ends_the_open_tunnel_and_the_redial() {
+        use kite_relay::noise::StaticKey;
+        let d = start("unpair").await;
+        if !os::test_is_admin() {
+            return d.end().await;
+        }
+        // A phone that has this daemon paired.
+        let store = Store::at(d.dir.join("state")).unwrap();
+        let phone = Arc::new(StaticKey::generate().unwrap());
+        store.add_phone(phone.public().unwrap()).unwrap();
+        let pairing = Arc::new(kite_relay::pair::Pairing::new(vec![store
+            .key()
+            .unwrap()
+            .public()
+            .unwrap()]));
+        let relay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = relay.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = relay.accept().await {
+                let (phone, pairing) = (phone.clone(), pairing.clone());
+                tokio::spawn(async move {
+                    let s = kite_relay::pair::accept(stream, &phone, &pairing).await?;
+                    kite_relay::pair::serve(s, kite_relay::Config::default(), &pairing).await
+                });
+            }
+        });
+
+        let connect = format!(
+            r#"{{"cmd":"connect","transport":{{"type":"tcp","addr":"{addr}"}},"mode":"proxy","listen":"127.0.0.1:0"}}"#
+        );
+        assert!(ask(&d.socket, &connect).await.ok);
+        let state = || async { ask(&d.socket, r#"{"cmd":"status"}"#).await.status.unwrap() };
+        timeout(Duration::from_secs(5), async {
+            while state().await.state != State::Connected {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the tunnel did not come up");
+
+        let key = hex(&store.phones().unwrap()[0]);
+        let line = format!(r#"{{"cmd":"remove_peer","key":"{key}"}}"#);
+        assert!(ask(&d.socket, &line).await.ok);
+        let ended = timeout(Duration::from_secs(5), async {
+            loop {
+                let s = state().await;
+                if s.state == State::Idle {
+                    return s.error;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the tunnel to the removed phone is still up");
+        assert!(ended.unwrap().contains("unpaired"));
+
+        // Connecting again fails until the phone is paired again.
+        assert!(ask(&d.socket, &connect).await.ok);
+        let again = timeout(Duration::from_secs(5), async {
+            loop {
+                let s = state().await;
+                if s.state == State::Idle {
+                    return s.error;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(again.unwrap().contains("not paired"));
         d.end().await;
     }
 
