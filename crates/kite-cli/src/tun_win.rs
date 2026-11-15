@@ -16,9 +16,15 @@
 //!   the tunnel carries to the phone. Without it Windows asks the DNS servers of all adapters at
 //!   once and the answer from the local one wins the race.
 //!
-//! There is no kill switch on Windows yet: a crash leaves the adapter's routes in place only while
-//! the adapter exists, and the DNS rule until the next start or `restore`.
+//! With the kill switch (opt-in) Windows Filtering Platform filters also block every connection that
+//! does not go through the adapter, to this program's relay or on the loopback, see
+//! `kite_win::firewall`. They go up before the routes do and come off after them, and while the phone
+//! is away and the session redials they stay. They live in a dynamic WFP session, so the system
+//! removes them when this process ends, however it ends: a crash lifts the block, and never leaves
+//! the computer offline. Without the kill switch a crash leaves the adapter's routes in place only
+//! while the adapter exists, and the DNS rule until the next start or `restore`.
 
+use kite_win::firewall;
 use kite_win::route::{self, Route};
 use std::future::Future;
 use std::io;
@@ -61,7 +67,7 @@ const HALVES: [(IpAddr, u8); 4] = [
 /// that reaches the proxy at `proxy` through a tunnel to the relay, until the token it is given is
 /// cancelled. `relay` is the address that tunnel connects to, so it can stay out of the tunnel.
 ///
-/// There is no kill switch here, see the module comment: `kill_switch` must be false.
+/// With `kill_switch`, everything but the tunnel is blocked until this returns.
 pub async fn run<F, Fut>(
     proxy: SocketAddr,
     relay: Option<IpAddr>,
@@ -73,22 +79,17 @@ where
     F: FnOnce(CancellationToken) -> Fut,
     Fut: Future<Output = io::Result<()>>,
 {
-    if kill_switch {
-        return Err(io::Error::other(
-            "the kill switch is not available on Windows yet",
-        ));
-    }
     let _lock = lock()?;
     // Whatever a kite that was killed left behind.
-    undo().await?;
+    undo(false).await?;
     let device = create()?;
-    serve(device, proxy, relay, serve_link, shutdown).await
+    serve(device, proxy, relay, kill_switch, serve_link, shutdown).await
 }
 
 /// Deletes what a TUN mode run that was killed left behind. Fails while another one is running.
 pub async fn restore() -> io::Result<()> {
     let _lock = lock()?;
-    undo().await
+    undo(true).await
 }
 
 /// Where the lock and the state live: the daemon's private directory.
@@ -155,6 +156,7 @@ async fn serve<F, Fut>(
     device: tun::AsyncDevice,
     proxy: SocketAddr,
     relay: Option<IpAddr>,
+    kill_switch: bool,
     serve_link: F,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()>
@@ -166,15 +168,17 @@ where
         u32::try_from(device.tun_index().map_err(io::Error::other)?).map_err(io::Error::other)?;
     // Polled from the start, so a signal during setup still ends in a clean restore.
     tokio::pin!(shutdown);
-    tokio::select! {
-        r = setup(index, relay) => {
-            if let Err(e) = r {
-                let _ = undo().await;
+    // Dropping it lifts the block too, which `undo` does explicitly first.
+    let block = tokio::select! {
+        r = setup(index, relay, kill_switch) => match r {
+            Ok(block) => block,
+            Err(e) => {
+                let _ = undo(kill_switch).await;
                 return Err(e);
             }
-        }
-        () = &mut shutdown => return undo().await,
-    }
+        },
+        () = &mut shutdown => return undo(kill_switch).await,
+    };
 
     let proxy_url = format!("socks5://{proxy}");
     let mut args = Args::default();
@@ -209,9 +213,9 @@ where
         proxied.and(tunneled.map(drop).map_err(io::Error::from))
     };
     tokio::pin!(work);
-    // From the moment the tunnel is told to end, the routes and the DNS rule come off at once,
-    // beside the tasks winding down, so the computer is back on its own network whatever those
-    // tasks do. The tasks get TEARDOWN, then they are dropped.
+    // From the moment the tunnel is told to end, the routes, the DNS rule and the block come off at
+    // once, beside the tasks winding down, so the computer is back on its own network whatever
+    // those tasks do. The tasks get TEARDOWN, then they are dropped.
     let (result, cleaned) = tokio::join!(
         async {
             tokio::select! {
@@ -224,9 +228,10 @@ where
         },
         async {
             token.cancelled().await;
-            undo().await
+            undo(kill_switch).await
         },
     );
+    drop(block);
     result.and(cleaned)
 }
 
@@ -244,8 +249,18 @@ fn tunnel_routes(luid: u64) -> impl Iterator<Item = Route> {
     })
 }
 
-async fn setup(index: u32, relay: Option<IpAddr>) -> io::Result<()> {
+async fn setup(
+    index: u32,
+    relay: Option<IpAddr>,
+    kill_switch: bool,
+) -> io::Result<Option<firewall::KillSwitch>> {
     let luid = route::luid_of_index(index)?;
+    // Before the routes change, so nothing leaks between the two.
+    let block = if kill_switch {
+        Some(firewall::engage(luid, relay)?)
+    } else {
+        None
+    };
     // The relay's way out, before the tunnel's routes change it. A more specific route than the
     // halves (a LAN) keeps winning on its own; only the default route needs a host route beside it.
     let bypass = match relay.filter(|ip| !ip.is_loopback()) {
@@ -277,12 +292,15 @@ async fn setup(index: u32, relay: Option<IpAddr>) -> io::Result<()> {
     powershell(&format!(
         "Add-DnsClientNrptRule -Namespace '.' -NameServers '{DNS}' -Comment '{RULE}'"
     ))
-    .await
+    .await?;
+    Ok(block)
 }
 
 /// Everything TUN mode adds, taken away; what is not there is skipped, so this runs again and
-/// again. The first error is returned after the rest has been tried.
-async fn undo() -> io::Result<()> {
+/// again. The first error is returned after the rest has been tried. The block of the kill switch
+/// is lifted last, only when `kill_switch` says there may be one, so that a computer without the
+/// firewall service still connects without it.
+async fn undo(kill_switch: bool) -> io::Result<()> {
     let mut first = Ok(());
     let mut note = |r: io::Result<()>| {
         if first.is_ok() {
@@ -306,6 +324,9 @@ async fn undo() -> io::Result<()> {
         ))
         .await,
     );
+    if kill_switch {
+        note(firewall::lift());
+    }
     if first.is_ok() {
         let _ = std::fs::remove_file(dir()?.join("tun.state"));
     }

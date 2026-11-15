@@ -317,9 +317,6 @@ impl Daemon {
         kill_switch: bool,
         listen: Option<SocketAddr>,
     ) -> Response {
-        if kill_switch && cfg!(windows) {
-            return Response::err("the kill switch is not available on Windows yet");
-        }
         if kill_switch && cfg!(target_os = "macos") {
             return Response::err("the kill switch is not available on macOS yet");
         }
@@ -657,19 +654,6 @@ mod tests {
         };
         let err = run(opts, std::future::pending()).await.unwrap_err();
         assert!(err.to_string().contains("already running"), "{err}");
-        d.end().await;
-    }
-
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn refuses_the_kill_switch_on_windows() {
-        let d = start("killswitch").await;
-        let r = ask(
-            &d.socket,
-            r#"{"cmd":"connect","transport":{"type":"tcp","addr":"127.0.0.1:9"},"mode":"tun","kill_switch":true}"#,
-        )
-        .await;
-        assert!(r.error.unwrap().contains("not available on Windows"));
         d.end().await;
     }
 }

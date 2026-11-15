@@ -48,7 +48,7 @@ const USAGE: &str = "usage:
   kite connect (--tcp HOST:PORT | --wifi [ADDR[:PORT]] | --usb [--serial SERIAL]) --tun [--kill-switch]
       Send all traffic and DNS of this computer through the relay (Linux, needs
       CAP_NET_ADMIN; macOS, needs root; Windows, needs an administrator). With --kill-switch (Linux
-      only), block everything while the link is down and reconnect when the phone
+      and Windows), block everything while the link is down and reconnect when the phone
       is back, until kite disconnect.
   kite disconnect
       Close the tunnel and lift the kill switch.
@@ -406,9 +406,6 @@ fn parse_connect(args: &[String]) -> io::Result<Connect> {
     let mut it = args.iter().peekable();
     while let Some(flag) = it.next() {
         if flag == "--kill-switch" {
-            if cfg!(windows) {
-                return Err(usage("--kill-switch is not available on Windows yet"));
-            }
             if cfg!(target_os = "macos") {
                 return Err(usage("--kill-switch is not available on macOS yet"));
             }
@@ -680,9 +677,9 @@ async fn status(_: &Path) -> io::Result<()> {
 mod tests {
     use super::{parse_connect, Transport};
 
-    /// TUN mode exists on Linux, macOS and Windows; the kill switch on Linux only.
+    /// TUN mode exists on Linux, macOS and Windows; the kill switch on Linux and Windows.
     const TUN: bool = cfg!(any(target_os = "linux", target_os = "macos", windows));
-    const KILL_SWITCH: bool = cfg!(target_os = "linux");
+    const KILL_SWITCH: bool = cfg!(any(target_os = "linux", windows));
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
