@@ -156,6 +156,27 @@ jobs:
       - name: TUN mode smoke test
         run: sudo bash scripts/tun-smoke-macos.sh target/release/kite target/release/examples/relay-dev
 
+  # The macOS package: built as a universal binary, installed on the runner (its postinstall loads
+  # the daemon), used by an administrator, then taken off again with its own uninstall script.
+  pkg-macos:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: scripts/build-macos.sh
+      - run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "kite-cli") | .version')
+          scripts/package-macos.sh "$version" target/universal dist
+      - name: Install, use, uninstall
+        run: sudo bash scripts/test-pkg-macos.sh dist/Kite-*.pkg
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kite-macos-package
+          path: dist/*.pkg
+          retention-days: 14
+
   # The installer: installs it on the runner, runs the TUN smoke test against the installed service
   # (with its cut-down token), uninstalls it and checks that nothing is left.
   msi-windows:

@@ -1,0 +1,18 @@
+#!/bin/sh
+# Before the files are written: stops the daemon and the tray icon of an older version, and makes
+# sure the directory the daemon runs from, if it is already there, belongs to root and is closed to
+# everyone else (the daemon runs the program in it as root).
+set -u
+[ "${3:-/}" = / ] || exit 0
+label=io.github.heidari-dev.kite
+uid=$(/usr/bin/stat -f %u /dev/console 2>/dev/null)
+if [ -n "$uid" ] && [ "$uid" != 0 ]; then
+  /bin/launchctl bootout "gui/$uid/$label.desktop" 2>/dev/null
+fi
+/usr/bin/pkill -x kite-desktop 2>/dev/null
+/bin/launchctl bootout "system/$label" 2>/dev/null
+support="/Library/Application Support/Kite"
+if [ -e "$support" ] || [ -L "$support" ]; then
+  /bin/rm -rf "$support"
+fi
+exit 0

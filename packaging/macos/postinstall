@@ -1,0 +1,15 @@
+#!/bin/sh
+# Starts the daemon, and the tray icon for the user who is signed in.
+set -u
+[ "${3:-/}" = / ] || exit 0
+label=io.github.heidari-dev.kite
+# An older run may have left the job loaded or disabled; start from a clean slate.
+/bin/launchctl bootout "system/$label" 2>/dev/null
+/bin/launchctl enable "system/$label" 2>/dev/null
+/bin/launchctl bootstrap system "/Library/LaunchDaemons/$label.plist" || exit 1
+uid=$(/usr/bin/stat -f %u /dev/console 2>/dev/null)
+if [ -n "$uid" ] && [ "$uid" != 0 ]; then
+  /bin/launchctl bootout "gui/$uid/$label.desktop" 2>/dev/null
+  /bin/launchctl bootstrap "gui/$uid" "/Library/LaunchAgents/$label.desktop.plist" 2>/dev/null
+fi
+exit 0
