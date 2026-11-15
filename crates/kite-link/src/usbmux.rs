@@ -67,10 +67,17 @@ pub async fn devices() -> io::Result<Vec<Device>> {
 /// Opens a stream to the Kite app on the iPhone with UDID `serial`, or on the only one, at TCP
 /// port `port` of the iPhone.
 pub async fn open(serial: Option<&str>, port: u16) -> io::Result<TcpStream> {
-    let mut mux = connect_with(&dial, serial, port).await?;
-    let (client, mut server) = crate::bridge::loopback_pair().await?;
+    let mux = connect_with(&dial, serial, port).await?;
+    let (client, server) = crate::bridge::loopback_pair().await?;
     tokio::spawn(async move {
-        let _ = tokio::io::copy_bidirectional(&mut mux, &mut server).await;
+        // The tunnel ends with either direction, so a phone that ignores a half-close cannot
+        // keep this task and its sockets open.
+        let (mut from_phone, mut to_phone) = tokio::io::split(mux);
+        let (mut from_kite, mut to_kite) = server.into_split();
+        tokio::select! {
+            _ = tokio::io::copy(&mut from_phone, &mut to_kite) => {}
+            _ = tokio::io::copy(&mut from_kite, &mut to_phone) => {}
+        }
     });
     Ok(client)
 }
@@ -127,7 +134,7 @@ where
     let extra = format!(
         "<key>DeviceID</key><integer>{}</integer><key>PortNumber</key><integer>{}</integer>",
         device.id,
-        port.swap_bytes()
+        port.to_be()
     );
     send(&mut mux, 2, &message("Connect", &extra)).await?;
     match parse_result(&receive(&mut mux, 2).await?)? {

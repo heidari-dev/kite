@@ -19,11 +19,15 @@ const IPHONE: &str = "iPhone";
 /// to TCP port `port` of the iPhone), else an Android phone (adb, with the ADB key in `adb_key`).
 /// `serial` picks one of several, whichever kind it belongs to.
 pub async fn open(serial: Option<&str>, port: u16, adb_key: &Path) -> io::Result<TcpStream> {
-    if wants_iphone(&iphones().await?, serial) {
-        usbmux::open(serial, port).await
-    } else {
-        adb::open(serial, adb_key).await
+    // A usbmuxd that does not work must not stop an Android phone from being used.
+    let phones = iphones().await;
+    if wants_iphone(phones.as_deref().unwrap_or_default(), serial) {
+        return usbmux::open(serial, port).await;
     }
+    adb::open(serial, adb_key).await.map_err(|e| match phones {
+        Err(usbmuxd) => io::Error::new(e.kind(), format!("{e} (usbmuxd: {usbmuxd})")),
+        Ok(_) => e,
+    })
 }
 
 /// The phones connected by USB as `(serial, state)`: the iPhones, then the Android phones.
