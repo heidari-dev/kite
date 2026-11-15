@@ -243,7 +243,7 @@ class RelayService : Service() {
             worker.execute { WifiShare.sync(app, relay) }
         }
 
-        /** Unpairs a computer, running or not. A tunnel it has up keeps running until it closes. */
+        /** Unpairs a computer, running or not. Its open tunnel ends right away. */
         fun removePeer(context: Context, key: ByteArray) {
             val app = context.applicationContext
             worker.execute {

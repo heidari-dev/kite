@@ -224,6 +224,11 @@ pub struct Session<T> {
 }
 
 impl<T> Session<T> {
+    /// The other side's static key, as proven by the handshake.
+    pub fn peer_key(&self) -> Option<[u8; KEY_LEN]> {
+        self.noise.get_remote_static()?.try_into().ok()
+    }
+
     fn new(io: T, noise: snow::TransportState) -> Self {
         Self {
             io,

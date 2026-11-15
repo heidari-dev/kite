@@ -138,7 +138,7 @@ final class Sharing {
         refresh()
     }
 
-    /// Unpairs a computer, running or not. A tunnel it has up keeps running until it closes.
+    /// Unpairs a computer, running or not. Its open tunnel ends right away.
     func remove(_ key: Data) {
         if let relay {
             _ = relay.removePeer(key: key)
