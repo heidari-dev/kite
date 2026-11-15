@@ -89,6 +89,22 @@ allows every pairing request and is for development only.
 | D | Android kills the service with the screen off and the computer loses its link. | The app asks once to run without battery limits (`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, a normal permission); the user decides in a system dialog. Sharing works without it. | app | done |
 
 
+## iPhone app
+
+See [apps/ios](../apps/ios/README.md). The relay runs only while the app is in front and listens
+on TCP only; there is no USB transport yet.
+
+| | Threat | Mitigation | Owner | Status |
+|---|--------|------------|-------|--------|
+| E | The listener is reachable from mobile data, a VPN or a public address. | Only private IPv4 addresses of interfaces that are up, are not loopback or point-to-point, and are named `en` (WiFi, ethernet) or `bridge` (Personal Hotspot); `pdp_ip` (mobile data), `utun` and `ipsec` (VPN) and anything unknown are left out. The app looks again every 4 s, and the relay refuses any address that is not private IPv4. Admission caps and pairing are the same as on Android (`kite-relay::wifi`). | app, `kite-relay` | done |
+| I | Keys leave the phone through backups, iCloud or another device. | The relay's key and the paired computers' keys are Keychain items with `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`: not in backups, not synced, readable only while unlocked. The app wipes its copy of the key once the relay has it; the relay wipes its own. | app | done |
+| I | The pairing code leaks through the app switcher, a recording or logs. | The screen is covered while the app is not active, so the switcher's picture has no code. The code is hidden while the screen is recorded or mirrored. iOS gives apps no way to block a screenshot. The app logs nothing. | app | done |
+| I | Traffic between the app and the computer is readable or downgraded. | Noise on every connection; the app makes no HTTP requests and has no App Transport Security exceptions. | `kite-relay`, app | done |
+| I | The announcement tells the network more than it should. | `_kite._tcp` with the name `Kite` and a TXT record holding a version only, while the relay listens. iOS asks the user for local network access first. | app | done |
+| D | A computer keeps a tunnel through a suspended app. | Sharing stops when the app goes to the background and the relay closes every connection; it starts again when the app is back. | app | done |
+| T | The installed app is altered. | It is sideloaded unsigned and signed on the phone by SideStore or AltStore with the user's Apple ID; the IPA comes from CI. There is no App Store review or notarisation. | user | accepted |
+
+
 ## B2: local IPC
 
 The daemon owns the privileges. The CLI and the desktop app are unprivileged clients. The Linux
@@ -140,7 +156,8 @@ Besides the abstract socket, the relay's only listener is the optional WiFi one 
   administrators each time kite opens it, and kite refuses a directory that somebody else owns.
   **Done.**
 - Phone: the relay takes the key as bytes and wipes them; the app keeps it encrypted with an AES key
-  in Android Keystore (iOS Keychain with `ThisDeviceOnly` is planned). **Done** on Android.
+  in Android Keystore; on iOS both keys are Keychain items with
+  `WhenUnlockedThisDeviceOnly`. **Done.**
 - Keys are zeroized after use and never logged. snow 0.10 keeps its own copies in the handshake
   and cipher state without wiping them. **Done**, with that limit.
 - Pairing codes expire after 2 minutes, are compared in constant time and never logged by the
