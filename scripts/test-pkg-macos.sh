@@ -41,9 +41,12 @@ plutil -lint /Library/LaunchDaemons/$label.plist /Library/LaunchAgents/$label.de
 /usr/local/bin/kite --version
 
 # An administrator may use the daemon: the user who ran sudo is one on a runner.
-out=$(sudo -u "$user" /usr/local/bin/kite status 2>&1) || true
-echo "$out"
-grep -q 'state: idle' <<<"$out" || fail "an administrator cannot reach the daemon"
+if ! out=$(sudo -u "$user" /usr/local/bin/kite peers 2>&1); then
+  ls -ldO /var/run/kite /var/run/kite/kite.sock >&2 || true
+  id "$user" >&2
+  fail "an administrator cannot reach the daemon: $out"
+fi
+echo "an administrator reaches the daemon: ${out:-no phones paired}"
 
 "$support/uninstall.sh"
 
