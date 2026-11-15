@@ -15,8 +15,23 @@
 //! - A DNS resolver in the system configuration (`State:/Network/Service/kite/DNS`) that matches
 //!   every name and sends it to 1.1.1.1, which the tunnel carries to the phone.
 //!
-//! There is no kill switch on macOS yet: a crash leaves the DNS resolver until the next start of
-//! the daemon or `restore`, and the host route likewise.
+//! With the kill switch (opt-in) pf also blocks every packet that does not go out through the
+//! device, to the relay (its address and port) or on the loopback, plus DHCP and IPv6 link
+//! discovery, so a lost phone or a lost device never leaks, DNS included:
+//!
+//! - The rules live in the anchor `com.apple/kite`, loaded with `pfctl -a ... -f -`. Under `com.apple`
+//!   because the main ruleset macOS ships has `anchor "com.apple/*"`, so Kite never rewrites the
+//!   user's main ruleset; it checks that line is there and refuses to start without it, rather than
+//!   run a block that does nothing.
+//! - pf is enabled with `pfctl -E`, which counts a reference (a token, kept in `tun.state`) instead
+//!   of switching it on; `pfctl -X` gives it back, so a firewall the user had on stays on and one
+//!   that was off goes off again.
+//! - The block goes up before the routes and comes off after them. It is kernel state: it outlives
+//!   a crash of kite until `restore`, `kite disconnect` or the next connect without the kill
+//!   switch, and a reboot clears it. The daemon does not lift it when launchd starts it again.
+//!
+//! Without the kill switch a crash leaves the DNS resolver until the next start of the daemon or
+//! `restore`, and the host route likewise.
 //!
 //! Every command runs by its full path with an empty environment, and the only values that reach a
 //! command line are parsed IP addresses and interface names checked for their characters.
@@ -47,6 +62,8 @@ const ROUTE: &str = "/sbin/route";
 const SCUTIL: &str = "/usr/sbin/scutil";
 const DSCACHEUTIL: &str = "/usr/bin/dscacheutil";
 const PKILL: &str = "/usr/bin/pkill";
+const PFCTL: &str = "/sbin/pfctl";
+const ANCHOR: &str = "com.apple/kite";
 /// Longest wait for one command.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the tunnel's tasks get to finish once the tunnel is told to end. Past it they are
@@ -62,10 +79,11 @@ const HALVES_V6: [&str; 2] = ["::/1", "8000::/1"];
 /// that reaches the proxy at `proxy` through a tunnel to the relay, until the token it is given is
 /// cancelled. `relay` is the address that tunnel connects to, so it can stay out of the tunnel.
 ///
-/// There is no kill switch here, see the module comment: `kill_switch` must be false.
+/// With `kill_switch`, everything but the tunnel is blocked, and stays so when this ends for any
+/// reason but `shutdown`, until `restore`.
 pub async fn run<F, Fut>(
     proxy: SocketAddr,
-    relay: Option<IpAddr>,
+    relay: Option<SocketAddr>,
     kill_switch: bool,
     serve_link: F,
     shutdown: impl Future<Output = ()>,
@@ -74,22 +92,27 @@ where
     F: FnOnce(CancellationToken) -> Fut,
     Fut: Future<Output = io::Result<()>>,
 {
-    if kill_switch {
-        return Err(io::Error::other(
-            "the kill switch is not available on macOS yet",
-        ));
-    }
+    // A dual-stack connection reports the relay as ::ffff:a.b.c.d; it is a.b.c.d to routes and pf.
+    let relay = relay.map(|a| SocketAddr::new(a.ip().to_canonical(), a.port()));
     let _lock = lock()?;
-    // Whatever a kite that was killed left behind.
-    undo().await?;
+    // Whatever a kite that was killed left behind. A block stays for the kill switch to replace;
+    // without the kill switch it goes.
+    undo(!kill_switch).await?;
     let device = create()?;
-    serve(device, proxy, relay, serve_link, shutdown).await
+    serve(device, proxy, relay, kill_switch, serve_link, shutdown).await
 }
 
 /// Deletes what a TUN mode run that was killed left behind. Fails while another one is running.
 pub async fn restore() -> io::Result<()> {
     let _lock = lock()?;
-    undo().await
+    undo(true).await
+}
+
+/// As `restore`, but a kill switch's block stays: for the daemon that launchd starts again after a
+/// crash, which must not lift what the crashed run put up for the user.
+pub async fn restore_keeping_block() -> io::Result<()> {
+    let _lock = lock()?;
+    undo(false).await
 }
 
 /// The daemon's directory, made for root only if it is missing. One that somebody else owns or can
@@ -145,7 +168,8 @@ fn create() -> io::Result<tun::AsyncDevice> {
 async fn serve<F, Fut>(
     device: tun::AsyncDevice,
     proxy: SocketAddr,
-    relay: Option<IpAddr>,
+    relay: Option<SocketAddr>,
+    kill_switch: bool,
     serve_link: F,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()>
@@ -172,14 +196,17 @@ where
     // Polled from the start, so a signal during setup still ends in a clean restore.
     tokio::pin!(shutdown);
     tokio::select! {
-        r = setup(&name, relay) => {
+        r = setup(&name, relay, kill_switch) => {
             if let Err(e) = r {
-                let _ = undo().await;
+                // A failed start, not a lost tunnel: it restores as usual.
+                let _ = undo(true).await;
                 return Err(e);
             }
         }
-        () = &mut shutdown => return undo().await,
+        () = &mut shutdown => return undo(true).await,
     }
+    // Set when the user ends the tunnel; any other end leaves the kill switch's block up.
+    let stopped = std::cell::Cell::new(false);
 
     let token = CancellationToken::new();
     let work = async {
@@ -196,7 +223,10 @@ where
             },
             async {
                 tokio::select! {
-                    () = shutdown => token.cancel(),
+                    () = shutdown => {
+                        stopped.set(true);
+                        token.cancel();
+                    }
                     () = token.cancelled() => {}
                 }
             },
@@ -219,21 +249,48 @@ where
         },
         async {
             token.cancelled().await;
-            undo().await
+            undo(stopped.get() || !kill_switch).await
         },
     );
+    if kill_switch && !stopped.get() {
+        return result.and(cleaned).and(Err(io::Error::other(
+            "the tunnel ended; traffic stays blocked until `kite restore`",
+        )));
+    }
     result.and(cleaned)
 }
 
-async fn setup(name: &str, relay: Option<IpAddr>) -> io::Result<()> {
+async fn setup(name: &str, relay: Option<SocketAddr>, kill_switch: bool) -> io::Result<()> {
     // The relay's way out, before the tunnel's routes change it. A more specific route than the
     // halves (a LAN) keeps winning on its own; only the default route needs a host route beside it.
-    let bypass = match relay.filter(|ip| !ip.is_loopback()) {
+    let bypass = match relay.map(|a| a.ip()).filter(|ip| !ip.is_loopback()) {
         Some(dest) => default_via(&route_get(dest).await?)?.map(|via| Bypass { dest, via }),
         None => None,
     };
-    let state = State { bypass };
+    let old = State::load()?.pf;
+    let mut state = State { bypass, pf: old };
     state.save()?;
+    if kill_switch {
+        // Before the routes change, so nothing leaks between the two. What was there before the
+        // first reference stays in the state, for the release.
+        let was_on = match old {
+            Some(old) => old.was_on,
+            None => pf_is_on().await,
+        };
+        let new = Pf {
+            token: pf_enable().await?,
+            was_on,
+        };
+        state.pf = Some(new);
+        if let Err(e) = state.save() {
+            pf_release(new).await;
+            return Err(e);
+        }
+        if let Some(old) = old {
+            pf_release(old).await;
+        }
+        pf_load(&rules(name, relay)).await?;
+    }
     if let Some(b) = &state.bypass {
         route(&b.args("add")).await?;
     }
@@ -257,25 +314,143 @@ async fn setup(name: &str, relay: Option<IpAddr>) -> io::Result<()> {
 }
 
 /// Everything TUN mode adds that outlives the device, taken away; what is not there is skipped, so
-/// this runs again and again. The first error is returned after the rest has been tried.
-async fn undo() -> io::Result<()> {
+/// this runs again and again. The first error is returned after the rest has been tried. The kill
+/// switch's block, if there is one, goes only with `lift`, and then last.
+async fn undo(lift: bool) -> io::Result<()> {
     let mut first = Ok(());
     let mut note = |r: io::Result<()>| {
         if first.is_ok() {
             first = r;
         }
     };
+    let mut pf = None;
     match State::load() {
-        Ok(State { bypass: Some(b) }) => note(route(&b.args("delete")).await),
-        Ok(_) => {}
+        Ok(State { bypass, pf: held }) => {
+            if let Some(b) = bypass {
+                note(route(&b.args("delete")).await);
+            }
+            pf = held;
+        }
         Err(e) => note(Err(e)),
     }
     note(scutil(&format!("remove {DNS_KEY}\n")).await);
     flush_dns().await;
+    if lift {
+        // Flushing also works when the rules are not there; the token is given back either way.
+        note(pf_flush().await);
+        if let Some(held) = pf {
+            pf_release(held).await;
+        }
+    }
     if first.is_ok() {
-        let _ = std::fs::remove_file(dir()?.join("tun.state"));
+        let keep = State {
+            bypass: None,
+            pf: pf.filter(|_| !lift),
+        };
+        if keep.text().is_empty() {
+            let _ = std::fs::remove_file(dir()?.join("tun.state"));
+        } else {
+            keep.save()?;
+        }
     }
     first
+}
+
+/// The rules of the block. Everything that is not on the loopback, on the tunnel device or to the
+/// relay is refused (with a reset, so programs fail at once), except DHCP and IPv6 link discovery,
+/// which keep the link to the router or the phone up.
+fn rules(utun: &str, relay: Option<SocketAddr>) -> String {
+    // Stateless, so the link to the relay that was dialled before the rules existed (it has no pf
+    // state) keeps working.
+    let mut r = format!("pass quick on lo0 all no state\npass quick on {utun} all no state\n");
+    // A relay on the loopback is passed above.
+    if let Some(a) = relay.filter(|a| !a.ip().is_loopback()) {
+        r += &format!(
+            "pass out quick proto tcp from any to {} port {} no state\n",
+            a.ip(),
+            a.port()
+        );
+    }
+    r += "pass out quick proto udp from any port 68 to any port 67\n\
+          pass out quick inet6 proto udp from any port 546 to any port 547\n\
+          pass out quick inet6 proto icmp6 all icmp6-type { 130, 131, 132, 133, 134, 135, 136, 137, 143 }\n\
+          block return out quick all\n";
+    r
+}
+
+/// Takes a reference on pf being enabled; the token gives it back.
+async fn pf_enable() -> io::Result<u64> {
+    let out = exec(PFCTL, &["-E"], "").await?;
+    let text = said(&out);
+    match parse_token(&text) {
+        Some(t) if out.status.success() => Ok(t),
+        _ => Err(io::Error::other(format!("pfctl -E failed: {text}"))),
+    }
+}
+
+/// `pfctl -E` says `Token : 1234567890`.
+fn parse_token(text: &str) -> Option<u64> {
+    text.lines()
+        .find_map(|l| l.trim().strip_prefix("Token"))
+        .and_then(|rest| rest.trim().strip_prefix(':'))
+        .and_then(|n| n.trim().parse().ok())
+}
+
+async fn pf_is_on() -> bool {
+    exec(PFCTL, &["-s", "info"], "").await.is_ok_and(|out| {
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .any(|l| l.trim_start().starts_with("Status: Enabled"))
+    })
+}
+
+/// Gives the reference back. Failing leaves pf enabled, which is no leak, so it only says so.
+/// `-X` switches pf off with the last reference, also when the user had switched it on with
+/// `pfctl -e`; then it is switched on again.
+async fn pf_release(pf: Pf) {
+    let arg = pf.token.to_string();
+    match exec(PFCTL, &["-X", &arg], "").await {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => eprintln!("kite: releasing pf: {}", said(&out)),
+        Err(e) => eprintln!("kite: releasing pf: {e}"),
+    }
+    if pf.was_on && !pf_is_on().await {
+        let _ = exec(PFCTL, &["-e"], "").await;
+    }
+}
+
+/// Loads the block, and checks that the main ruleset evaluates the anchor it is in.
+async fn pf_load(rules: &str) -> io::Result<()> {
+    let out = exec(PFCTL, &["-a", ANCHOR, "-f", "-"], rules).await?;
+    if !out.status.success() {
+        return Err(io::Error::other(format!(
+            "loading the kill switch into pf failed: {}",
+            said(&out)
+        )));
+    }
+    let main = exec(PFCTL, &["-s", "rules"], "").await?;
+    if !String::from_utf8_lossy(&main.stdout)
+        .lines()
+        .any(|l| l.trim() == "anchor \"com.apple/*\" all")
+    {
+        return Err(io::Error::other(
+            "pf's main ruleset has no `anchor \"com.apple/*\" all` line, so the kill switch would not \
+             apply; restore /etc/pf.conf or leave the kill switch off",
+        ));
+    }
+    Ok(())
+}
+
+async fn pf_flush() -> io::Result<()> {
+    let out = exec(PFCTL, &["-a", ANCHOR, "-F", "rules"], "").await?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "removing the kill switch from pf failed: {}",
+            said(&out)
+        )))
+    }
 }
 
 /// The host route that keeps the relay out of the tunnel.
@@ -341,57 +516,60 @@ fn default_via(text: &str) -> io::Result<Option<Via>> {
     }
 }
 
-/// What `undo` cannot work out from the system: the host route for the relay. One line,
-/// `bypass DESTINATION via GATEWAY` or `bypass DESTINATION dev INTERFACE`, or an empty file.
+/// What `undo` cannot work out from the system: the host route for the relay and the pf token.
+/// Up to two lines, in this order: `bypass DESTINATION via GATEWAY` or `bypass DESTINATION dev
+/// INTERFACE`, and `pf TOKEN WAS_ON` (`1` when pf was enabled before the token); or an empty file.
 #[derive(Debug, Default, PartialEq)]
 struct State {
     bypass: Option<Bypass>,
+    pf: Option<Pf>,
+}
+
+/// The reference on pf being enabled that the kill switch holds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Pf {
+    token: u64,
+    was_on: bool,
 }
 
 impl State {
     fn text(&self) -> String {
-        self.bypass
+        let mut text = self
+            .bypass
             .as_ref()
             .map_or_else(String::new, |b| match &b.via {
                 Via::Gateway(g) => format!("bypass {} via {g}\n", b.dest),
                 Via::Interface(i) => format!("bypass {} dev {i}\n", b.dest),
-            })
+            });
+        if let Some(pf) = self.pf {
+            text += &format!("pf {} {}\n", pf.token, u8::from(pf.was_on));
+        }
+        text
     }
 
     fn parse(text: &str) -> Option<Self> {
-        let mut lines = text.lines();
-        let Some(line) = lines.next() else {
-            return Some(Self::default());
-        };
-        let mut words = line.split(' ');
-        let ("bypass", Some(dest), Some(how), Some(value), None) = (
-            words.next()?,
-            words.next(),
-            words.next(),
-            words.next(),
-            words.next(),
-        ) else {
-            return None;
-        };
-        if lines.next().is_some() {
-            return None;
+        let mut state = Self::default();
+        let mut lines = text.lines().peekable();
+        if lines.peek().is_some_and(|l| l.starts_with("bypass")) {
+            state.bypass = Some(parse_bypass(lines.next()?)?);
         }
-        let via = match how {
-            "via" if valid_gateway(value) => Via::Gateway(value.to_string()),
-            "dev" if valid_interface(value) => Via::Interface(value.to_string()),
-            _ => return None,
-        };
-        let dest: IpAddr = dest.parse().ok()?;
-        // The gateway of an IPv4 route is an IPv4 address, and of an IPv6 route an IPv6 one.
-        if let Via::Gateway(g) = &via {
-            let hop: IpAddr = g.split('%').next()?.parse().ok()?;
-            if hop.is_ipv4() != dest.is_ipv4() {
+        if let Some(line) = lines.next() {
+            let mut words = line.split(' ');
+            let (Some("pf"), Some(token), Some(was_on), None) =
+                (words.next(), words.next(), words.next(), words.next())
+            else {
                 return None;
-            }
+            };
+            state.pf = Some(Pf {
+                token: token.parse().ok()?,
+                was_on: match was_on {
+                    "0" => false,
+                    "1" => true,
+                    _ => return None,
+                },
+            });
         }
-        Some(Self {
-            bypass: Some(Bypass { dest, via }),
-        })
+        lines.next().is_none().then_some(state)
     }
 
     fn save(&self) -> io::Result<()> {
@@ -407,6 +585,33 @@ impl State {
             Err(e) => Err(e),
         }
     }
+}
+
+fn parse_bypass(line: &str) -> Option<Bypass> {
+    let mut words = line.split(' ');
+    let ("bypass", Some(dest), Some(how), Some(value), None) = (
+        words.next()?,
+        words.next(),
+        words.next(),
+        words.next(),
+        words.next(),
+    ) else {
+        return None;
+    };
+    let via = match how {
+        "via" if valid_gateway(value) => Via::Gateway(value.to_string()),
+        "dev" if valid_interface(value) => Via::Interface(value.to_string()),
+        _ => return None,
+    };
+    let dest: IpAddr = dest.parse().ok()?;
+    // The gateway of an IPv4 route is an IPv4 address, and of an IPv6 route an IPv6 one.
+    if let Via::Gateway(g) = &via {
+        let hop: IpAddr = g.split('%').next()?.parse().ok()?;
+        if hop.is_ipv4() != dest.is_ipv4() {
+            return None;
+        }
+    }
+    Some(Bypass { dest, via })
 }
 
 /// Runs `exe` by its full path with an empty environment, feeding it `input`.
@@ -517,11 +722,92 @@ mod tests {
             gateway("2001:db8::9", "fe80::1%en0"),
             on_link,
         ] {
-            let state = State { bypass: Some(b) };
+            let state = State {
+                bypass: Some(b),
+                pf: None,
+            };
             assert_eq!(State::parse(&state.text()), Some(state));
         }
         assert_eq!(State::parse(""), Some(State::default()));
         assert_eq!(State::default().text(), "");
+    }
+
+    #[test]
+    fn the_pf_token_is_part_of_the_state() {
+        let via = Bypass {
+            dest: "203.0.113.9".parse().unwrap(),
+            via: Via::Gateway("192.168.1.1".into()),
+        };
+        for state in [
+            State {
+                bypass: Some(via.clone()),
+                pf: Some(Pf {
+                    token: 1_234_567_890,
+                    was_on: true,
+                }),
+            },
+            State {
+                bypass: None,
+                pf: Some(Pf {
+                    token: 7,
+                    was_on: false,
+                }),
+            },
+        ] {
+            assert_eq!(State::parse(&state.text()), Some(state));
+        }
+        assert_eq!(
+            State::parse("pf 7 0\n").map(|s| s.pf.map(|p| p.token)),
+            Some(Some(7))
+        );
+        for bad in [
+            "pf",
+            "pf x",
+            "pf -1",
+            "pf 7",
+            "pf 7 2",
+            "pf 7 0 1",
+            "pf 7\npf 8\n",
+            "pf 7 0\nbypass 203.0.113.9 via 192.168.1.1\n",
+            "bypass 203.0.113.9 via 192.168.1.1\npf 7 0\nextra\n",
+        ] {
+            assert_eq!(State::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn pfctl_says_its_token() {
+        let said = "No ALTQ support in kernel\nALTQ related functions disabled\npf enabled\n\nToken : 3846205941\n";
+        assert_eq!(parse_token(said), Some(3_846_205_941));
+        for bad in ["", "Token", "Token : x", "pf enabled", "Token 5"] {
+            assert_eq!(parse_token(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_block_passes_what_the_tunnel_needs_and_refuses_the_rest() {
+        let relay: SocketAddr = "203.0.113.9:47810".parse().unwrap();
+        let text = rules("utun4", Some(relay));
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.first(), Some(&"pass quick on lo0 all no state"));
+        assert!(lines.contains(&"pass quick on utun4 all no state"));
+        assert!(
+            lines.contains(&"pass out quick proto tcp from any to 203.0.113.9 port 47810 no state")
+        );
+        // `quick` makes the first match final, so the block must be last.
+        assert_eq!(lines.last(), Some(&"block return out quick all"));
+        assert_eq!(lines.iter().filter(|l| l.starts_with("block")).count(), 1);
+        let v6: SocketAddr = "[2001:db8::9]:47810".parse().unwrap();
+        assert!(rules("utun4", Some(v6))
+            .contains("pass out quick proto tcp from any to 2001:db8::9 port 47810 no state\n"));
+    }
+
+    #[test]
+    fn no_relay_rule_without_a_relay_or_for_loopback() {
+        let loopback: SocketAddr = "127.0.0.1:7000".parse().unwrap();
+        for relay in [None, Some(loopback)] {
+            assert!(!rules("utun4", relay).contains("proto tcp"));
+        }
     }
 
     #[test]

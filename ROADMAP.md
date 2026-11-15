@@ -23,8 +23,7 @@ USB without an adb server comes with it ([#52](https://github.com/heidari-dev/ki
 
 A Mac as a computer, with `utun`: TUN mode, a launchd daemon, the desktop app and an unsigned
 package ([#17](https://github.com/heidari-dev/kite/issues/17)). Only GitHub's runners have run it so
-far; the next step is people with a Mac running the acceptance test. The kill switch is
-[#101](https://github.com/heidari-dev/kite/issues/101).
+far; the next step is people with a Mac running the acceptance test.
 
 ## 0.3.0: iPhone
 

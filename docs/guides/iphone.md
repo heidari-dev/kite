@@ -86,6 +86,6 @@ iPhone's VPN or mobile network gives it. Press **Disconnect** to stop.
 - Over USB, the iPhone's mobile data or its WiFi carries the traffic, and so does its VPN if one is on.
 - Kite on the iPhone listens on WiFi, ethernet and hotspot addresses and, for the cable, on the
   iPhone itself, never on mobile data or a VPN. Turn the hotspot off when you do not need it.
-- The kill switch (block traffic if the phone disconnects) exists on Linux and Windows so far.
+- The kill switch (block traffic if the phone disconnects) exists on Linux, Windows and macOS.
 
 Stuck? [Troubleshooting](troubleshooting.md#iphone).

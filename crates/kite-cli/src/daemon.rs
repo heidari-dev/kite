@@ -317,9 +317,6 @@ impl Daemon {
         kill_switch: bool,
         listen: Option<SocketAddr>,
     ) -> Response {
-        if kill_switch && cfg!(target_os = "macos") {
-            return Response::err("the kill switch is not available on macOS yet");
-        }
         let mut inner = self.inner();
         if inner.closing {
             return Response::err("the daemon is shutting down");
@@ -381,11 +378,11 @@ impl Daemon {
             return Response::err("the tunnel did not stop in time");
         }
         // A tunnel that ended with the kill switch on left its block behind; this lifts it. So does
-        // a service that started again after a crash and knows of no session (Windows keeps the
-        // block on purpose).
+        // a service that started again after a crash and knows of no session (Windows and macOS
+        // keep the block on purpose).
         let leftover = match &mut self.inner().session {
             Some(a) => std::mem::take(&mut a.kill_switch),
-            None => cfg!(windows),
+            None => cfg!(any(windows, target_os = "macos")),
         };
         if leftover {
             if let Err(e) = crate::tun::restore().await {
