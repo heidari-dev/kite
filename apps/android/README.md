@@ -25,6 +25,19 @@ The Kotlin generator (`uniffi-bindgen`) is installed by the script on first use,
 `target/uniffi-bindgen-VERSION`, at the same version as the `uniffi` crate in `Cargo.lock`. It is not
 a dependency of the workspace, so its crates are not in `Cargo.lock`.
 
+## Dependency verification
+
+`gradle/verification-metadata.xml` pins the SHA-256 of every dependency and plugin artifact, and
+Gradle refuses to build when one does not match (CI and the release build included). When you add
+or update a dependency, regenerate it and review the diff:
+
+```
+cd apps/android
+gradle --write-verification-metadata sha256 help assembleDebug assembleRelease
+```
+
+Commit the file with the change that needed it. Only checksums are kept, no PGP keys.
+
 ## Try it
 
 Install the APK, open Kite and tap Start sharing. The first time, tap Pair a computer and, on the
