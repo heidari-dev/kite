@@ -21,7 +21,7 @@ tokio = { version = "1.53", features = ["io-util", "macros", "net", "rt", "signa
 tokio-util = { version = "0.7", features = ["compat"] }
 yamux = "0.14"
 
-[target.'cfg(any(target_os = "linux", windows))'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "macos", windows))'.dependencies]
 tokio = { version = "1.53", features = ["fs", "process", "rt-multi-thread"] }
 tun = { version = "0.8.14", features = ["async"] }
 tun2proxy = { version = "0.8.7", default-features = false, features = ["udpgw"] }

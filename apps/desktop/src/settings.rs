@@ -37,8 +37,8 @@ impl Default for Settings {
     }
 }
 
-/// Whether there is a kill switch to turn on: not on Windows yet.
-pub const KILL_SWITCH: bool = cfg!(not(windows));
+/// Whether there is a kill switch to turn on: Linux only so far.
+pub const KILL_SWITCH: bool = cfg!(target_os = "linux");
 
 /// The kill switch redials without a lookup, so the daemon takes only an IP address (with or
 /// without a port) for it; a name is caught here, before the daemon has to refuse it.

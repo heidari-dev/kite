@@ -10,10 +10,16 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub const NOT_RUNNING: &str =
     "The Kite daemon is not running. Start it with: sudo systemctl start kite";
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
+pub const NOT_RUNNING: &str = "The Kite daemon is not running. Start it with: sudo launchctl \
+     kickstart system/io.github.heidari-dev.kite";
+#[cfg(target_os = "macos")]
+pub const NO_PERMISSION: &str = "You are not allowed to use the Kite daemon. Only administrator \
+     accounts may use it; ask an administrator to make your account one.";
+#[cfg(target_os = "linux")]
 pub const NO_PERMISSION: &str = "You are not allowed to use the Kite daemon. Add yourself to the \
      kite group with: sudo usermod -aG kite $USER, then log out and in again.";
 #[cfg(windows)]
