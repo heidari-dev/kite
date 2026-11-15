@@ -49,10 +49,10 @@ Heading for 0.1.0; the first release candidate is `0.1.0-rc.1`. See the [roadmap
 What works: an Android phone or an iPhone and a Linux computer, over USB (through adb or directly
 for Android, through usbmuxd for the iPhone) or WiFi. The computer can send everything through the
 phone (TUN mode) or only what you point at a local SOCKS5 proxy (proxy mode). A kill switch that
-blocks traffic while the phone is disconnected is there on Linux and off until you turn it on. The
+blocks traffic while the phone is disconnected is there on Linux and Windows and off until you turn it on. The
 link is encrypted with Noise, and both sides are paired once with a 6-digit code.
 
-The same works with a Windows computer (MSI installer, no kill switch yet) and a Mac (package, no
+The same works with a Windows computer (MSI installer) and a Mac (package, no
 kill switch yet, needs testers). The iPhone app is sideloaded and has to stay open on the screen
 while it shares.
 

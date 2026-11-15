@@ -71,8 +71,10 @@ Plug in the phone, tap Start sharing, click Connect.
 
 - **Proxy only** (under Share) sends only the programs you point at Kite's local proxy through the
   phone. Everything else uses your normal connection.
-- There is no kill switch on Windows yet. If the phone drops out, Windows goes back to its normal
-  connection, with your own address. Watch the tray icon if that matters to you.
+- If the phone drops out, Windows goes back to its normal connection, with your own address, unless
+  you turned on **Block traffic if the phone disconnects**. With it on, nothing leaves until the
+  phone is back or you press Disconnect. If Kite itself crashes, the block stays; connect again or
+  restart Windows to get your normal connection back.
 - While connected, names that only your home network knows (a router's `.lan` name) stop resolving.
   Disconnect to get them back.
 - If Windows has no driver for the phone, Kite says it needs the WinUSB driver. The fix is in

@@ -123,7 +123,7 @@ could not come up) and the tunnel lives on in the daemon until `kite disconnect`
 | `--serial SERIAL` | With `--usb`: the phone to use when several are connected, an iPhone's UDID or an Android serial. | the only phone |
 | `--listen ADDR` | Proxy mode only. `IP:PORT` of the local SOCKS5 proxy. It must be a loopback address. | `127.0.0.1:1080` |
 | `--tun` | TUN mode (Linux, macOS and Windows): send all traffic and DNS of this computer through the relay. Cannot be combined with `--listen`. | off |
-| `--kill-switch` | Linux only. With `--tun`: while the link to the phone is down, block all traffic and reconnect, until `kite disconnect`. With `--tcp` or `--wifi ADDR` the relay must be an IP address: a name would be looked up again at every redial, into the block. See [Kill switch](#kill-switch). | off |
+| `--kill-switch` | Linux and Windows. With `--tun`: while the link to the phone is down, block all traffic and reconnect, until `kite disconnect`. With `--tcp` or `--wifi ADDR` the relay must be an IP address: a name would be looked up again at every redial, into the block. See [Kill switch](#kill-switch). | off |
 
 Without `--tun` kite runs in proxy mode: it serves a SOCKS5 proxy on `--listen`, needs no special
 privileges, and only programs that use the proxy go through the phone. Use `socks5h://` (proxy
@@ -303,12 +303,12 @@ routes, the DNS rule and the state file. If kite was killed, the adapter goes aw
 and takes its routes with it; the DNS rule and the host route stay until the next TUN start or
 `kite restore`. Nothing else is touched.
 
-There is no kill switch on Windows yet (issue 88): `--kill-switch` is refused, and when the link to
-the phone is lost the tunnel ends and normal routing returns.
+Without `--kill-switch`, when the link to the phone is lost the tunnel ends and normal routing
+returns. With it, see [Kill switch](#kill-switch).
 
 ### Kill switch
 
-This is Linux only (Windows: issue 88, macOS: issue 101). With `--kill-switch` a lost link (phone unplugged, WiFi gone, the app stopped) does not end the
+This is available on Linux and Windows (macOS: issue 101). With `--kill-switch` a lost link (phone unplugged, WiFi gone, the app stopped) does not end the
 tunnel. `kite0`, its rules and the DNS settings stay, so everything that is not loopback, the local
 network or the link to the phone keeps going into the tunnel and stops there: new connections are
 refused at once and nothing leaves the computer. kite dials the phone again after 1 s, then backs
@@ -320,6 +320,19 @@ The kill switch also holds if kite itself dies: table 5300 then gets a blackhole
 outlives the device, so traffic stays blocked after a crash or SIGKILL until `kite restore` or the
 next `kite connect`. It is opt-in everywhere: off on the command line unless `--kill-switch` is
 given, and off in the desktop app until the user turns it on.
+
+On Windows the block is a set of Windows Filtering Platform filters, not a route. Kite adds them
+before it adds its routes and removes them after it removes the routes. They block every new
+connection and every new inbound flow, IPv4 and IPv6, except loopback, anything on the adapter
+`kite0`, this program's own connection to the relay (by program and address), DHCP, and IPv6
+neighbour discovery, so the link to the router or the phone stays up and DNS cannot go out of the
+physical adapter either. Windows Firewall needs to be running (the Base Filtering Engine service,
+which it always is by default). The filters belong to no session, so they outlive the Kite process:
+after a crash (or a service that was killed) or an error of the tunnel traffic stays blocked until
+`kite restore`, `kite disconnect` or the next `kite connect` without `--kill-switch`, as on Linux; an
+orderly stop lifts it. They are not persistent, so a reboot (or restarting that
+service) removes them and the computer is never left offline for good. Connections that were
+already open when the block went up are not cut by it.
 
 ## kite status
 
@@ -347,8 +360,8 @@ running. On Windows only the service answers, not a `--foreground` tunnel. On ma
 Removes what a TUN mode kite that was killed left behind. Needs `CAP_NET_ADMIN` on Linux, root on macOS, an
 administrator on Windows. It fails while a TUN mode kite is running. On Linux it only deletes rules
 that exactly match the ones kite adds, so rules from other programs stay. On Windows it deletes the
-routes on the adapter `kite0`, the host route in `tun.state` and the DNS rule with the comment
-`kite`.
+routes on the adapter `kite0`, the host route in `tun.state`, the DNS rule with the comment
+`kite` and the kill switch's filters.
 
 ## kite allow
 

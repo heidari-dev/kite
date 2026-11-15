@@ -141,6 +141,12 @@ pub struct Started {
 /// Binds the proxy and dials the relay. This is where a missing pairing or an absent phone shows
 /// up, before anything of the system is touched.
 pub async fn start(p: &Params, store: &Store) -> io::Result<Started> {
+    // The block a crashed kill switch left would stop the dial below. Connecting without the kill
+    // switch is the user asking for the network back; with it the block stays until it is replaced.
+    #[cfg(windows)]
+    if p.tun && !p.kill_switch {
+        crate::tun::restore().await?;
+    }
     let phones = store.phones()?;
     if phones.is_empty() {
         return Err(io::Error::new(

@@ -456,7 +456,7 @@ export component AppWindow inherits Window {
     in property <string> wifi-error;
     in property <int> mode;
     in property <bool> kill-switch;
-    // Off where there is no kill switch (Windows): the toggle is not shown at all.
+    // Off where there is no kill switch (macOS): the toggle is not shown at all.
     in property <bool> kill-switch-available: true;
     // A tunnel is up: mode and kill switch show what runs and cannot change until it stops.
     in property <bool> locked;

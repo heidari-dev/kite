@@ -317,9 +317,6 @@ impl Daemon {
         kill_switch: bool,
         listen: Option<SocketAddr>,
     ) -> Response {
-        if kill_switch && cfg!(windows) {
-            return Response::err("the kill switch is not available on Windows yet");
-        }
         if kill_switch && cfg!(target_os = "macos") {
             return Response::err("the kill switch is not available on macOS yet");
         }
@@ -375,25 +372,27 @@ impl Daemon {
         if let Some(stop) = stop {
             let _ = stop.send(());
         }
-        // A tunnel that ended with the kill switch on left its block behind; this lifts it.
+        let down = async {
+            while !self.inner().session.as_ref().is_none_or(Active::idle) {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
+        if timeout(STOP_TIMEOUT, down).await.is_err() {
+            return Response::err("the tunnel did not stop in time");
+        }
+        // A tunnel that ended with the kill switch on left its block behind; this lifts it. So does
+        // a service that started again after a crash and knows of no session (Windows keeps the
+        // block on purpose).
         let leftover = match &mut self.inner().session {
-            Some(a) if a.kill_switch && a.idle() => std::mem::take(&mut a.kill_switch),
-            _ => false,
+            Some(a) => std::mem::take(&mut a.kill_switch),
+            None => cfg!(windows),
         };
         if leftover {
             if let Err(e) = crate::tun::restore().await {
                 return Response::err(e.to_string());
             }
         }
-        let down = async {
-            while !self.inner().session.as_ref().is_none_or(Active::idle) {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        };
-        match timeout(STOP_TIMEOUT, down).await {
-            Ok(()) => Response::ok(),
-            Err(_) => Response::err("the tunnel did not stop in time"),
-        }
+        Response::ok()
     }
 
     async fn pair_start(&self, transport: Transport) -> Response {
@@ -657,19 +656,6 @@ mod tests {
         };
         let err = run(opts, std::future::pending()).await.unwrap_err();
         assert!(err.to_string().contains("already running"), "{err}");
-        d.end().await;
-    }
-
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn refuses_the_kill_switch_on_windows() {
-        let d = start("killswitch").await;
-        let r = ask(
-            &d.socket,
-            r#"{"cmd":"connect","transport":{"type":"tcp","addr":"127.0.0.1:9"},"mode":"tun","kill_switch":true}"#,
-        )
-        .await;
-        assert!(r.error.unwrap().contains("not available on Windows"));
         d.end().await;
     }
 }

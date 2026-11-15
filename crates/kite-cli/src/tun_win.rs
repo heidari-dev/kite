@@ -16,9 +16,15 @@
 //!   the tunnel carries to the phone. Without it Windows asks the DNS servers of all adapters at
 //!   once and the answer from the local one wins the race.
 //!
-//! There is no kill switch on Windows yet: a crash leaves the adapter's routes in place only while
-//! the adapter exists, and the DNS rule until the next start or `restore`.
+//! With the kill switch (opt-in) Windows Filtering Platform filters also block every connection that
+//! does not go through the adapter, to this program's relay or on the loopback, see
+//! `kite_win::firewall`. They go up before the routes do and come off after them, and while the phone
+//! is away and the session redials they stay. They belong to no session, so they outlive this
+//! process: after a crash or an error of the tunnel traffic stays blocked until `restore`, the next
+//! connect or a reboot. Without the kill switch a crash leaves the adapter's routes in place only
+//! while the adapter exists, and the DNS rule until the next start or `restore`.
 
+use kite_win::firewall;
 use kite_win::route::{self, Route};
 use std::future::Future;
 use std::io;
@@ -61,7 +67,8 @@ const HALVES: [(IpAddr, u8); 4] = [
 /// that reaches the proxy at `proxy` through a tunnel to the relay, until the token it is given is
 /// cancelled. `relay` is the address that tunnel connects to, so it can stay out of the tunnel.
 ///
-/// There is no kill switch here, see the module comment: `kill_switch` must be false.
+/// With `kill_switch`, everything but the tunnel is blocked, and stays so when this ends for any
+/// reason but `shutdown`, until `restore`.
 pub async fn run<F, Fut>(
     proxy: SocketAddr,
     relay: Option<IpAddr>,
@@ -73,22 +80,27 @@ where
     F: FnOnce(CancellationToken) -> Fut,
     Fut: Future<Output = io::Result<()>>,
 {
-    if kill_switch {
-        return Err(io::Error::other(
-            "the kill switch is not available on Windows yet",
-        ));
-    }
+    // A dual-stack connection reports the relay as ::ffff:a.b.c.d; it is a.b.c.d to routes and filters.
+    let relay = relay.map(|ip| ip.to_canonical());
     let _lock = lock()?;
-    // Whatever a kite that was killed left behind.
-    undo().await?;
+    // Whatever a kite that was killed left behind. A block stays for the kill switch to replace
+    // atomically; without the kill switch it goes.
+    undo(!kill_switch).await?;
     let device = create()?;
-    serve(device, proxy, relay, serve_link, shutdown).await
+    serve(device, proxy, relay, kill_switch, serve_link, shutdown).await
 }
 
 /// Deletes what a TUN mode run that was killed left behind. Fails while another one is running.
 pub async fn restore() -> io::Result<()> {
     let _lock = lock()?;
-    undo().await
+    undo(true).await
+}
+
+/// As `restore`, but a kill switch's block stays: for the service that starts again after a crash,
+/// which must not lift what the crashed run put up for the user.
+pub async fn restore_keeping_block() -> io::Result<()> {
+    let _lock = lock()?;
+    undo(false).await
 }
 
 /// Where the lock and the state live: the daemon's private directory.
@@ -155,6 +167,7 @@ async fn serve<F, Fut>(
     device: tun::AsyncDevice,
     proxy: SocketAddr,
     relay: Option<IpAddr>,
+    kill_switch: bool,
     serve_link: F,
     shutdown: impl Future<Output = ()>,
 ) -> io::Result<()>
@@ -167,14 +180,17 @@ where
     // Polled from the start, so a signal during setup still ends in a clean restore.
     tokio::pin!(shutdown);
     tokio::select! {
-        r = setup(index, relay) => {
+        r = setup(index, relay, kill_switch) => {
             if let Err(e) = r {
-                let _ = undo().await;
+                // A failed start, not a lost tunnel: it restores as usual.
+                let _ = undo(true).await;
                 return Err(e);
             }
         }
-        () = &mut shutdown => return undo().await,
+        () = &mut shutdown => return undo(true).await,
     }
+    // Set when the user ends the tunnel; any other end leaves the kill switch's block up.
+    let stopped = std::cell::Cell::new(false);
 
     let proxy_url = format!("socks5://{proxy}");
     let mut args = Args::default();
@@ -201,7 +217,10 @@ where
             },
             async {
                 tokio::select! {
-                    () = shutdown => token.cancel(),
+                    () = shutdown => {
+                    stopped.set(true);
+                    token.cancel();
+                }
                     () = token.cancelled() => {}
                 }
             },
@@ -209,9 +228,9 @@ where
         proxied.and(tunneled.map(drop).map_err(io::Error::from))
     };
     tokio::pin!(work);
-    // From the moment the tunnel is told to end, the routes and the DNS rule come off at once,
-    // beside the tasks winding down, so the computer is back on its own network whatever those
-    // tasks do. The tasks get TEARDOWN, then they are dropped.
+    // From the moment the tunnel is told to end, the routes, the DNS rule and the block come off at
+    // once, beside the tasks winding down, so the computer is back on its own network whatever
+    // those tasks do. The tasks get TEARDOWN, then they are dropped.
     let (result, cleaned) = tokio::join!(
         async {
             tokio::select! {
@@ -224,9 +243,14 @@ where
         },
         async {
             token.cancelled().await;
-            undo().await
+            undo(stopped.get() || !kill_switch).await
         },
     );
+    if kill_switch && !stopped.get() {
+        return result.and(cleaned).and(Err(io::Error::other(
+            "the tunnel ended; traffic stays blocked until `kite restore`",
+        )));
+    }
     result.and(cleaned)
 }
 
@@ -244,8 +268,12 @@ fn tunnel_routes(luid: u64) -> impl Iterator<Item = Route> {
     })
 }
 
-async fn setup(index: u32, relay: Option<IpAddr>) -> io::Result<()> {
+async fn setup(index: u32, relay: Option<IpAddr>, kill_switch: bool) -> io::Result<()> {
     let luid = route::luid_of_index(index)?;
+    // Before the routes change, so nothing leaks between the two.
+    if kill_switch {
+        firewall::engage(luid, relay)?;
+    }
     // The relay's way out, before the tunnel's routes change it. A more specific route than the
     // halves (a LAN) keeps winning on its own; only the default route needs a host route beside it.
     let bypass = match relay.filter(|ip| !ip.is_loopback()) {
@@ -281,8 +309,9 @@ async fn setup(index: u32, relay: Option<IpAddr>) -> io::Result<()> {
 }
 
 /// Everything TUN mode adds, taken away; what is not there is skipped, so this runs again and
-/// again. The first error is returned after the rest has been tried.
-async fn undo() -> io::Result<()> {
+/// again. The first error is returned after the rest has been tried. The kill switch's block, if
+/// there is one, is lifted last, and only with `lift`.
+async fn undo(lift: bool) -> io::Result<()> {
     let mut first = Ok(());
     let mut note = |r: io::Result<()>| {
         if first.is_ok() {
@@ -306,6 +335,9 @@ async fn undo() -> io::Result<()> {
         ))
         .await,
     );
+    if lift {
+        note(firewall::lift());
+    }
     if first.is_ok() {
         let _ = std::fs::remove_file(dir()?.join("tun.state"));
     }
