@@ -497,11 +497,14 @@ async fn dial(transport: &Transport, tun: bool, adb_key: &Path) -> io::Result<Tc
             socket2::SockRef::from(&s).set_tcp_keepalive(&keepalive)?;
             s
         }
-        // The adb server on loopback carries the USB link, so this socket needs no mark: loopback
-        // is answered by the local routing table before any TUN rule, and there is no IP path to a
-        // USB phone to keep out of the tunnel. Keepalive would only be answered by the local
-        // kernel, so it is skipped; an unplug or an adb crash closes the socket.
-        Transport::Usb(serial) => kite_link::adb::open(serial.as_deref(), adb_key).await?,
+        // The adb server or usbmuxd, or the bridge to a direct USB link, is on loopback, so this
+        // socket needs no mark: loopback is answered by the local routing table before any TUN
+        // rule, and there is no IP path to a USB phone to keep out of the tunnel. Keepalive would
+        // only be answered by the local kernel, so it is skipped; an unplug or a crash of the
+        // server closes the socket.
+        Transport::Usb(serial) => {
+            kite_link::open(serial.as_deref(), kite_relay::wifi::PORT, adb_key).await?
+        }
     };
     s.set_nodelay(true)?;
     Ok(s)

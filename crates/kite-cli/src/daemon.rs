@@ -220,7 +220,7 @@ impl Daemon {
         match req {
             Request::Status {} => self.status(),
             Request::Stats {} => self.stats(),
-            Request::Devices {} => match kite_link::adb::devices().await {
+            Request::Devices {} => match kite_link::devices().await {
                 Ok(list) => Response {
                     devices: Some(
                         list.into_iter()
