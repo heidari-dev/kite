@@ -50,7 +50,7 @@ grep -q 'state: idle' <<<"$out" || fail "an administrator cannot reach the daemo
 if launchctl print "system/$label" >/dev/null 2>&1; then fail "the daemon is still loaded"; fi
 for f in "$support" /Applications/Kite.app /usr/local/bin/kite /var/run/kite \
   /Library/LaunchDaemons/$label.plist /Library/LaunchAgents/$label.desktop.plist /var/log/kite.log; do
-  [ ! -e "$f" ] && [ ! -L "$f" ] || fail "$f is still there"
+  if [ -e "$f" ] || [ -L "$f" ]; then fail "$f is still there"; fi
 done
 if pgrep -x kite >/dev/null; then fail "kite is still running"; fi
 if pkgutil --pkg-info "$label.pkg" >/dev/null 2>&1; then fail "the package receipt is still there"; fi
