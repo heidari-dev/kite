@@ -19,6 +19,13 @@ MSI installer. Tracked in [#15](https://github.com/heidari-dev/kite/issues/15).
 The installer should not ask people to install Android platform-tools, so talking to the phone over
 USB without an adb server comes with it ([#52](https://github.com/heidari-dev/kite/issues/52)).
 
+## macOS: needs testers
+
+A Mac as a computer, with `utun`: TUN mode, a launchd daemon, the desktop app and an unsigned
+package ([#17](https://github.com/heidari-dev/kite/issues/17)). Only GitHub's runners have run it so
+far; the next step is people with a Mac running the acceptance test. The kill switch is
+[#101](https://github.com/heidari-dev/kite/issues/101).
+
 ## 0.3.0: iPhone
 
 The phone relay as an iOS app, reached over usbmux or WiFi. The relay core is shared with Android
@@ -26,7 +33,6 @@ through `kite-ffi`. Tracked in [#16](https://github.com/heidari-dev/kite/issues/
 
 ## Not scheduled
 
-- **macOS** as a computer, with `utun`: [#17](https://github.com/heidari-dev/kite/issues/17).
 - **User guides and a website**: [#18](https://github.com/heidari-dev/kite/issues/18).
 
 ## Not planned

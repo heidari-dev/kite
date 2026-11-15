@@ -94,6 +94,27 @@ jobs:
           path: dist/*.msi
           retention-days: 7
 
+  # An installer package, unsigned: macOS warns about it (docs/macos.md); like every other file it
+  # gets a checksum, an attestation and a Sigstore bundle. Universal: Apple silicon and Intel.
+  macos:
+    needs: check
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: scripts/build-macos.sh
+      - name: Build the package
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: scripts/package-macos.sh "$VERSION" target/universal dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos
+          path: dist/*.pkg
+          retention-days: 7
+
   android:
     needs: check
     runs-on: ubuntu-latest
@@ -199,7 +220,7 @@ jobs:
 
   # Checksums, attestations and signatures. It holds the signing identity but cannot touch the repository.
   sign:
-    needs: [check, linux, windows, android, sbom, sign-apk]
+    needs: [check, linux, windows, macos, android, sbom, sign-apk]
     # sign-apk is skipped in a dry run.
     if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
