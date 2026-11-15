@@ -143,6 +143,17 @@ and its named pipe (rows marked Windows), and so do the macOS launchd daemon and
 | T | A crash leaves the DNS resolver or the relay's host route behind (macOS). | The host route is written to `tun.state` before it is added, and the resolver has a fixed key, so the daemon removes both when it starts and `kite restore` does by hand. The device and its routes go with the process. Until then names go to 1.1.1.1 over the physical network, which is a leak, not an outage, unless the kill switch is on: then its pf rules stay (see B3). | `kite-cli` | done |
 | E | The package gives the wrong person access to the tunnel. | The install script adds one person to the `kite` group, once, on first install: the one `sudo` or `pkexec` names, or else the person at the active graphical session. Only ordinary accounts qualify (UID 1000 to 59999), never root, and it prints who it added. Pairing stays closed to the group (see above). Removing the package deletes the user, the group and the state. | `packaging/linux` | done |
 
+## Container image
+
+`ghcr.io/heidari-dev/kite` runs `kite --foreground` alone in a container, with no daemon and no IPC
+([docker.md](docker.md)).
+
+| | Threat | Mitigation | Owner | Status |
+|---|--------|------------|-------|--------|
+| E | The container has more rights than it needs. | The image is `scratch` with the static `kite` binary and two empty directories: no shell, no other program. It runs as user 65532, which Docker gives no effective capabilities. TUN mode needs `CAP_NET_ADMIN`, which Docker grants only to root, so the docs run it as root with `--cap-drop ALL` and two capabilities: `NET_ADMIN` for the device, the routes and the relay socket's mark, and `DAC_OVERRIDE` to read the volume that belongs to 65532. The routes change the container's network namespace only; the docs advise against TUN mode with `--network host`. CI runs both modes with exactly these flags. | `packaging/container` | done |
+| E | Something outside the shared namespace uses the phone through the container. | `--listen` takes loopback addresses only, so the proxy is on the namespace's own 127.0.0.1 and a published port does not reach it; only containers that join the namespace use the phone. CI checks that the proxy does not answer on the container's address. With `--network host` (needed for mDNS discovery) it is on the host's loopback, as with the packages, see the known gaps. | `kite-cli`, `packaging/container` | done |
+| I | Keys leak through the image or the volume. | The image holds no key or other secret. The key is made on first use in `/data/kite` on the user's volume, 0600 in a 0700 directory owned by 65532, and kite refuses files others can read or write; CI checks owner and mode after pairing. Whoever controls the Docker daemon or the host's root account can read the volume. | `packaging/container` | done |
+
 ## B3: phone and Internet
 
 | | Threat | Mitigation | Owner | Status |
@@ -185,6 +196,7 @@ Besides the abstract socket, the relay's only listener is the optional WiFi one 
 | The WiX tool that builds the installer is swapped. | `scripts/build-msi.ps1` downloads WiX 3.14.1 from its release page and checks the zip against a SHA-256 before it runs anything. The MSI is built by CI only and goes through the same checksum, attestation and signature as the other release files. It is not code-signed yet, so Windows warns about an unknown publisher (docs/windows.md). | done |
 | The AppImage runtime or a packaging tool is swapped. | The .deb is built with `dpkg-deb` and no other tool. The only download is the AppImage runtime, checked against a SHA-256 in `scripts/package-linux.sh`. | done |
 | A release is built or altered somewhere untrusted. | Releases are built only by CI from tags, with SHA-256 checksums, GitHub artifact attestations and a CycloneDX SBOM. OpenSSF Scorecard tracks the repository's practices. | done (see [releasing.md](releasing.md)) |
+| The container image is altered, or built from something other than the repository. | Only `container.yml` pushes it: `edge` from main and the version from a `v*` tag, after the test job has passed. The build stage is a Rust image pinned by digest (Dependabot updates it) and builds with `--locked`; the final stage is `scratch`. Only the publishing job may write packages; it logs in with the workflow's own token and pushes a build provenance attestation for the image digest to the registry. | done |
 
 ## Known gaps
 

@@ -14,3 +14,8 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+  # The Rust image the container build stage is pinned to.
+  - package-ecosystem: docker
+    directory: /packaging/container
+    schedule:
+      interval: weekly

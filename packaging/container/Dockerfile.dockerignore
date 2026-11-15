@@ -1,0 +1,9 @@
+# Only what cargo needs for kite-cli. apps/desktop is a workspace member, so its manifest and
+# sources must be there even though they are not built. rust-toolchain.toml stays out on purpose:
+# the build uses the toolchain of the pinned Rust image instead of downloading one.
+*
+!Cargo.toml
+!Cargo.lock
+!crates
+!apps/desktop
+**/target

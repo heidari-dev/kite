@@ -38,6 +38,7 @@ through the phone, the computer and the first pairing.
   [Kite on Windows](docs/windows.md).
 - **macOS:** a package: [Android and macOS](docs/guides/android-macos.md), and
   [Kite on macOS](docs/macos.md). It needs testers.
+- **Docker:** `ghcr.io/heidari-dev/kite`, for a Docker stack or a home server: [Kite in a container](docs/docker.md).
 
 Trouble: [troubleshooting](docs/guides/troubleshooting.md). Questions, including whether it is safe:
 [FAQ](docs/guides/faq.md).
