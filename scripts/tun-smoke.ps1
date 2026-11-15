@@ -9,10 +9,16 @@
 #
 #   scripts\tun-smoke.ps1 target\release\kite.exe target\release\examples\relay-dev.exe
 #
+# It also tests the kill switch: with the tunnel's routes taken away, as if the adapter were gone,
+# a connection to 1.1.1.1 and a DNS query to 8.8.8.8 must fail while the kill switch is on and the
+# relay is dead, and work again after disconnect and after the daemon was killed and `kite restore`
+# ran. The test needs a working Internet connection for that.
+#
 # With -Service it tests the installed service Kite instead of a daemon of its own (the installer
 # test does this): the service is killed once and must clean up after itself when it comes back.
 #
-# It changes this machine's routes and DNS settings while it runs, and puts them back.
+# It changes this machine's routes, DNS settings and firewall filters while it runs, and puts them
+# back.
 param(
     [Parameter(Mandatory = $true)][string]$Kite,
     [Parameter(Mandatory = $true)][string]$RelayDev,
@@ -79,6 +85,55 @@ function Assert-Up {
     if ($dns -notcontains '1.1.1.1') { Fail 'kite0 has no DNS server' }
 }
 
+# A connection and a DNS query that do not use the tunnel's routes, to a server outside this machine.
+function Reach {
+    $c = [Net.Sockets.TcpClient]::new()
+    try { $c.ConnectAsync('1.1.1.1', 443).Wait(5000) -and $c.Connected } catch { $false } finally { $c.Dispose() }
+}
+function Reach-Dns {
+    [bool](Resolve-DnsName -Name example.com -Server 8.8.8.8 -DnsOnly -QuickTimeout -ErrorAction SilentlyContinue)
+}
+# As if the adapter were gone: the routes of the tunnel off, the rest of the tunnel as it was.
+function Drop-TunnelRoutes {
+    Get-NetRoute -InterfaceAlias kite0 -ErrorAction SilentlyContinue |
+        Where-Object { $_.DestinationPrefix -in '0.0.0.0/1', '128.0.0.0/1', '::/1', '8000::/1' } |
+        Remove-NetRoute -Confirm:$false
+    Start-Sleep -Seconds 1
+}
+function Assert-Open([string]$When) {
+    if (-not (Reach)) { Fail "${When}: a connection to 1.1.1.1 does not get out" }
+    if (-not (Reach-Dns)) { Fail "${When}: a DNS query to 8.8.8.8 gets no answer" }
+}
+function Assert-Blocked([string]$When) {
+    if (Reach) { Fail "${When}: a connection to 1.1.1.1 got out of the computer" }
+    if (Reach-Dns) { Fail "${When}: a DNS query to 8.8.8.8 got out of the computer" }
+}
+
+function Start-Relay([string]$Name) {
+    $p = Start-Logged $RelayDev @($relay, '--refuse-external') $Name
+    Wait-For 'relay-dev' { (Get-Content (Join-Path $work "$Name.log") -ErrorAction SilentlyContinue) -match 'listening' }
+    $p
+}
+
+# Pairing: kite pair asks for the code the phone would show.
+function Pair([string]$Name) {
+    $pair = [Diagnostics.Process]::new()
+    $pair.StartInfo.FileName = $Kite
+    $pair.StartInfo.Arguments = "pair --socket $pipe --tcp $relay"
+    $pair.StartInfo.RedirectStandardInput = $true
+    $pair.StartInfo.RedirectStandardOutput = $true
+    $pair.StartInfo.UseShellExecute = $false
+    $null = $pair.Start()
+    $script:code = $null
+    Wait-For 'the pairing code' {
+        $m = [regex]::Match((Get-Content (Join-Path $work "$Name.log") -Raw), 'pairing code (\d{6})')
+        if ($m.Success) { $script:code = $m.Groups[1].Value }
+        $script:code
+    }
+    $pair.StandardInput.WriteLine($script:code)
+    if (-not $pair.WaitForExit(30000) -or $pair.ExitCode -ne 0) { Fail 'pairing failed' }
+}
+
 function Kite([string[]]$Arguments) {
     & $Kite @Arguments --socket $pipe
     if ($LASTEXITCODE -ne 0) { Fail "kite $($Arguments -join ' ') exited with $LASTEXITCODE" }
@@ -87,43 +142,51 @@ function Kite([string[]]$Arguments) {
 try {
     Assert-Clean 'before the test'
 
-    $relayProc = Start-Logged $RelayDev @($relay, '--refuse-external') 'relay'
-    Wait-For 'relay-dev' { (Get-Content (Join-Path $work 'relay.log') -ErrorAction SilentlyContinue) -match 'listening' }
+    $relayProc = Start-Relay 'relay'
     if (-not $Service) {
         $daemon = Start-Logged $Kite @('daemon', '--socket', $pipe, '--state-dir', (Join-Path $work 'state')) 'daemon'
         Wait-For 'the daemon' { (Get-Content (Join-Path $work 'daemon.err.log') -ErrorAction SilentlyContinue) -match 'daemon ready' }
     }
 
-    # Pairing: kite pair asks for the code the phone would show.
-    $pair = [Diagnostics.Process]::new()
-    $pair.StartInfo.FileName = $Kite
-    $pair.StartInfo.Arguments = "pair --socket $pipe --tcp $relay"
-    $pair.StartInfo.RedirectStandardInput = $true
-    $pair.StartInfo.RedirectStandardOutput = $true
-    $pair.StartInfo.UseShellExecute = $false
-    $null = $pair.Start()
-    $code = $null
-    Wait-For 'the pairing code' {
-        $m = [regex]::Match((Get-Content (Join-Path $work 'relay.log') -Raw), 'pairing code (\d{6})')
-        if ($m.Success) { $script:code = $m.Groups[1].Value }
-        $script:code
-    }
-    $pair.StandardInput.WriteLine($code)
-    if (-not $pair.WaitForExit(30000) -or $pair.ExitCode -ne 0) { Fail 'pairing failed' }
+    Pair 'relay'
 
     # A clean disconnect takes everything away.
     Kite @('connect', '--tcp', $relay, '--tun')
     Assert-Up
     Write-Host 'tunnel is up: routes, DNS rule, address and the route to 1.1.1.1 are as expected'
     Kite @('status')
+    # Without the kill switch nothing stops a connection that does not use the tunnel's routes; this
+    # is what the next part must see blocked.
+    Drop-TunnelRoutes
+    Assert-Open 'without the kill switch, tunnel routes gone'
     Kite @('disconnect')
     Wait-For 'the adapter to go' { -not (Adapter) -and (Halves).Count -eq 0 -and (Rules).Count -eq 0 } 30
     Assert-Clean 'after disconnect'
     Write-Host 'clean after disconnect'
 
-    # A daemon that is killed leaves the DNS rule at most; restore takes the rest away. The service
-    # is started again by the service manager, and cleans up when it starts.
-    Kite @('connect', '--tcp', $relay, '--tun')
+    # The kill switch: the phone goes away, the tunnel's routes go too, and nothing may leave.
+    Kite @('connect', '--tcp', $relay, '--tun', '--kill-switch')
+    Assert-Up
+    if (-not ((& $Kite status --socket $pipe) -match 'kill switch: on')) { Fail 'status does not show the kill switch' }
+    Stop-Process -Id $relayProc.Id -Force
+    Wait-For 'the tunnel to notice the lost relay' { (& $Kite status --socket $pipe) -match 'state: reconnecting' }
+    Drop-TunnelRoutes
+    Assert-Blocked 'kill switch on, relay gone'
+    Write-Host 'kill switch: nothing gets out while the relay is gone'
+    Kite @('disconnect')
+    Wait-For 'the adapter to go' { -not (Adapter) -and (Halves).Count -eq 0 -and (Rules).Count -eq 0 } 30
+    Assert-Clean 'after disconnect with the kill switch'
+    Assert-Open 'after disconnect with the kill switch'
+    Write-Host 'kill switch: lifted by disconnect'
+
+    # A new relay, a new pairing.
+    $relayProc = Start-Relay 'relay2'
+    Pair 'relay2'
+
+    # A daemon that is killed leaves the DNS rule at most; restore takes the rest away. The kill
+    # switch's filters go with the process. The service is started again by the service manager, and
+    # cleans up when it starts.
+    Kite @('connect', '--tcp', $relay, '--tun', '--kill-switch')
     Assert-Up
     if ($Service) {
         $id = (Get-CimInstance Win32_Service -Filter "Name='Kite'").ProcessId
@@ -134,6 +197,7 @@ try {
         } 60
         Wait-For 'the service to clean up' { -not (Adapter) -and (Halves).Count -eq 0 -and (Rules).Count -eq 0 } 60
         Assert-Clean 'after the service restarted'
+        Assert-Open 'after the service restarted'
         Write-Host 'clean after the service was killed and started again'
     }
     else {
@@ -145,6 +209,7 @@ try {
         if ($LASTEXITCODE -ne 0) { Fail "kite restore exited with $LASTEXITCODE" }
         Wait-For 'the adapter to go' { -not (Adapter) } 30
         Assert-Clean 'after restore'
+        Assert-Open 'after restore'
         Write-Host 'clean after kill and restore'
     }
 }
