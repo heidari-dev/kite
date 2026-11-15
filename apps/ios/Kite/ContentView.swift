@@ -209,7 +209,8 @@ private struct KiteButton: ButtonStyle {
             .overlay(shape.strokeBorder(Palette.accent, lineWidth: filled ? 0 : 2))
             .contentShape(shape)
             .opacity(configuration.isPressed ? 0.8 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            // The press shows at once; the release eases back.
+            .animation(configuration.isPressed ? nil : Motion.out(0.16), value: configuration.isPressed)
     }
 }
 
