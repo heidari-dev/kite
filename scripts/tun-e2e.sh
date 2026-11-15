@@ -342,7 +342,7 @@ pc iptables -Z OUTPUT
 pc ip6tables -Z OUTPUT
 phone iptables -Z
 kite_cli connect --tcp "$RELAY2" --tun "${sock[@]}" || { cat "$BIN/daemon.log" >&2; fail "kite connect through the daemon"; }
-kite_cli status "${sock[@]}" | grep -q '^state: connected' || fail "daemon status is not connected"
+grep -q '^state: connected' <<<"$(kite_cli status "${sock[@]}")" || fail "daemon status is not connected"
 pc curl -sS --max-time 20 https://1.1.1.1/cdn-cgi/trace | grep -q '^ip=' || fail "curl through the daemon"
 pc dig +short +time=10 +tries=1 example.com A | grep -q . || fail "DNS through the daemon"
 check_leaks daemon

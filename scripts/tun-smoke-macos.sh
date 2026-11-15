@@ -43,6 +43,9 @@ cleanup() {
 trap cleanup EXIT
 
 kite() { "$KITE" "$@" --socket "$SOCK"; }
+# Read the whole status first: grep -q stops at the first match, and under pipefail the
+# broken pipe that leaves kite with would fail the check.
+kite_has() { grep -q "$1" <<<"$(kite status)"; }
 
 wait_for() { # description, command...
   local what=$1
@@ -192,13 +195,13 @@ assert_clean "after disconnect"
 # The kill switch: the phone goes away, the tunnel's routes go too, and nothing may leave.
 kite connect --tcp "$RELAY" --tun --kill-switch
 assert_up
-kite status | grep -q 'kill switch: on' || fail "status does not show the kill switch"
+kite_has 'kill switch: on' || fail "status does not show the kill switch"
 # The link to the relay was dialled before the rules went up; it must survive them.
 sleep 3
-kite status | grep -q 'state: connected' || fail "the tunnel dropped when the kill switch went up"
+kite_has 'state: connected' || fail "the tunnel dropped when the kill switch went up"
 kill -9 "$relay"
 wait "$relay" 2>/dev/null || true
-reconnecting() { kite status | grep -q 'state: reconnecting'; }
+reconnecting() { kite_has 'state: reconnecting'; }
 wait_for "the tunnel to notice the lost relay" reconnecting
 anchor_rules | grep -q 'block return out quick all' || fail "the kill switch's rules are not in pf"
 drop_routes
