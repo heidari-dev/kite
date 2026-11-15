@@ -344,7 +344,19 @@ mod tests {
         let mut buf = [0u8; 1];
         // The paused clock jumps past the first-byte timeout while nothing else can run.
         assert!(matches!(s.read(&mut buf).await, Ok(0) | Err(_)));
-        assert_eq!(p.active.load(Ordering::Relaxed), 0);
+        // The run loop refreshes `active` when it collects the finished connection, a pass after
+        // the client sees the close; wait for that, not for a guess of how long it takes.
+        let gone = async {
+            while p.active.load(Ordering::Relaxed) != 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), gone)
+                .await
+                .is_ok(),
+            "the dropped client still counts as active"
+        );
     }
 
     #[tokio::test]

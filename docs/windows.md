@@ -58,8 +58,15 @@ Installing again over an older version upgrades it and keeps your key and the pa
 From a terminal the same things are `kite pair --usb` (in an administrator prompt), `kite connect --usb
 --tun` and `kite disconnect`.
 
-There is no kill switch on Windows yet ([#88](https://github.com/heidari-dev/kite/issues/88)): if the
-link to the phone drops, the tunnel ends and Windows returns to its own network.
+If the link to the phone drops, the tunnel ends and Windows returns to its own network. The kill
+switch (the switch in the app, or `--kill-switch`; off until you turn it on) blocks everything
+instead, and Kite dials the phone again until it answers or you disconnect. It uses Windows
+Filtering Platform filters that allow only loopback, the Kite adapter, Kite's own connection to the
+phone, DHCP and IPv6 neighbour discovery. Disconnect, `kite restore` (from an administrator
+prompt) and uninstalling remove the filters, and so does a restart of Windows. If the service
+itself crashes the block stays, so you are not left unprotected; connect again, or run `kite restore`
+to get your normal connection back. Programs that already had a connection open when you connected
+keep it until they close it.
 
 ### If Windows has no driver for the phone
 

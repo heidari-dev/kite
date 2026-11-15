@@ -98,10 +98,8 @@ Yes, once each is paired. A phone serves up to four computers at a time.
 
 ## Is there a kill switch?
 
-Linux has one: **Block traffic if the phone disconnects**, off until you turn it on. Windows and
-macOS do not have one yet ([#88](https://github.com/heidari-dev/kite/issues/88),
-[#101](https://github.com/heidari-dev/kite/issues/101)). Without it, when the link to the phone
-drops, the computer goes back to its own connection.
+Yes, on Linux, Windows and macOS: **Block traffic if the phone disconnects**, off until you turn it
+on. Without it, when the link to the phone drops, the computer goes back to its own connection.
 
 ## Why must Kite stay open on an iPhone?
 

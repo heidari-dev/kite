@@ -19,7 +19,7 @@ use kite_relay::pair;
 use std::convert::Infallible;
 use std::future::Future;
 use std::io;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -161,9 +161,9 @@ struct Link {
 impl Link {
     /// A tunnel to the relay, once the phone proved to be a paired one, and the address it
     /// reaches the relay at (the adb server's, for USB).
-    async fn establish(&self, phones: &Phones) -> io::Result<(Tunnel, Option<IpAddr>)> {
+    async fn establish(&self, phones: &Phones) -> io::Result<(Tunnel, Option<SocketAddr>)> {
         let stream = dial(&self.transport, self.tun, &self.adb_key).await?;
-        let relay = stream.peer_addr().ok().map(|a| a.ip());
+        let relay = stream.peer_addr().ok();
         let known = phones.list().clone();
         let tunnel = pair::connect(stream, &self.key, &known).await?;
         Ok((tunnel, relay))
@@ -175,7 +175,7 @@ pub struct Started {
     link: Link,
     first: Tunnel,
     /// Where `first` reached the relay, for TUN mode to keep that traffic out of the tunnel.
-    relay: Option<IpAddr>,
+    relay: Option<SocketAddr>,
     listener: TcpListener,
     kill_switch: bool,
 }
@@ -183,6 +183,12 @@ pub struct Started {
 /// Binds the proxy and dials the relay. This is where a missing pairing or an absent phone shows
 /// up, before anything of the system is touched.
 pub async fn start(p: &Params, store: &Store, shared: &Shared) -> io::Result<Started> {
+    // The block a crashed kill switch left would stop the dial below. Connecting without the kill
+    // switch is the user asking for the network back; with it the block stays until it is replaced.
+    #[cfg(any(windows, target_os = "macos"))]
+    if p.tun && !p.kill_switch {
+        crate::tun::restore().await?;
+    }
     let phones = store.phones()?;
     if phones.is_empty() {
         return Err(io::Error::new(

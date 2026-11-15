@@ -71,8 +71,10 @@ Plug in the phone, tap Start sharing, click Connect.
 
 - **Proxy only** (under Share) sends only the programs you point at Kite's local proxy through the
   phone. Everything else uses your normal connection.
-- There is no kill switch on macOS yet. If the phone drops out, the Mac goes back to its normal
-  connection, with your own address.
+- If the phone drops out, the Mac goes back to its normal connection, with your own address, unless
+  you turned on **Block traffic if the phone disconnects**. With it on, nothing leaves until the
+  phone is back or you press Disconnect. If Kite itself crashes, the block stays; press Disconnect,
+  run `sudo kite restore` or restart the Mac to get your normal connection back.
 - While connected, names that only your home network knows stop resolving. Disconnect to get them
   back.
 - Only one program can hold the phone's USB connection. If you also use `adb`, run

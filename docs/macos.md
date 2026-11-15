@@ -95,11 +95,17 @@ the relay. Run by hand with `--foreground` it needs `sudo`. It changes, and noth
 
 A normal stop removes the host route, the DNS resolver and the state file. If kite was killed, the
 device and its routes go away with the process; the DNS resolver and the host route stay until the
-daemon starts again or `sudo kite restore`. `kite` runs `route`, `scutil`, `dscacheutil` and `pkill`
+daemon starts again or `sudo kite restore`. `kite` runs `route`, `scutil`, `dscacheutil`, `pkill` and `pfctl`
 by full path with an empty environment.
 
-There is no kill switch on macOS yet (issue 101): `--kill-switch` is refused, and the desktop app
-does not show the switch.
+With the kill switch (`--kill-switch`, or the switch in the app; off until you turn it on) pf also
+blocks everything that does not go through the tunnel device, to the relay or on the loopback, and
+a lost phone is redialled until it answers or you disconnect. The rules are in the pf anchor
+`com.apple/kite` (so the default `/etc/pf.conf` must still have its `anchor "com.apple/*"` line),
+and pf is enabled by reference, so Kite never turns off a firewall you had on. The block survives a
+crash of Kite, and launchd starting the daemon again does not lift it: Disconnect, `sudo kite
+restore` or a restart of the Mac gives you your normal connection back. `kite` runs `pfctl` by full
+path with an empty environment, like the other commands.
 
 ## Desktop app
 

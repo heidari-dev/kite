@@ -47,8 +47,7 @@ const USAGE: &str = "usage:
       (a loopback address, default 127.0.0.1:1080).
   kite connect (--tcp HOST:PORT | --wifi [ADDR[:PORT]] | --usb [--serial SERIAL]) --tun [--kill-switch]
       Send all traffic and DNS of this computer through the relay (Linux, needs
-      CAP_NET_ADMIN; macOS, needs root; Windows, needs an administrator). With --kill-switch (Linux
-      only), block everything while the link is down and reconnect when the phone
+      CAP_NET_ADMIN; macOS, needs root; Windows, needs an administrator). With --kill-switch, block everything while the link is down and reconnect when the phone
       is back, until kite disconnect.
   kite disconnect
       Close the tunnel and lift the kill switch.
@@ -185,9 +184,10 @@ fn daemon_command(args: &[String], socket: &Path) -> io::Result<()> {
         return run_service(opts);
     }
     // A tunnel that was killed leaves its DNS resolver behind (launchd starts the daemon again).
+    // The kill switch's block stays, for the user to lift: that is what it is for.
     #[cfg(target_os = "macos")]
     let clean = async {
-        if let Err(e) = tun::restore().await {
+        if let Err(e) = tun::restore_keeping_block().await {
             eprintln!("kite: cleaning up after an earlier run: {e}");
         }
     };
@@ -215,8 +215,9 @@ fn run_service(opts: daemon::Options) -> io::Result<()> {
         };
         block_on(
             async {
-                // The DNS rule of a TUN run that was killed survives a reboot; take it away.
-                if let Err(e) = tun::restore().await {
+                // The DNS rule of a TUN run that was killed survives a reboot; take it away. The
+                // kill switch's block stays, for the user to lift: that is what it is for.
+                if let Err(e) = tun::restore_keeping_block().await {
                     eprintln!("kite: cleaning up after an earlier run: {e}");
                 }
                 daemon::run_with(opts, stop, || {
@@ -406,12 +407,6 @@ fn parse_connect(args: &[String]) -> io::Result<Connect> {
     let mut it = args.iter().peekable();
     while let Some(flag) = it.next() {
         if flag == "--kill-switch" {
-            if cfg!(windows) {
-                return Err(usage("--kill-switch is not available on Windows yet"));
-            }
-            if cfg!(target_os = "macos") {
-                return Err(usage("--kill-switch is not available on macOS yet"));
-            }
             kill_switch = true;
             continue;
         }
@@ -680,9 +675,9 @@ async fn status(_: &Path) -> io::Result<()> {
 mod tests {
     use super::{parse_connect, Transport};
 
-    /// TUN mode exists on Linux, macOS and Windows; the kill switch on Linux only.
+    /// TUN mode exists on Linux, macOS and Windows, and so does the kill switch.
     const TUN: bool = cfg!(any(target_os = "linux", target_os = "macos", windows));
-    const KILL_SWITCH: bool = cfg!(target_os = "linux");
+    const KILL_SWITCH: bool = TUN;
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
