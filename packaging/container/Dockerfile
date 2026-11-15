@@ -10,6 +10,8 @@ COPY . .
 # kite-cli has no C dependencies, so rust-lld links it against Rust's own musl without a C toolchain.
 # libloading (through tun2proxy) asks for libdl, which musl keeps in libc.a and ships as an empty
 # archive; Rust's copy of musl leaves that archive out, so an empty one stands in.
+# tun2proxy's build script sets GIT_HASH by running git, which this image lacks; outside a git
+# repository git prints nothing, so the empty value is what every other build gets too.
 RUN case "$TARGETARCH" in \
         amd64) target=x86_64-unknown-linux-musl ;; \
         arm64) target=aarch64-unknown-linux-musl ;; \
@@ -17,7 +19,7 @@ RUN case "$TARGETARCH" in \
     esac \
     && rustup target add "$target" \
     && mkdir /stub && printf '!<arch>\n' >/stub/libdl.a \
-    && cargo build --locked --release -p kite-cli --target "$target" \
+    && GIT_HASH= cargo build --locked --release -p kite-cli --target "$target" \
         --config "target.$target.linker='rust-lld'" \
         --config "target.$target.rustflags=['-L', '/stub']" \
     && install -D -m 0755 "target/$target/release/kite" /out/usr/local/bin/kite \
