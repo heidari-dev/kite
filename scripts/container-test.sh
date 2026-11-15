@@ -99,7 +99,8 @@ for _ in $(seq 50); do
 done
 in_netns kite-tun curl -fsS -m 20 --retry 3 --retry-all-errors -o /dev/null \
   https://1.1.1.1/cdn-cgi/trace || fail "TUN mode"
-[ -n "$(in_netns kite-tun dig +short +time=5 +tries=2 @9.9.9.9 example.com)" ] ||
+# On a timeout dig prints an error line, so look for an address.
+in_netns kite-tun dig +short +time=5 +tries=2 @9.9.9.9 example.com A | grep -Eq '^[0-9]+(\.[0-9]+){3}$' ||
   fail "DNS in TUN mode"
 docker stop -t 5 kite-tun >/dev/null
 [ "$(docker inspect -f '{{.State.ExitCode}}' kite-tun)" = 0 ] || fail "kite-tun did not stop cleanly"
