@@ -1,0 +1,38 @@
+# Advisories osv-scanner (and OpenSSF Scorecard) report for Cargo.lock that do not affect Kite.
+# All are RUSTSEC "unmaintained" notices with no known vulnerability. Each entry expires so it gets
+# looked at again; drop it as soon as the crate leaves Cargo.lock.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0069"
+ignoreUntil = 2027-05-15
+reason = "daemonize comes from tun2proxy 0.8.7 for its own daemon mode; Kite uses tun2proxy as a library and never calls it. Removed upstream, waiting for a tun2proxy release."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0141"
+ignoreUntil = 2027-05-15
+reason = "bincode is in Cargo.lock only as an optional dependency of typed-index-collections (via Slint); the feature that uses it is off, so it is never compiled."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0441"
+ignoreUntil = 2027-05-15
+reason = "pin-utils comes from Slint 1.18 through spin_on. Slint is at its latest release."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0192"
+ignoreUntil = 2027-05-15
+reason = "ttf-parser comes from Slint's winit backend (sctk-adwaita window decorations on Wayland) and reads only installed system fonts, never data from the phone or the network."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0371"
+ignoreUntil = 2027-05-15
+reason = "zbus_names is part of zbus 5, used by the Linux tray icon (ksni) and Slint's screen reader support to talk to the local session bus only."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0370"
+ignoreUntil = 2027-05-15
+reason = "zvariant is part of zbus 5, used by the Linux tray icon (ksni) and Slint's screen reader support to talk to the local session bus only."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0372"
+ignoreUntil = 2027-05-15
+reason = "zvariant_derive is part of zbus 5, used by the Linux tray icon (ksni) and Slint's screen reader support to talk to the local session bus only."
