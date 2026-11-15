@@ -2,8 +2,7 @@
 :root {
   --bg: #F6F1E7; --surface: #EEE7D8; --ink: #1F2630; --muted: #4F5866; --line: #8A8372;
   --accent: #B63E1C; --on-accent: #fff; --link: #B63E1C; --focus: #1F2630;
-  --out: cubic-bezier(0.23, 1, 0.32, 1);
-  --wave: linear(0, 0.259, 0.5, 0.707, 0.866, 0.966, 1, 0.966, 0.866, 0.707, 0.5, 0.259, 0, -0.259, -0.5, -0.707, -0.866, -0.966, -1, -0.966, -0.866, -0.707, -0.5, -0.259, 0);
+  --out: cubic-bezier(0.23, 1, 0.32, 1); --sine: cubic-bezier(0.37, 0, 0.63, 1);
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -84,18 +83,17 @@ a { color: inherit; }
 .kite .slack { animation: fade-out 250ms var(--out) 150ms both; }
 .kite .taut { animation: fade-in 250ms var(--out) 150ms both; }
 .kite .pose { animation: lift 450ms var(--out) both; }
-/* The hero plays once and is still after 4.8 s (WCAG 2.2.2, so no pause button): the lift, one sway cycle
-   and three tail flutters. Each loop is one sine period sampled as a linear() easing, so it starts and ends at rest.
-   shortcut: the rock's one-eighth-cycle lag from motion.md is dropped, because a lag would run past 5 s. */
-.kite .rig { animation: sway-rig 4800ms var(--wave) both; }
-.kite .rock { animation: sway-rock 4800ms var(--wave) both; }
-.kite .tail { animation: flutter 1400ms var(--wave) 450ms 3 both; }
+/* Sine loops: alternate between -A and A with a sine ease, offset so each crosses zero when the lift ends at 450 ms.
+   The rock crosses 600 ms after the rig, the one-eighth cycle behind that motion.md asks for. */
+.kite .rig { animation: sway-rig 2400ms var(--sine) -750ms infinite alternate; }
+.kite .rock { animation: sway-rock 2400ms var(--sine) -150ms infinite alternate; }
+.kite .tail { animation: flutter 700ms var(--sine) -600ms infinite alternate; }
 @keyframes lift { from { transform: translate(-18px, 9px) rotate(72deg); } }
 @keyframes fade-out { to { opacity: 0; } }
 @keyframes fade-in { from { opacity: 0; } }
-@keyframes sway-rig { to { transform: rotate(1.6deg); } }
-@keyframes sway-rock { to { transform: rotate(3.5deg); } }
-@keyframes flutter { to { transform: rotate(10deg); } }
+@keyframes sway-rig { from { transform: rotate(-1.6deg); } to { transform: rotate(1.6deg); } }
+@keyframes sway-rock { from { transform: rotate(-3.5deg); } to { transform: rotate(3.5deg); } }
+@keyframes flutter { from { transform: rotate(-10deg); } to { transform: rotate(10deg); } }
 
 /* Reduced motion: the connected pose, no travel, no loops. */
 @media (prefers-reduced-motion: reduce) {
