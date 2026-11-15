@@ -9,10 +9,10 @@
 //! - this program's own connection to the relay, by application and address;
 //! - DHCP and, for IPv6, neighbour discovery, so the link to the router or the phone stays up.
 //!
-//! The filters are added in a dynamic session: the system removes them when the handle is closed,
-//! and that includes a process that crashes, so a dead Kite never leaves the computer offline.
-//! The cost is that a crash lifts the block with it. [`lift`] deletes them by key as well, for
-//! `kite restore` and the start of the next run.
+//! The filters belong to no session and are not persistent: they stay when this process ends, a
+//! crash included, so the block holds until [`lift`] deletes it (`kite disconnect`, `kite restore`,
+//! the next connect), and the system drops them when the filtering engine stops, so a reboot never
+//! leaves the computer offline.
 //!
 //! Connections that were already open when the block went up are not affected: WFP decides on the
 //! first packet of a flow. They keep working until they close, or until the routes of the tunnel
@@ -33,12 +33,15 @@ use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::{
     FWPM_CONDITION_IP_REMOTE_ADDRESS, FWPM_CONDITION_IP_REMOTE_PORT, FWPM_FILTER0,
     FWPM_FILTER_CONDITION0, FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWPM_LAYER_ALE_AUTH_CONNECT_V6,
     FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4, FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6, FWPM_SESSION0,
-    FWPM_SESSION_FLAG_DYNAMIC, FWPM_SUBLAYER0, FWP_ACTION_BLOCK, FWP_ACTION_PERMIT,
-    FWP_BYTE_ARRAY16, FWP_BYTE_ARRAY16_TYPE, FWP_BYTE_BLOB, FWP_BYTE_BLOB_TYPE,
-    FWP_CONDITION_FLAG_IS_LOOPBACK, FWP_MATCH_EQUAL, FWP_MATCH_FLAGS_ALL_SET, FWP_MATCH_RANGE,
-    FWP_RANGE0, FWP_RANGE_TYPE, FWP_UINT16, FWP_UINT32, FWP_UINT64, FWP_UINT8, FWP_VALUE0,
+    FWPM_SUBLAYER0, FWP_ACTION_BLOCK, FWP_ACTION_PERMIT, FWP_BYTE_ARRAY16, FWP_BYTE_ARRAY16_TYPE,
+    FWP_BYTE_BLOB, FWP_BYTE_BLOB_TYPE, FWP_CONDITION_FLAG_IS_LOOPBACK, FWP_MATCH_EQUAL,
+    FWP_MATCH_FLAGS_ALL_SET, FWP_MATCH_RANGE, FWP_RANGE0, FWP_RANGE_TYPE, FWP_UINT16, FWP_UINT32,
+    FWP_UINT64, FWP_UINT8, FWP_VALUE0,
 };
 use windows_sys::Win32::System::Rpc::RPC_C_AUTHN_DEFAULT;
+
+/// `RPC_S_SERVER_UNAVAILABLE`, `EPT_S_NOT_REGISTERED`: the filtering engine is not running.
+const ENGINE_DOWN: [i32; 2] = [1722, 1753];
 
 /// The sublayer and, with the index in the low bytes, the filters. Fixed so that [`lift`] finds
 /// what a run left.
@@ -150,97 +153,82 @@ fn filter_key(index: u32) -> GUID {
     GUID::from_u128(FILTER_BASE | u128::from(index))
 }
 
-/// The filters are in place for as long as this value lives.
-#[derive(Debug)]
-pub struct KillSwitch {
-    engine: HANDLE,
+/// An open connection to the filtering engine, closed on drop.
+struct Engine(HANDLE);
+
+impl Engine {
+    fn open() -> io::Result<Self> {
+        // SAFETY: plain data; all zeroes is the documented default (not dynamic).
+        let session: FWPM_SESSION0 = unsafe { std::mem::zeroed() };
+        let mut engine: HANDLE = null_mut();
+        // SAFETY: the local engine (null server), the default authentication, a valid session and
+        // a writable out value.
+        check(unsafe {
+            FwpmEngineOpen0(
+                null(),
+                RPC_C_AUTHN_DEFAULT as u32,
+                null(),
+                &session,
+                &mut engine,
+            )
+        })?;
+        Ok(Self(engine))
+    }
+
+    /// Runs `f` in a transaction: all of it or none.
+    fn transaction(&self, f: impl FnOnce(HANDLE) -> io::Result<()>) -> io::Result<()> {
+        // SAFETY: a valid engine handle.
+        check(unsafe { FwpmTransactionBegin0(self.0, 0) })?;
+        match f(self.0) {
+            // SAFETY: a valid engine with an open transaction.
+            Ok(()) => check(unsafe { FwpmTransactionCommit0(self.0) }),
+            Err(e) => {
+                // SAFETY: as above.
+                unsafe { FwpmTransactionAbort0(self.0) };
+                Err(e)
+            }
+        }
+    }
 }
 
-// SAFETY: the engine handle is an opaque token the system accepts from any thread.
-unsafe impl Send for KillSwitch {}
-
-impl Drop for KillSwitch {
+impl Drop for Engine {
     fn drop(&mut self) {
-        // SAFETY: the handle came from FwpmEngineOpen0 and is closed once, here. Closing a
-        // dynamic session removes what it added.
-        unsafe { FwpmEngineClose0(self.engine) };
+        // SAFETY: the handle came from FwpmEngineOpen0 and is closed once, here.
+        unsafe { FwpmEngineClose0(self.0) };
     }
 }
 
-fn open(flags: u32) -> io::Result<HANDLE> {
-    // SAFETY: plain data; all zeroes is the documented default.
-    let mut session: FWPM_SESSION0 = unsafe { std::mem::zeroed() };
-    session.flags = flags;
-    let mut engine: HANDLE = null_mut();
-    // SAFETY: the local engine (null server), the default authentication, a valid session and a
-    // writable out value.
-    check(unsafe {
-        FwpmEngineOpen0(
-            null(),
-            RPC_C_AUTHN_DEFAULT as u32,
-            null(),
-            &session,
-            &mut engine,
-        )
-    })
-    .map_err(|e| io::Error::new(e.kind(), format!("opening the Windows firewall: {e}")))?;
-    Ok(engine)
-}
-
-/// Blocks everything except what the tunnel needs, until the returned value is dropped or
-/// [`lift`] runs. `tunnel` is the LUID of the tunnel adapter, `relay` the address this program
-/// reaches the relay at (none for a phone on a direct USB link).
-pub fn engage(tunnel: u64, relay: Option<IpAddr>) -> io::Result<KillSwitch> {
-    let guard = KillSwitch {
-        engine: open(FWPM_SESSION_FLAG_DYNAMIC)?,
-    };
-    let engine = guard.engine;
+/// Blocks everything except what the tunnel needs, until [`lift`] runs. `tunnel` is the LUID of the
+/// tunnel adapter, `relay` the address this program reaches the relay at (none for a phone on a
+/// direct USB link). Any filters of an earlier run are replaced.
+pub fn engage(tunnel: u64, relay: Option<IpAddr>) -> io::Result<()> {
     let program = AppId::of_current_exe()?;
-    // SAFETY: a valid engine handle.
-    check(unsafe { FwpmTransactionBegin0(engine, 0) })?;
-    let result = (|| {
-        delete_all(engine)?;
-        let name = wide(NAME);
-        // SAFETY: plain data; all zeroes is the documented default.
-        let mut sublayer: FWPM_SUBLAYER0 = unsafe { std::mem::zeroed() };
-        sublayer.subLayerKey = SUBLAYER;
-        sublayer.displayData.name = name.as_ptr().cast_mut();
-        sublayer.weight = u16::MAX;
-        // SAFETY: a valid engine and sublayer; `name` outlives the call.
-        check(unsafe { FwpmSubLayerAdd0(engine, &sublayer, null_mut()) })?;
-        for (i, spec) in specs(tunnel, relay).iter().enumerate() {
-            add_filter(engine, &name, filter_key(i as u32), spec, &program)?;
-        }
-        Ok(())
-    })();
-    match result {
-        // SAFETY: a valid engine with an open transaction.
-        Ok(()) => check(unsafe { FwpmTransactionCommit0(engine) })?,
-        Err(e) => {
-            // SAFETY: as above.
-            unsafe { FwpmTransactionAbort0(engine) };
-            return Err(e);
-        }
-    }
-    Ok(guard)
+    let name = wide(NAME);
+    Engine::open()
+        .map_err(|e| io::Error::new(e.kind(), format!("opening the Windows firewall: {e}")))?
+        .transaction(|engine| {
+            delete_all(engine)?;
+            // SAFETY: plain data; all zeroes is the documented default.
+            let mut sublayer: FWPM_SUBLAYER0 = unsafe { std::mem::zeroed() };
+            sublayer.subLayerKey = SUBLAYER;
+            sublayer.displayData.name = name.as_ptr().cast_mut();
+            sublayer.weight = u16::MAX;
+            // SAFETY: a valid engine and sublayer; `name` outlives the call.
+            check(unsafe { FwpmSubLayerAdd0(engine, &sublayer, null_mut()) })?;
+            for (i, spec) in specs(tunnel, relay).iter().enumerate() {
+                add_filter(engine, &name, filter_key(i as u32), spec, &program)?;
+            }
+            Ok(())
+        })
 }
 
-/// Removes the filters of a run that is still alive or left them; there is nothing to do when there
-/// are none.
+/// Removes the filters of this run or of one that ended; there is nothing to do when there are
+/// none, or when the filtering engine is not running.
 pub fn lift() -> io::Result<()> {
-    let engine = KillSwitch {
-        engine: open(0)?, // only closed on drop, nothing dynamic
-    };
-    // SAFETY: a valid engine handle.
-    check(unsafe { FwpmTransactionBegin0(engine.engine, 0) })?;
-    match delete_all(engine.engine) {
-        // SAFETY: a valid engine with an open transaction.
-        Ok(()) => check(unsafe { FwpmTransactionCommit0(engine.engine) }),
-        Err(e) => {
-            // SAFETY: as above.
-            unsafe { FwpmTransactionAbort0(engine.engine) };
-            Err(e)
-        }
+    match Engine::open() {
+        Err(e) if e.raw_os_error().is_some_and(|c| ENGINE_DOWN.contains(&c)) => Ok(()),
+        Err(e) => Err(e),
+        Ok(engine) => engine.transaction(delete_all),
     }
 }
 

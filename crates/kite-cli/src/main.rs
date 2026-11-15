@@ -215,8 +215,9 @@ fn run_service(opts: daemon::Options) -> io::Result<()> {
         };
         block_on(
             async {
-                // The DNS rule of a TUN run that was killed survives a reboot; take it away.
-                if let Err(e) = tun::restore().await {
+                // The DNS rule of a TUN run that was killed survives a reboot; take it away. The
+                // kill switch's block stays, for the user to lift: that is what it is for.
+                if let Err(e) = tun::restore_keeping_block().await {
                     eprintln!("kite: cleaning up after an earlier run: {e}");
                 }
                 daemon::run_with(opts, stop, || {

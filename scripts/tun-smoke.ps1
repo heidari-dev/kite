@@ -11,8 +11,9 @@
 #
 # It also tests the kill switch: with the tunnel's routes taken away, as if the adapter were gone,
 # a connection to 1.1.1.1 and a DNS query to 8.8.8.8 must fail while the kill switch is on and the
-# relay is dead, and work again after disconnect and after the daemon was killed and `kite restore`
-# ran. The test needs a working Internet connection for that.
+# relay is dead, and work again after disconnect. A daemon that is killed leaves the block up (that
+# is what it is for) until `kite restore` runs. The test needs a working Internet connection for
+# that.
 #
 # With -Service it tests the installed service Kite instead of a daemon of its own (the installer
 # test does this): the service is killed once and must clean up after itself when it comes back.
@@ -183,9 +184,9 @@ try {
     $relayProc = Start-Relay 'relay2'
     Pair 'relay2'
 
-    # A daemon that is killed leaves the DNS rule at most; restore takes the rest away. The kill
-    # switch's filters go with the process. The service is started again by the service manager, and
-    # cleans up when it starts.
+    # A daemon that is killed leaves the DNS rule and the kill switch's block behind; restore takes
+    # them away. The service is started again by the service manager, and cleans up when it starts,
+    # except for the block.
     Kite @('connect', '--tcp', $relay, '--tun', '--kill-switch')
     Assert-Up
     if ($Service) {
@@ -197,7 +198,10 @@ try {
         } 60
         Wait-For 'the service to clean up' { -not (Adapter) -and (Halves).Count -eq 0 -and (Rules).Count -eq 0 } 60
         Assert-Clean 'after the service restarted'
-        Assert-Open 'after the service restarted'
+        Assert-Blocked 'after the service was killed with the kill switch on'
+        & $Kite restore
+        if ($LASTEXITCODE -ne 0) { Fail "kite restore exited with $LASTEXITCODE" }
+        Assert-Open 'after restore'
         Write-Host 'clean after the service was killed and started again'
     }
     else {
@@ -205,6 +209,7 @@ try {
         $daemon.WaitForExit()
         Start-Sleep -Seconds 2
         Write-Host ("after the kill: adapter={0} routes={1} rules={2}" -f [bool](Adapter), (Halves).Count, (Rules).Count)
+        Assert-Blocked 'after the daemon was killed with the kill switch on'
         & $Kite restore
         if ($LASTEXITCODE -ne 0) { Fail "kite restore exited with $LASTEXITCODE" }
         Wait-For 'the adapter to go' { -not (Adapter) } 30

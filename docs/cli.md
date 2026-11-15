@@ -327,11 +327,11 @@ connection and every new inbound flow, IPv4 and IPv6, except loopback, anything 
 `kite0`, this program's own connection to the relay (by program and address), DHCP, and IPv6
 neighbour discovery, so the link to the router or the phone stays up and DNS cannot go out of the
 physical adapter either. Windows Firewall needs to be running (the Base Filtering Engine service,
-which it always is by default). The filters live in a dynamic session of the filtering engine: when
-the Kite process ends, however it ends, the system removes them. So on Windows a crash or a stopped
-service lifts the block instead of holding it as Linux does, and `kite restore` has nothing to
-remove then; it still deletes them if they are there. Connections that were already open when
-the block went up are not cut by it.
+which it always is by default). The filters belong to no session, so they outlive the Kite process:
+after a crash, a stopped service or an error of the tunnel traffic stays blocked until `kite restore`
+or the next `kite connect`, as on Linux. They are not persistent, so a reboot (or restarting that
+service) removes them and the computer is never left offline for good. Connections that were
+already open when the block went up are not cut by it.
 
 ## kite status
 
