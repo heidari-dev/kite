@@ -2974,8 +2974,8 @@ dependencies = [
  "kite-link",
  "kite-relay",
  "kite-win",
- "netlink-packet-route",
- "rtnetlink",
+ "netlink-packet-route 0.34.0",
+ "rtnetlink 0.24.0",
  "socket2",
  "tokio",
  "tokio-util",
@@ -3460,6 +3460,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "netlink-packet-route"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3c407d8e95c0128ee5729728482a369f3ba9a0d9ba8335c20949a8d8989cf6b"
+dependencies = [
+ "bitflags 2.13.2",
+ "libc",
+ "log",
+ "netlink-packet-core",
+ "zerocopy",
+]
+
+[[package]]
 name = "netlink-proto"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3472,6 +3485,20 @@ dependencies = [
  "netlink-packet-core",
  "netlink-sys",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "netlink-proto"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "deb648c817503ada468a15b8fb7a37d2061079dc0905f2c6552392850279dd85"
+dependencies = [
+ "bytes",
+ "futures-channel",
+ "futures-util",
+ "log",
+ "netlink-packet-core",
+ "netlink-sys",
 ]
 
 [[package]]
@@ -4665,11 +4692,28 @@ dependencies = [
  "futures-util",
  "log",
  "netlink-packet-core",
- "netlink-packet-route",
- "netlink-proto",
+ "netlink-packet-route 0.33.0",
+ "netlink-proto 0.13.0",
  "netlink-sys",
  "nix 0.30.1",
  "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "rtnetlink"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ebb223efd6a02c17e119412e8a06640abead288a44256e642377e1c09d2134c"
+dependencies = [
+ "futures-channel",
+ "futures-util",
+ "log",
+ "netlink-packet-core",
+ "netlink-packet-route 0.34.0",
+ "netlink-proto 0.14.1",
+ "netlink-sys",
+ "nix 0.31.3",
  "tokio",
 ]
 
@@ -5645,7 +5689,7 @@ dependencies = [
  "nix 0.31.3",
  "regex",
  "resolv-conf",
- "rtnetlink",
+ "rtnetlink 0.23.0",
  "serde",
  "serde_json",
  "system-configuration",
