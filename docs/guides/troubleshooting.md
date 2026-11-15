@@ -67,8 +67,8 @@ Unplug, replug and tap Allow. Kite waits 60 seconds for the tap.
 - iPhone: Kite left the screen. Open it again.
 - A phone that changes WiFi networks gets a new address. Connect again.
 - Over WiFi, a weak signal on either side shows up as stalls. Try the cable.
-- After the phone drops out, Linux with the kill switch on blocks everything until it is back. Press
-  Disconnect to get your normal connection. Without the switch, or on Windows and macOS, the
+- After the phone drops out, Linux and Windows with the kill switch on block everything until it is
+  back. Press Disconnect to get your normal connection. Without the switch, or on macOS, the
   computer falls back to its own connection by itself.
 
 ## Names on my home network stopped working
