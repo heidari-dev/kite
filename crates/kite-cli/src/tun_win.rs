@@ -71,7 +71,7 @@ const HALVES: [(IpAddr, u8); 4] = [
 /// reason but `shutdown`, until `restore`.
 pub async fn run<F, Fut>(
     proxy: SocketAddr,
-    relay: Option<IpAddr>,
+    relay: Option<SocketAddr>,
     kill_switch: bool,
     serve_link: F,
     shutdown: impl Future<Output = ()>,
@@ -81,7 +81,7 @@ where
     Fut: Future<Output = io::Result<()>>,
 {
     // A dual-stack connection reports the relay as ::ffff:a.b.c.d; it is a.b.c.d to routes and filters.
-    let relay = relay.map(|ip| ip.to_canonical());
+    let relay = relay.map(|a| a.ip().to_canonical());
     let _lock = lock()?;
     // Whatever a kite that was killed left behind. A block stays for the kill switch to replace
     // atomically; without the kill switch it goes.
