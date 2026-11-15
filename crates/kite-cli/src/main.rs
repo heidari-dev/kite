@@ -12,7 +12,7 @@ use tokio::net::{TcpSocket, TcpStream};
 
 #[cfg(any(unix, windows))]
 mod client;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod daemon;
 mod proxy;
 #[cfg(target_os = "linux")]
@@ -23,14 +23,18 @@ mod status;
 mod store;
 #[cfg(target_os = "linux")]
 mod tun;
+#[cfg(target_os = "macos")]
+#[path = "tun_mac.rs"]
+mod tun;
 #[cfg(windows)]
 #[path = "tun_win.rs"]
 mod tun;
 
 const USAGE: &str = "usage:
   kite daemon [--state-dir DIR]
-      Run the background service that owns the tunnel (Linux and Windows). The
-      commands below talk to it on /run/kite/kite.sock, or on \\\\.\\pipe\\kite on Windows.
+      Run the background service that owns the tunnel (Linux, macOS and Windows). The
+      commands below talk to it on /run/kite/kite.sock (/var/run/kite/kite.sock on macOS),
+      or on \\\\.\\pipe\\kite on Windows.
   kite pair (--tcp HOST:PORT | --wifi [ADDR[:PORT]] | --usb [--serial SERIAL])
       Pair this computer with the phone: type the 6-digit code it shows.
   kite peers [remove KEY]
@@ -43,7 +47,7 @@ const USAGE: &str = "usage:
       (a loopback address, default 127.0.0.1:1080).
   kite connect (--tcp HOST:PORT | --wifi [ADDR[:PORT]] | --usb [--serial SERIAL]) --tun [--kill-switch]
       Send all traffic and DNS of this computer through the relay (Linux, needs
-      CAP_NET_ADMIN; Windows, needs an administrator). With --kill-switch (Linux
+      CAP_NET_ADMIN; macOS, needs root; Windows, needs an administrator). With --kill-switch (Linux
       only), block everything while the link is down and reconnect when the phone
       is back, until kite disconnect.
   kite disconnect
@@ -156,7 +160,7 @@ fn run(args: &[String], socket: &Path, foreground: bool) -> io::Result<()> {
     }
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn daemon_command(args: &[String], socket: &Path) -> io::Result<()> {
     let mut args = args.to_vec();
     #[cfg(windows)]
@@ -164,7 +168,9 @@ fn daemon_command(args: &[String], socket: &Path) -> io::Result<()> {
     let state = take_option(&mut args, "--state-dir")?.unwrap_or_else(|| {
         #[cfg(windows)]
         return kite_win::data_dir();
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        return PathBuf::from("/var/db/kite");
+        #[cfg(target_os = "linux")]
         PathBuf::from("/var/lib/kite")
     });
     if !args.is_empty() {
@@ -178,7 +184,22 @@ fn daemon_command(args: &[String], socket: &Path) -> io::Result<()> {
     if service {
         return run_service(opts);
     }
-    block_on(daemon::run(opts, shutdown_signal()), false)
+    // A tunnel that was killed leaves its DNS resolver behind (launchd starts the daemon again).
+    #[cfg(target_os = "macos")]
+    let clean = async {
+        if let Err(e) = tun::restore().await {
+            eprintln!("kite: cleaning up after an earlier run: {e}");
+        }
+    };
+    #[cfg(not(target_os = "macos"))]
+    let clean = async {};
+    block_on(
+        async {
+            clean.await;
+            daemon::run(opts, shutdown_signal()).await
+        },
+        false,
+    )
 }
 
 /// `kite daemon --service`: what the service manager starts. The log goes to `kite.log` in the
@@ -208,7 +229,7 @@ fn run_service(opts: daemon::Options) -> io::Result<()> {
     })
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn daemon_command(_: &[String], _: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -235,7 +256,8 @@ fn allow(args: &[String]) -> io::Result<()> {
 fn allow(_: &[String]) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "allow is only available on Windows; on Linux add the user to the group kite",
+        "allow is only available on Windows; on Linux add the user to the group kite; on macOS \
+         administrators may use the daemon already",
     ))
 }
 
@@ -265,12 +287,15 @@ fn daemon_only(_: &[String], _: &Path) -> io::Result<()> {
     ))
 }
 
-#[cfg_attr(not(any(target_os = "linux", windows)), allow(unused_variables))]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos", windows)),
+    allow(unused_variables)
+)]
 fn block_on<F: std::future::Future<Output = io::Result<()>>>(f: F, tun: bool) -> io::Result<()> {
     let mut rt = tokio::runtime::Builder::new_current_thread();
     // Name lookups; in TUN mode block_in_place also takes a thread from this pool.
     let mut blocking = 4;
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if tun {
         // tun2proxy's TCP stack calls block_in_place, which a current_thread runtime refuses.
         rt = tokio::runtime::Builder::new_multi_thread();
@@ -384,12 +409,15 @@ fn parse_connect(args: &[String]) -> io::Result<Connect> {
             if cfg!(windows) {
                 return Err(usage("--kill-switch is not available on Windows yet"));
             }
+            if cfg!(target_os = "macos") {
+                return Err(usage("--kill-switch is not available on macOS yet"));
+            }
             kill_switch = true;
             continue;
         }
         if flag == "--tun" {
-            if !cfg!(any(target_os = "linux", windows)) {
-                return Err(usage("--tun is only available on Linux and Windows"));
+            if !cfg!(any(target_os = "linux", target_os = "macos", windows)) {
+                return Err(usage("--tun is only available on Linux, macOS and Windows"));
             }
             tun = true;
             continue;
@@ -564,7 +592,10 @@ fn peers(args: &[String]) -> io::Result<()> {
 }
 
 /// In TUN mode the socket carries the routing mark that keeps it out of the tunnel it carries.
-#[cfg_attr(not(any(target_os = "linux", windows)), allow(unused_variables))]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos", windows)),
+    allow(unused_variables)
+)]
 async fn dial_tcp(relay: &str, tun: bool) -> io::Result<TcpStream> {
     let connect = async {
         let mut last = io::Error::new(io::ErrorKind::NotFound, "relay name did not resolve");
@@ -574,7 +605,7 @@ async fn dial_tcp(relay: &str, tun: bool) -> io::Result<TcpStream> {
             } else {
                 TcpSocket::new_v6()?
             };
-            #[cfg(any(target_os = "linux", windows))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             if tun {
                 // Every packet to port 53 is taken for DNS, so this socket would loop.
                 if addr.port() == 53 {
@@ -609,12 +640,12 @@ async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 async fn restore() -> io::Result<()> {
     tun::restore().await
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 async fn restore() -> io::Result<()> {
     Ok(())
 }
@@ -638,7 +669,7 @@ async fn status(socket: &Path) -> io::Result<()> {
 async fn status(_: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "status is only available on Linux and Windows",
+        "status is only available on Linux, macOS and Windows",
     ))
 }
 
@@ -646,8 +677,8 @@ async fn status(_: &Path) -> io::Result<()> {
 mod tests {
     use super::{parse_connect, Transport};
 
-    /// TUN mode exists on Linux and Windows; the kill switch on Linux only.
-    const TUN: bool = cfg!(any(target_os = "linux", windows));
+    /// TUN mode exists on Linux, macOS and Windows; the kill switch on Linux only.
+    const TUN: bool = cfg!(any(target_os = "linux", target_os = "macos", windows));
     const KILL_SWITCH: bool = cfg!(target_os = "linux");
 
     fn args(s: &str) -> Vec<String> {

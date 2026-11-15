@@ -1,4 +1,7 @@
-#![cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
+#![cfg_attr(
+    not(any(target_os = "linux", target_os = "macos", windows)),
+    allow(dead_code)
+)]
 //! One connection of this computer to the phone, shared by `kite connect --foreground` and the
 //! daemon: dial and pair-check the relay, then serve the SOCKS5 proxy or TUN mode through it.
 //!
@@ -193,7 +196,7 @@ impl Started {
             listener,
             kill_switch,
         } = self;
-        #[cfg(any(target_os = "linux", windows))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         if link.tun {
             let addr = listener.local_addr()?;
             return crate::tun::run(
