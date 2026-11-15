@@ -243,7 +243,6 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let ui = AppWindow::new()?;
     ui.set_phones(ModelRc::from(phones));
-    ui.set_kill_switch_available(settings::KILL_SWITCH);
     let tray = Tray::new()?;
     let (cmds, rx) = unbounded_channel();
     let visible = Arc::new(AtomicBool::new(false));
