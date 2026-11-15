@@ -2,8 +2,7 @@
 :root {
   --bg: #F6F1E7; --surface: #EEE7D8; --ink: #1F2630; --muted: #4F5866; --line: #8A8372;
   --accent: #B63E1C; --on-accent: #fff; --link: #B63E1C; --focus: #1F2630;
-  --out: cubic-bezier(0.23, 1, 0.32, 1);
-  --wave: linear(0, 0.259, 0.5, 0.707, 0.866, 0.966, 1, 0.966, 0.866, 0.707, 0.5, 0.259, 0, -0.259, -0.5, -0.707, -0.866, -0.966, -1, -0.966, -0.866, -0.707, -0.5, -0.259, 0);
+  --out: cubic-bezier(0.23, 1, 0.32, 1); --sine: cubic-bezier(0.37, 0, 0.63, 1);
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
@@ -74,7 +73,7 @@ a { color: inherit; }
 .lead { font-size: clamp(1.1875rem, 1.6vw, 1.375rem); color: var(--muted); margin: 1.5rem 0 2rem; }
 .fact { margin: 2rem 0 0; color: var(--muted); font-size: 0.9375rem; }
 .hero-art { display: flex; justify-content: center; }
-.kite { width: min(100%, 460px); height: auto; overflow: visible; }
+.kite { display: block; width: 100%; height: auto; overflow: visible; }
 .kite .slack, .kite .taut, .kite .tail { fill: none; stroke: #B63E1C; stroke-width: 2; stroke-linecap: round; }
 
 /* The kite: connect from rest, then sway and flutter (docs/design/motion.md). Everything animated is a transform or an opacity. */
@@ -84,24 +83,32 @@ a { color: inherit; }
 .kite .slack { animation: fade-out 250ms var(--out) 150ms both; }
 .kite .taut { animation: fade-in 250ms var(--out) 150ms both; }
 .kite .pose { animation: lift 450ms var(--out) both; }
-/* The hero plays once and is still after 4.8 s (WCAG 2.2.2, so no pause button): the lift, one sway cycle
-   and three tail flutters. Each loop is one sine period sampled as a linear() easing, so it starts and ends at rest.
-   shortcut: the rock's one-eighth-cycle lag from motion.md is dropped, because a lag would run past 5 s. */
-.kite .rig { animation: sway-rig 4800ms var(--wave) both; }
-.kite .rock { animation: sway-rock 4800ms var(--wave) both; }
-.kite .tail { animation: flutter 1400ms var(--wave) 450ms 3 both; }
+/* Sine loops: alternate between -A and A with a sine ease, offset so each crosses zero when the lift ends at 450 ms.
+   The rock crosses 600 ms after the rig, the one-eighth cycle behind that motion.md asks for. */
+.kite .rig { animation: sway-rig 2400ms var(--sine) -750ms infinite alternate; }
+.kite .rock { animation: sway-rock 2400ms var(--sine) -150ms infinite alternate; }
+.kite .tail { animation: flutter 700ms var(--sine) -600ms infinite alternate; }
 @keyframes lift { from { transform: translate(-18px, 9px) rotate(72deg); } }
 @keyframes fade-out { to { opacity: 0; } }
 @keyframes fade-in { from { opacity: 0; } }
-@keyframes sway-rig { to { transform: rotate(1.6deg); } }
-@keyframes sway-rock { to { transform: rotate(3.5deg); } }
-@keyframes flutter { to { transform: rotate(10deg); } }
+@keyframes sway-rig { from { transform: rotate(-1.6deg); } to { transform: rotate(1.6deg); } }
+@keyframes sway-rock { from { transform: rotate(-3.5deg); } to { transform: rotate(3.5deg); } }
+@keyframes flutter { from { transform: rotate(-10deg); } to { transform: rotate(10deg); } }
 
-/* Reduced motion: the connected pose, no travel, no loops. */
+/* The kite is its own pause control (WCAG 2.2.2) with no script: a checkbox that is hidden from sight but not from
+   the keyboard, inside a label that wraps the kite. Checked means paused. */
+.kite-toggle { position: relative; display: block; width: min(100%, 460px); cursor: pointer; }
+.kite-toggle input { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.kite-toggle input:checked ~ .kite * { animation-play-state: paused; }
+.kite-toggle input:focus-visible ~ .kite { outline: 3px solid var(--focus); outline-offset: 6px; border-radius: 16px; }
+
+/* Reduced motion: the connected pose, no travel, no loops, nothing to pause. */
 @media (prefers-reduced-motion: reduce) {
   .kite * { animation: none !important; }
   .kite .slack { opacity: 0; }
   .kite { animation: fade-in 200ms linear both; }
+  .kite-toggle { cursor: default; }
+  .kite-toggle input { display: none; }
   html { scroll-behavior: auto; }
   .btn, .card, .link { transition: none !important; }
 }
@@ -144,7 +151,7 @@ footer p + p { display: flex; gap: 20px; flex-wrap: wrap; }
   .hero-grid, .split, .split.wide { grid-template-columns: 1fr; gap: 40px; }
   .hero { min-height: 0; }
   .hero-art { order: -1; }
-  .kite { width: min(62%, 260px); }
+  .kite-toggle { width: min(62%, 260px); }
   .steps { grid-template-columns: 1fr; gap: 24px; }
   .stats { grid-template-columns: 1fr 1fr; gap: 28px 20px; }
   .cards.three { grid-template-columns: 1fr; }
