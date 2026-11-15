@@ -1,0 +1,6 @@
+#!/bin/sh
+# Stops the daemon of an older version, so its files can be replaced.
+set -u
+[ "${3:-/}" = / ] || exit 0
+/bin/launchctl bootout system/io.github.heidari-dev.kite 2>/dev/null
+exit 0
