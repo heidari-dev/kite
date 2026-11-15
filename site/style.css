@@ -73,7 +73,7 @@ a { color: inherit; }
 .lead { font-size: clamp(1.1875rem, 1.6vw, 1.375rem); color: var(--muted); margin: 1.5rem 0 2rem; }
 .fact { margin: 2rem 0 0; color: var(--muted); font-size: 0.9375rem; }
 .hero-art { display: flex; justify-content: center; }
-.kite { display: block; width: 100%; height: auto; overflow: visible; }
+.kite { width: min(100%, 460px); height: auto; overflow: visible; }
 .kite .slack, .kite .taut, .kite .tail { fill: none; stroke: #B63E1C; stroke-width: 2; stroke-linecap: round; }
 
 /* The kite: connect from rest, then sway and flutter (docs/design/motion.md). Everything animated is a transform or an opacity. */
@@ -95,20 +95,11 @@ a { color: inherit; }
 @keyframes sway-rock { from { transform: rotate(-3.5deg); } to { transform: rotate(3.5deg); } }
 @keyframes flutter { from { transform: rotate(-10deg); } to { transform: rotate(10deg); } }
 
-/* The kite is its own pause control (WCAG 2.2.2) with no script: a checkbox that is hidden from sight but not from
-   the keyboard, inside a label that wraps the kite. Checked means paused. */
-.kite-toggle { position: relative; display: block; width: min(100%, 460px); cursor: pointer; }
-.kite-toggle input { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.kite-toggle input:checked ~ .kite * { animation-play-state: paused; }
-.kite-toggle input:focus-visible ~ .kite { outline: 3px solid var(--focus); outline-offset: 6px; border-radius: 16px; }
-
-/* Reduced motion: the connected pose, no travel, no loops, nothing to pause. */
+/* Reduced motion: the connected pose, no travel, no loops. */
 @media (prefers-reduced-motion: reduce) {
   .kite * { animation: none !important; }
   .kite .slack { opacity: 0; }
   .kite { animation: fade-in 200ms linear both; }
-  .kite-toggle { cursor: default; }
-  .kite-toggle input { display: none; }
   html { scroll-behavior: auto; }
   .btn, .card, .link { transition: none !important; }
 }
@@ -151,7 +142,7 @@ footer p + p { display: flex; gap: 20px; flex-wrap: wrap; }
   .hero-grid, .split, .split.wide { grid-template-columns: 1fr; gap: 40px; }
   .hero { min-height: 0; }
   .hero-art { order: -1; }
-  .kite-toggle { width: min(62%, 260px); }
+  .kite { width: min(62%, 260px); }
   .steps { grid-template-columns: 1fr; gap: 24px; }
   .stats { grid-template-columns: 1fr 1fr; gap: 28px 20px; }
   .cards.three { grid-template-columns: 1fr; }
