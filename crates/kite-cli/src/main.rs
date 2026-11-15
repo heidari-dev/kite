@@ -497,7 +497,7 @@ async fn connect(c: Connect) -> io::Result<()> {
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
     let started = tokio::select! {
-        r = session::start(&params, &store) => r?,
+        r = session::start(&params, &store, &shared) => r?,
         () = &mut shutdown => return Ok(()),
     };
     let mode = started.mode()?;

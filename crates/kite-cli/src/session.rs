@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
+use tokio::sync::watch;
 
 /// First wait before dialling again after a lost link, doubled up to [`MAX_BACKOFF`].
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
@@ -44,6 +45,8 @@ pub struct Shared {
     /// What they carried since the session began.
     pub bytes: Arc<Bytes>,
     live: Mutex<Live>,
+    /// The phones this session may use.
+    phones: Phones,
 }
 
 struct Live {
@@ -72,11 +75,50 @@ impl Default for Shared {
                 reconnects: 0,
                 up_since: None,
             }),
+            phones: Phones::default(),
+        }
+    }
+}
+
+/// The paired phones a session may use. Removing one ends its open tunnel and fails any redial.
+struct Phones {
+    list: Mutex<Vec<[u8; KEY_LEN]>>,
+    removals: watch::Sender<()>,
+}
+
+impl Default for Phones {
+    fn default() -> Self {
+        Self {
+            list: Mutex::default(),
+            removals: watch::channel(()).0,
+        }
+    }
+}
+
+impl Phones {
+    fn list(&self) -> std::sync::MutexGuard<'_, Vec<[u8; KEY_LEN]>> {
+        self.list.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Completes once `key` is not paired.
+    async fn unpaired(&self, key: &[u8; KEY_LEN]) {
+        // Subscribing first means a removal after the check still wakes the wait.
+        let mut removals = self.removals.subscribe();
+        while self.list().contains(key) {
+            if removals.changed().await.is_err() {
+                return;
+            }
         }
     }
 }
 
 impl Shared {
+    /// Unpairs a phone: a tunnel open to it ends at once and it is not dialled again.
+    pub fn unpair(&self, key: &[u8; KEY_LEN]) {
+        self.phones.list().retain(|k| k != key);
+        self.phones.removals.send_replace(());
+    }
+
     fn live(&self) -> std::sync::MutexGuard<'_, Live> {
         self.live.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -112,7 +154,6 @@ struct Link {
     transport: Transport,
     tun: bool,
     key: StaticKey,
-    phones: Vec<[u8; KEY_LEN]>,
     /// Where the ADB key is, for a phone reached directly over USB.
     adb_key: std::path::PathBuf,
 }
@@ -120,10 +161,11 @@ struct Link {
 impl Link {
     /// A tunnel to the relay, once the phone proved to be a paired one, and the address it
     /// reaches the relay at (the adb server's, for USB).
-    async fn establish(&self) -> io::Result<(Tunnel, Option<IpAddr>)> {
+    async fn establish(&self, phones: &Phones) -> io::Result<(Tunnel, Option<IpAddr>)> {
         let stream = dial(&self.transport, self.tun, &self.adb_key).await?;
         let relay = stream.peer_addr().ok().map(|a| a.ip());
-        let tunnel = pair::connect(stream, &self.key, &self.phones).await?;
+        let known = phones.list().clone();
+        let tunnel = pair::connect(stream, &self.key, &known).await?;
         Ok((tunnel, relay))
     }
 }
@@ -140,7 +182,7 @@ pub struct Started {
 
 /// Binds the proxy and dials the relay. This is where a missing pairing or an absent phone shows
 /// up, before anything of the system is touched.
-pub async fn start(p: &Params, store: &Store) -> io::Result<Started> {
+pub async fn start(p: &Params, store: &Store, shared: &Shared) -> io::Result<Started> {
     let phones = store.phones()?;
     if phones.is_empty() {
         return Err(io::Error::new(
@@ -148,6 +190,10 @@ pub async fn start(p: &Params, store: &Store) -> io::Result<Started> {
             "not paired with a phone yet: run kite pair first",
         ));
     }
+    *shared.phones.list() = phones;
+    // A phone removed while this ran must not come back with the list above.
+    let now = store.phones()?;
+    shared.phones.list().retain(|k| now.contains(k));
     // TUN mode feeds tun2proxy through a proxy on a free port.
     let listen = if p.tun {
         SocketAddr::from(([127, 0, 0, 1], 0))
@@ -160,10 +206,9 @@ pub async fn start(p: &Params, store: &Store) -> io::Result<Started> {
         transport: crate::resolve(&p.transport).await?,
         tun: p.tun,
         key: store.key()?,
-        phones,
         adb_key: store.adb_key_path(),
     };
-    let (first, relay) = link.establish().await?;
+    let (first, relay) = link.establish(&shared.phones).await?;
     Ok(Started {
         link,
         first,
@@ -236,15 +281,25 @@ async fn keep(
     loop {
         shared.set(State::Connected, None);
         // Ok means shutdown; the tunnel itself ends in an error.
-        let Err(lost) = proxy::run(
+        let Some(phone) = tunnel.peer_key() else {
+            return Err(io::Error::other("tunnel without a phone key"));
+        };
+        let run = proxy::run(
             tunnel,
             listener,
             shared.active.clone(),
             shared.bytes.clone(),
             shutdown.as_mut(),
-        )
-        .await
-        else {
+        );
+        // Dropping `run` closes the tunnel and every stream in it.
+        let ended = tokio::select! {
+            r = run => r,
+            () = shared.phones.unpaired(&phone) => Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "the phone was unpaired",
+            )),
+        };
+        let Err(lost) = ended else {
             return Ok(());
         };
         if !reconnect {
@@ -261,7 +316,7 @@ async fn keep(
             tokio::select! {
                 () = &mut shutdown => return Ok(()),
                 never = refuse(listener) => match never {},
-                r = link.establish() => match r {
+                r = link.establish(&shared.phones) => match r {
                     Ok((t, _)) => break t,
                     Err(e) => shared.set(State::Reconnecting, Some(e.to_string())),
                 },
