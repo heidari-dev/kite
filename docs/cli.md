@@ -123,7 +123,7 @@ could not come up) and the tunnel lives on in the daemon until `kite disconnect`
 | `--serial SERIAL` | With `--usb`: the phone to use when several are connected, an iPhone's UDID or an Android serial. | the only phone |
 | `--listen ADDR` | Proxy mode only. `IP:PORT` of the local SOCKS5 proxy. It must be a loopback address. | `127.0.0.1:1080` |
 | `--tun` | TUN mode (Linux, macOS and Windows): send all traffic and DNS of this computer through the relay. Cannot be combined with `--listen`. | off |
-| `--kill-switch` | Linux and Windows. With `--tun`: while the link to the phone is down, block all traffic and reconnect, until `kite disconnect`. With `--tcp` or `--wifi ADDR` the relay must be an IP address: a name would be looked up again at every redial, into the block. See [Kill switch](#kill-switch). | off |
+| `--kill-switch` | With `--tun`: while the link to the phone is down, block all traffic and reconnect, until `kite disconnect`. With `--tcp` or `--wifi ADDR` the relay must be an IP address: a name would be looked up again at every redial, into the block. See [Kill switch](#kill-switch). | off |
 
 Without `--tun` kite runs in proxy mode: it serves a SOCKS5 proxy on `--listen`, needs no special
 privileges, and only programs that use the proxy go through the phone. Use `socks5h://` (proxy
@@ -308,7 +308,7 @@ returns. With it, see [Kill switch](#kill-switch).
 
 ### Kill switch
 
-This is available on Linux and Windows (macOS: issue 101). With `--kill-switch` a lost link (phone unplugged, WiFi gone, the app stopped) does not end the
+With `--kill-switch` a lost link (phone unplugged, WiFi gone, the app stopped) does not end the
 tunnel. `kite0`, its rules and the DNS settings stay, so everything that is not loopback, the local
 network or the link to the phone keeps going into the tunnel and stops there: new connections are
 refused at once and nothing leaves the computer. kite dials the phone again after 1 s, then backs
@@ -333,6 +333,20 @@ after a crash (or a service that was killed) or an error of the tunnel traffic s
 orderly stop lifts it. They are not persistent, so a reboot (or restarting that
 service) removes them and the computer is never left offline for good. Connections that were
 already open when the block went up are not cut by it.
+
+On macOS the block is a set of pf rules in the anchor `com.apple/kite`, loaded with `pfctl -a
+com.apple/kite -f -`. They pass the loopback, the tunnel's `utun` device, TCP to the relay's address
+and port, DHCP and IPv6 link discovery, and refuse everything else going out (with a reset, so
+programs fail at once). The anchor sits under `com.apple` because the main ruleset macOS ships has
+`anchor "com.apple/*"`, so Kite does not rewrite your main ruleset; if that line is missing, Kite
+refuses to start with the kill switch instead of running a block that does nothing. pf is enabled
+with `pfctl -E`, which takes a reference (kept in `tun.state`) instead of switching it on, and
+released with `pfctl -X`, so a firewall you had on stays on and one that was off goes off again. The
+rules go up before the routes and come off after them. They are kernel state, so they outlive the
+Kite process: after a crash, a daemon that was killed or an error of the tunnel, traffic stays
+blocked until `sudo kite restore`, `kite disconnect` or the next `kite connect` without
+`--kill-switch`, and launchd starting the daemon again does not lift them. A reboot clears them.
+Packets of connections that were open before are blocked too, since they have no pf state.
 
 ## kite status
 
@@ -361,7 +375,8 @@ Removes what a TUN mode kite that was killed left behind. Needs `CAP_NET_ADMIN` 
 administrator on Windows. It fails while a TUN mode kite is running. On Linux it only deletes rules
 that exactly match the ones kite adds, so rules from other programs stay. On Windows it deletes the
 routes on the adapter `kite0`, the host route in `tun.state`, the DNS rule with the comment
-`kite` and the kill switch's filters.
+`kite` and the kill switch's filters. On macOS it removes the host route, the DNS resolver, the
+kill switch's pf rules and the pf reference.
 
 ## kite allow
 
