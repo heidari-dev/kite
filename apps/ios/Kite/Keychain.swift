@@ -27,7 +27,10 @@ enum Keychain {
     }
 
     static func savePeers(_ peers: [Data]) throws {
-        try write("peers", peers.reduce(Data(), +))
+        guard peers.isEmpty else { return try write("peers", peers.reduce(Data(), +)) }
+        // An empty value may be refused, and the last computer must not come back on the next start.
+        let status = SecItemDelete(query("peers") as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw Failure(status: status) }
     }
 
     private static func query(_ account: String) -> [String: Any] {

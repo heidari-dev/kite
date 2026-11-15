@@ -38,7 +38,10 @@ final class Sharing {
     /// Counts starts and stops, so a start that finishes after a stop is undone.
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var asked: [String]?
-    @ObservationIgnored private var syncing = false
+    /// The relay whose addresses are being set, so a sync of a stopped relay does not hold up the next.
+    @ObservationIgnored private var syncing: Relay?
+    /// The last start, so a new one waits until a start that was stopped has given its port back.
+    @ObservationIgnored private var starting: Task<Void, Never>?
     @ObservationIgnored private var ticks = 0
     @ObservationIgnored private var openedAt: ContinuousClock.Instant?
     @ObservationIgnored private var sawCode = false
@@ -62,7 +65,10 @@ final class Sharing {
         error = nil
         generation += 1
         let started = generation
-        Task {
+        let previous = starting
+        starting = Task {
+            await previous?.value
+            guard started == generation else { return }
             let result = await run { () throws -> Relay in
                 var key = try Keychain.privateKey()
                 defer { key.resetBytes(in: key.startIndex..<key.endIndex) }
@@ -195,11 +201,11 @@ final class Sharing {
 
     /// Makes the relay listen on the phone's current addresses. Cheap when nothing changed.
     private func syncAddresses() async {
-        guard let relay, !syncing else { return }
+        guard let relay, syncing !== relay else { return }
         let want = Interfaces.addresses()
         if want == asked && listenError == nil { return }
-        syncing = true
-        defer { syncing = false }
+        syncing = relay
+        defer { if syncing === relay { syncing = nil } }
         asked = want
         let shared = await run { try relay.shareWifi(addresses: want) }
         guard relay === self.relay else { return }
