@@ -74,8 +74,9 @@ done | docker run -i --rm -v "$VOLUME:/data" "$IMAGE" pair --tcp "$RELAY" >"$LOG
 data=$(docker volume inspect -f '{{.Mountpoint}}' "$VOLUME")
 owner=$(sudo stat -c '%u:%g' "$data")
 perms=$(sudo stat -c '%u:%g %a' "$data/kite" "$data/kite/key" "$data/kite/phones" | tr '\n' ' ')
-[ "$owner" = 65532:65532 ] && [ "$perms" = "65532:65532 700 65532:65532 600 65532:65532 600 " ] ||
+if [ "$owner" != 65532:65532 ] || [ "$perms" != "65532:65532 700 65532:65532 600 65532:65532 600 " ]; then
   fail "owner of the volume ($owner), owner and mode of kite/, key and phones: $perms"
+fi
 
 # Proxy mode.
 docker run -d --name kite-proxy -v "$VOLUME:/data" "$IMAGE" connect --tcp "$RELAY" >/dev/null
