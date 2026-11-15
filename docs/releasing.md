@@ -1,7 +1,7 @@
 # Releasing Kite
 
 A release is built by `.github/workflows/release.yml` when a tag like `v0.1.0` is pushed, and by
-nothing else. It builds the Linux packages, the Windows installer and the Android APK from the tagged
+nothing else. It builds the Linux packages, the Windows installer, the macOS package and the Android APK from the tagged
 commit, writes checksums and SBOMs, attests and signs every file, and leaves a **draft** GitHub
 release. Nobody
 uploads anything by hand, and the release is not public until you press Publish.
@@ -97,6 +97,15 @@ numbers, so the third is `PATCH*100 + R`, with R the release candidate number or
 installer upgrades over an older one. CI installs the MSI on a Windows runner, runs the TUN test
 against the installed service and uninstalls it (`scripts/msi-test.ps1`).
 
+## The macOS package
+
+The `macos` job builds `Kite-VERSION.pkg` with `scripts/build-macos.sh` (Apple silicon and Intel, joined
+with `lipo`) and `scripts/package-macos.sh` (`pkgbuild` and `productbuild`). It is not signed or
+notarized, so macOS warns about it, see [macos.md](macos.md); the programs inside are ad-hoc signed so
+they run on Apple silicon. Like every other file it gets a checksum, an attestation and a Sigstore
+bundle. CI installs the package on a macOS runner, checks the daemon and uninstalls it with its own
+script (`scripts/test-pkg-macos.sh`).
+
 ## Trying it first
 
 - **Without a tag:** Actions, Release, Run workflow (it appears once the workflow is on `main`). It
@@ -114,6 +123,7 @@ against the installed service and uninstalls it (`scripts/msi-test.ps1`).
 | `kite_VERSION_amd64.deb` | Debian 12 and Ubuntu 22.04 or newer: command, desktop app, daemon, tray |
 | `Kite-VERSION-x86_64.AppImage` | Desktop app and command, without the daemon |
 | `kite-VERSION-x86_64-linux.tar.gz` | The `kite` command alone, for any x86-64 Linux with a glibc as new as Ubuntu 22.04's |
+| `Kite-VERSION.pkg` | macOS 12 or newer, Apple silicon and Intel: command, desktop app, daemon, menu bar icon (unsigned, see [macos.md](macos.md)) |
 | `kite-VERSION.apk` | The phone app, signed with the release key |
 | `kite-cli.cdx.json`, `kite-desktop.cdx.json`, `kite-ffi.cdx.json` | CycloneDX SBOMs of the Rust programs |
 | `SHA256SUMS` | SHA-256 of every file above |

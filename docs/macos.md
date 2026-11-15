@@ -1,7 +1,59 @@
 # Kite on macOS
 
-The computer side runs on macOS: `kite`, the daemon, TUN mode and the desktop app. It needs testers
-(there is no Mac in the project's own hands; CI on GitHub's macOS runners is the only test).
+Kite shares your phone's connection with a Mac, with the phone's VPN or proxy intact. This page is
+about installing it, using it and removing it. The command line is in [cli.md](cli.md), what Kite
+does to the system and why in [threat-model.md](threat-model.md).
+
+**macOS needs testers.** The project has no Mac of its own; the code is built and tested on
+GitHub's macOS runners only. If you have one, please run the [acceptance test](#acceptance-test)
+and tell us how it went.
+
+macOS 12 or newer, Apple silicon or Intel.
+
+## Install
+
+Download `Kite-VERSION.pkg` from the [releases page](https://github.com/heidari-dev/kite/releases)
+and open it. The installer asks for an administrator's password once. It puts
+
+- the `kite` command in `/Library/Application Support/Kite` (and `/usr/local/bin/kite`),
+- the app in `/Applications/Kite.app`, which starts with a menu bar icon when you log in,
+- the daemon `io.github.heidari-dev.kite` in `/Library/LaunchDaemons`, and starts it.
+
+### The Gatekeeper warning
+
+The package is not signed with an Apple developer certificate, because that costs money the project
+does not have. macOS therefore says it cannot verify the package. This is expected. Open System
+Settings, Privacy & Security, scroll to the message about `Kite-VERSION.pkg` and click **Open
+Anyway** (or right-click the package in Finder and choose Open).
+
+You do not have to trust the download on faith. Compare it with what the project published:
+
+```
+shasum -a 256 Kite-VERSION.pkg                      # compare with SHA256SUMS on the release
+gh attestation verify Kite-VERSION.pkg --repo heidari-dev/kite
+```
+
+The release also holds a Sigstore bundle for the file (`Kite-VERSION.pkg.sigstore.json`), see
+[releasing.md](releasing.md). The package is built by the release workflow from the tagged commit
+and by nothing else. The programs inside are ad-hoc signed, which only lets them run on Apple
+silicon and says nothing about who made them.
+
+## Uninstall
+
+```
+sudo "/Library/Application Support/Kite/uninstall.sh"
+```
+
+It stops the daemon, runs `kite restore`, and deletes everything the package installed. Your key and
+paired phones stay (in `/var/db/kite` and `~/.config/kite`); add `--purge` to delete the daemon's
+too.
+
+## Acceptance test
+
+1. Turn on a VPN on the phone and connect Kite (USB or WiFi).
+2. On the Mac, `curl https://ifconfig.me` prints the VPN's address, not your own.
+3. A DNS leak test (for example dnsleaktest.com, extended test) lists only the VPN's resolvers.
+
 
 ## The daemon
 
@@ -54,11 +106,6 @@ does not show the switch.
 The app has a menu bar icon, as on Linux and Windows, and a window. `kite-desktop --hidden` starts
 with the icon only; `packaging/macos/io.github.heidari-dev.kite.desktop.plist` is a LaunchAgent that
 does that at login.
-
-## Not done yet
-
-The package (.pkg) that installs all of this; for now build from source (`cargo build --release`)
-and copy the plist.
 
 ## USB
 
