@@ -1,10 +1,18 @@
 name: Android screens
 
 # Screenshots of the app's main screen from an emulator, so the UI can be looked at without a phone.
-# Not on pull requests: the emulator is slow and the result is for looking, not gating.
+# Not on pull requests: the emulator is slow and the result is for looking, not gating. On main only
+# when something the app is built from changed.
 on:
   push:
     branches: [main]
+    paths:
+      - apps/android/**
+      - crates/kite-ffi/**
+      - crates/kite-relay/**
+      - Cargo.lock
+      - scripts/android-screens.sh
+      - .github/workflows/android-screens.yml
   workflow_dispatch:
 
 permissions:
