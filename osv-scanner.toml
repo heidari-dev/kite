@@ -36,3 +36,8 @@ reason = "zvariant is part of zbus 5, used by the Linux tray icon (ksni) and Sli
 id = "RUSTSEC-2026-0372"
 ignoreUntil = 2027-05-15
 reason = "zvariant_derive is part of zbus 5, used by the Linux tray icon (ksni) and Slint's screen reader support to talk to the local session bus only."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0543"
+ignoreUntil = 2027-05-15
+reason = "chrono comes from tun2proxy (timestamps in its own dump logger, which Kite does not use) and Slint (date helpers for its date widgets). Kite does not call it."
