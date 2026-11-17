@@ -392,6 +392,11 @@ fn wire(ui: &AppWindow, tray: &Tray, cmds: &UnboundedSender<Cmd>, visible: &Arc<
         r();
     });
 
+    let c = cmds.clone();
+    ui.on_set_auto_connect(move |on| {
+        let _ = c.send(Cmd::SetAutoConnect { on });
+    });
+
     let (c, r) = (cmds.clone(), redraw.clone());
     ui.on_pair_start(move || {
         if let Some(transport) = with_state(|s| transport(s, false)) {
@@ -530,6 +535,7 @@ fn render(ui: &AppWindow, tray: &Tray) {
         ui.set_locked(running.is_some());
         ui.set_mode(i32::from(mode == Mode::Proxy));
         ui.set_kill_switch(kill_switch);
+        ui.set_auto_connect(v.status.as_ref().is_some_and(|st| st.auto_connect));
         ui.set_show_speed(card.icon == Icon::Connected);
         ui.set_speed_up(format_rate(v.up).into());
         ui.set_speed_down(format_rate(v.down).into());

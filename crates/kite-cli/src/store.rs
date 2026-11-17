@@ -2,6 +2,7 @@
 //! `kite/key` (32 bytes) and `kite/phones` (one hex public key per line). Both are owner-only,
 //! and a file that other users can read or write is refused.
 
+use crate::auto::Last;
 use kite_relay::noise::{StaticKey, KEY_LEN};
 use std::fs;
 use std::io::{self, Read, Write};
@@ -9,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 /// Far more than any real list of phones; the file is read whole.
 const MAX_PHONES_FILE: u64 = 64 * 1024;
+const MAX_LAST_FILE: u64 = 256;
 
 #[derive(Clone)]
 pub struct Store {
@@ -132,6 +134,44 @@ impl Store {
                 "that matches several phones; give more of the key",
             )),
         }
+    }
+
+    /// Whether "connect when the phone is plugged in" is on: the file `autoconnect` is there. A
+    /// file that other users can write counts as off.
+    pub fn auto_connect(&self) -> bool {
+        open_private(&self.dir.join("autoconnect")).is_ok()
+    }
+
+    pub fn set_auto_connect(&self, on: bool) -> io::Result<()> {
+        let path = self.dir.join("autoconnect");
+        if on {
+            return write_private(&path, b"on\n");
+        }
+        match fs::remove_file(&path) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+
+    /// The last USB connection that came up, if there was one.
+    pub fn last_usb(&self) -> io::Result<Option<Last>> {
+        let path = self.dir.join("last-usb");
+        let mut file = match open_private(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        // One short line: a serial is at most 64 characters.
+        let mut text = String::new();
+        (&mut file)
+            .take(MAX_LAST_FILE)
+            .read_to_string(&mut text)
+            .map_err(|_| bad_file(&path))?;
+        Last::decode(&text).map(Some).ok_or_else(|| bad_file(&path))
+    }
+
+    pub fn save_last_usb(&self, last: &Last) -> io::Result<()> {
+        write_private(&self.dir.join("last-usb"), last.encode().as_bytes())
     }
 
     fn save(&self, phones: &[[u8; KEY_LEN]]) -> io::Result<()> {
@@ -262,6 +302,44 @@ mod tests {
         assert_eq!(kind(store.remove_phone("ff")), io::ErrorKind::NotFound);
         assert_eq!(store.remove_phone("ABAB").unwrap(), a);
         assert_eq!(store.phones().unwrap(), vec![b]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn auto_connect_and_the_last_usb_connection_are_kept() {
+        let (store, root) = temp_store();
+        assert!(!store.auto_connect());
+        assert_eq!(store.last_usb().unwrap(), None);
+        store.set_auto_connect(true).unwrap();
+        assert!(store.auto_connect());
+        store.set_auto_connect(false).unwrap();
+        store.set_auto_connect(false).unwrap();
+        assert!(!store.auto_connect());
+
+        let last = Last {
+            mode: kite_ipc::Mode::Tun,
+            kill_switch: true,
+            serial: Some("R5CT1234".into()),
+        };
+        store.save_last_usb(&last).unwrap();
+        assert_eq!(store.last_usb().unwrap(), Some(last));
+        fs::write(store.dir.join("last-usb"), "tun 1 A B").unwrap();
+        assert_eq!(
+            store.last_usb().unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_open_autoconnect_file_counts_as_off() {
+        use std::os::unix::fs::PermissionsExt;
+        let (store, root) = temp_store();
+        store.set_auto_connect(true).unwrap();
+        let path = store.dir.join("autoconnect");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(!store.auto_connect());
         fs::remove_dir_all(root).unwrap();
     }
 

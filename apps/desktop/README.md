@@ -23,6 +23,8 @@ Building on Linux needs the fontconfig headers (`libfontconfig1-dev` on Debian a
 - The window remembers the mode, the kill switch ("Block traffic if the phone disconnects", off
   until you turn it on), USB or WiFi and the address in `kite/desktop.json` in your config
   directory.
+- "Connect when the phone is plugged in" (off until you turn it on) is kept by the daemon, not the
+  window; `kite auto-connect on` does the same.
 - The tray icon needs a desktop that shows StatusNotifier icons. GNOME needs the AppIndicator
   extension.
 

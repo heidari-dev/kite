@@ -8,6 +8,7 @@
 //! command line of a client is ever used. The tunnel runs on its own thread with its own runtime,
 //! so a slow request never stalls it and it never stalls a request.
 
+use crate::auto::{self, Last};
 use crate::session::{self, Params, Shared};
 use crate::store::{hex, Store};
 use crate::Transport;
@@ -46,6 +47,8 @@ const PAIR_START_TIMEOUT: Duration = Duration::from_secs(25);
 /// How long a disconnect waits for the tunnel to come down. On Windows taking the DNS rule off
 /// (PowerShell, up to 15 s) comes after the few seconds the tunnel's tasks get to wind down.
 const STOP_TIMEOUT: Duration = Duration::from_secs(if cfg!(windows) { 25 } else { 10 });
+/// How often "connect when the phone is plugged in" looks, and how long one look may take.
+const AUTO_POLL: Duration = Duration::from_secs(5);
 
 pub struct Options {
     /// The Unix socket, or on Windows the named pipe (`\.\pipe\NAME`).
@@ -67,11 +70,29 @@ pub async fn run_with(
 ) -> io::Result<()> {
     let store = Store::at(opts.state)?;
     let mut server = os::Server::bind(opts.socket).await?;
+    let inner = Inner {
+        auto: Auto {
+            on: store.auto_connect(),
+            ..Auto::default()
+        },
+        ..Inner::default()
+    };
     let daemon = Arc::new(Daemon {
         store,
-        inner: Mutex::new(Inner::default()),
+        inner: Mutex::new(inner),
     });
     let slots = Arc::new(Semaphore::new(MAX_CLIENTS));
+    let poll = tokio::spawn({
+        let daemon = daemon.clone();
+        async move {
+            let mut tick = tokio::time::interval(AUTO_POLL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                daemon.auto_connect().await;
+            }
+        }
+    });
     eprintln!("kite: daemon ready");
     ready();
     tokio::pin!(shutdown);
@@ -94,6 +115,7 @@ pub async fn run_with(
         }
     }
     daemon.inner().closing = true;
+    poll.abort();
     daemon.disconnect().await;
     Ok(())
 }
@@ -151,6 +173,7 @@ fn log(req: &Request) {
             mode, kill_switch, ..
         } => format!("connect {mode:?} kill_switch={kill_switch}"),
         Request::Disconnect {} => "disconnect".into(),
+        Request::SetAutoConnect { on } => format!("auto_connect {on}"),
         Request::PairStart { .. } => "pair_start".into(),
         Request::Pair { .. } => "pair".into(),
         Request::RemovePeer { .. } => "remove_peer".into(),
@@ -170,6 +193,21 @@ struct Inner {
     pairing: Pairing,
     /// The daemon is shutting down: nothing new starts.
     closing: bool,
+    auto: Auto,
+}
+
+/// "Connect when the phone is plugged in", and where its polling stands.
+#[derive(Default)]
+struct Auto {
+    on: bool,
+    /// The user disconnected: see [`auto::pick`].
+    held: bool,
+    /// An attempt is going on, so the next one is not logged again.
+    trying: bool,
+    /// Attempts since the phone appeared, and polls to skip before the next one: a phone that is
+    /// only charging is not dialled every 5 s for ever.
+    fails: u32,
+    skip: u32,
 }
 
 #[derive(Default)]
@@ -237,7 +275,25 @@ impl Daemon {
                 kill_switch,
                 listen,
             } => self.connect(transport, mode, kill_switch, listen),
-            Request::Disconnect {} => self.disconnect().await,
+            Request::Disconnect {} => {
+                self.inner().auto.held = true;
+                self.disconnect().await
+            }
+            Request::SetAutoConnect { on } => match self.store.set_auto_connect(on) {
+                Ok(()) => {
+                    // Changing it is a fresh start: an earlier Disconnect does not hold a phone
+                    // back. Saying the same again changes nothing.
+                    let mut inner = self.inner();
+                    if inner.auto.on != on {
+                        inner.auto = Auto {
+                            on,
+                            ..Auto::default()
+                        };
+                    }
+                    Response::ok()
+                }
+                Err(e) => Response::err(e.to_string()),
+            },
             Request::PairStart { transport } => self.pair_start(transport.into()).await,
             Request::Pair { code } => self.pair(&code).await,
             Request::Peers {} => match self.store.phones() {
@@ -268,6 +324,7 @@ impl Daemon {
                 kill_switch: false,
                 error: None,
                 pairing,
+                auto_connect: inner.auto.on,
             },
             Some(a) => {
                 let s = a.shared.snapshot();
@@ -278,6 +335,7 @@ impl Daemon {
                     kill_switch: a.kill_switch,
                     error: s.error,
                     pairing,
+                    auto_connect: inner.auto.on,
                 }
             }
         };
@@ -366,6 +424,68 @@ impl Daemon {
             }
             Err(e) => Response::err(format!("cannot start the tunnel: {e}")),
         }
+    }
+
+    /// One look at the USB bus for "connect when the phone is plugged in". Nothing is asked of
+    /// the bus while the setting is off or a tunnel is up.
+    async fn auto_connect(&self) {
+        let busy = |i: &Inner| i.closing || i.session.as_ref().is_some_and(|a| !a.idle());
+        {
+            let mut inner = self.inner();
+            if !inner.auto.on || busy(&inner) {
+                return;
+            }
+            if inner.auto.skip > 0 {
+                inner.auto.skip -= 1;
+                return;
+            }
+        }
+        // Without a USB connection to repeat, or without an adb server, there is nothing to do.
+        let Ok(Some(last)) = self.store.last_usb() else {
+            return;
+        };
+        let Ok(Ok(found)) = timeout(AUTO_POLL, kite_link::devices()).await else {
+            return;
+        };
+        // adb's `device`, and `iPhone` from kite-link: not `unauthorized` or `offline`.
+        let phones: Vec<String> = found
+            .into_iter()
+            .filter(|(_, state)| matches!(state.as_str(), "device" | "iPhone"))
+            .map(|(serial, _)| serial)
+            .collect();
+        let (serial, first) = {
+            let mut inner = self.inner();
+            let busy = busy(&inner);
+            let auto = &mut inner.auto;
+            let serial = auto::pick(auto.on, busy, Some(&last), &phones, &mut auto.held);
+            let first = !auto.trying;
+            auto.trying = serial.is_some();
+            // 5 s after the first attempt, then 10, 15 and at most 20 s.
+            auto.fails = if auto.trying {
+                (auto.fails + 1).min(3)
+            } else {
+                0
+            };
+            auto.skip = auto.fails;
+            (serial, first)
+        };
+        let Some(serial) = serial else { return };
+        let req = Request::Connect {
+            transport: kite_ipc::Transport::Usb {
+                serial: Some(serial),
+            },
+            mode: last.mode,
+            kill_switch: last.kill_switch,
+            listen: None,
+        };
+        if req.check().is_err() {
+            return;
+        }
+        if first {
+            log(&req);
+        }
+        // A failure shows in `status`; the next look tries again.
+        self.handle(req, false).await;
     }
 
     /// Takes the tunnel down, and with it the routes it set up, and waits for that. Whoever asks
@@ -503,6 +623,17 @@ async fn session(
         r = session::start(&p, &store, &shared) => r?,
         () = &mut stopped => return Ok(()),
     };
+    // The next plug-in repeats this connection.
+    if let Transport::Usb(serial) = &p.transport {
+        let last = Last {
+            mode: if p.tun { Mode::Tun } else { Mode::Proxy },
+            kill_switch: p.kill_switch,
+            serial: serial.clone(),
+        };
+        if let Err(e) = store.save_last_usb(&last) {
+            eprintln!("kite: cannot remember this USB connection: {e}");
+        }
+    }
     started.serve(&shared, stopped).await
 }
 
@@ -707,6 +838,25 @@ mod tests {
         .await
         .unwrap();
         assert!(again.unwrap().contains("not paired"));
+        d.end().await;
+    }
+
+    #[tokio::test]
+    async fn auto_connect_is_off_until_turned_on_and_is_kept() {
+        let d = start("auto").await;
+        let on = || async {
+            let status = ask(&d.socket, r#"{"cmd":"status"}"#).await.status.unwrap();
+            status.auto_connect
+        };
+        let set = |on: &str| format!(r#"{{"cmd":"set_auto_connect","on":{on}}}"#);
+        let store = Store::at(d.dir.join("state")).unwrap();
+        assert!(!on().await && !store.auto_connect());
+        assert!(ask(&d.socket, &set("true")).await.ok);
+        assert!(on().await && store.auto_connect());
+        assert!(!ask(&d.socket, &set("1")).await.ok);
+        assert!(on().await);
+        assert!(ask(&d.socket, &set("false")).await.ok);
+        assert!(!on().await && !store.auto_connect());
         d.end().await;
     }
 

@@ -164,6 +164,7 @@ mod tests {
                 kill_switch: false,
                 error: error.map(Into::into),
                 pairing: false,
+                auto_connect: false,
             }),
             paired: 1,
             ..View::default()
