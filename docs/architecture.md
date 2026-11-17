@@ -145,7 +145,7 @@ costs no connection and frees the GUI's memory.
 
 - The protocol lives in the small `kite-ipc` crate, so a client links only the request and response
   types. One JSON object per line: `status`, `devices`, `connect`, `disconnect`, `stats`,
-  `pair_start`, `pair`, `peers`, `remove_peer`. A request is capped at 4 KiB, parsed strictly
+  `pair_start`, `pair`, `peers`, `remove_peer`, `set_auto_connect`. A request is capped at 4 KiB, parsed strictly
   (unknown commands and fields are refused) and checked again for its values before anything acts
   on it. Keys never travel over it.
 - The socket is 0660 and belongs to the daemon's group. The daemon also checks each caller's

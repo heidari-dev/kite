@@ -65,7 +65,10 @@ one your phone's VPN or mobile network gives it. Click **Disconnect** to stop.
 
 ## Next times
 
-Plug in the phone, tap Start sharing, click Connect.
+Plug in the phone, tap Start sharing, click Connect. To skip the last step, turn on **Connect when
+the phone is plugged in** in the Kite window (or run `kite auto-connect on`): the computer then
+repeats your last USB connection by itself, and it keeps trying until you tap Start sharing. After
+you click Disconnect it waits until the phone is unplugged and plugged in again.
 
 ## Good to know
 
