@@ -69,21 +69,24 @@ jobs:
           persist-credentials: false
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+  # Branch protection requires each "test (OS)" check, and a skipped matrix job reports none of
+  # them. So this job always runs; on a docs-only pull request it runs on Linux and skips its steps.
   test:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ needs.changes.outputs.code == 'true' && matrix.os || 'ubuntu-latest' }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - if: runner.os == 'Linux'
+      - if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
         run: sudo apt-get install -y --no-install-recommends libfontconfig1-dev
-      - run: cargo test --workspace
+      - if: needs.changes.outputs.code == 'true'
+        run: cargo test --workspace
 
   deny:
     runs-on: ubuntu-latest
