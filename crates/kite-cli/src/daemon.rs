@@ -204,10 +204,8 @@ struct Auto {
     held: bool,
     /// An attempt is going on, so the next one is not logged again.
     trying: bool,
-    /// Attempts since the phone appeared, and polls to skip before the next one: a phone that is
-    /// only charging is not dialled every 5 s for ever.
-    fails: u32,
-    skip: u32,
+    /// Pauses between attempts, and giving up: see [`auto::Retry`].
+    retry: auto::Retry,
 }
 
 #[derive(Default)]
@@ -432,11 +430,20 @@ impl Daemon {
         let busy = |i: &Inner| i.closing || i.session.as_ref().is_some_and(|a| !a.idle());
         {
             let mut inner = self.inner();
-            if !inner.auto.on || busy(&inner) {
+            if !inner.auto.on {
                 return;
             }
-            if inner.auto.skip > 0 {
-                inner.auto.skip -= 1;
+            let up = |i: &Inner| {
+                i.session
+                    .as_ref()
+                    .is_some_and(|a| a.shared.snapshot().state == State::Connected)
+            };
+            if up(&inner) {
+                // It worked: the next unplug starts from nothing, and a drop is tried again.
+                inner.auto.retry.reset();
+                inner.auto.held = false;
+            }
+            if busy(&inner) || inner.auto.retry.pause() {
                 return;
             }
         }
@@ -460,13 +467,12 @@ impl Daemon {
             let serial = auto::pick(auto.on, busy, Some(&last), &phones, &mut auto.held);
             let first = !auto.trying;
             auto.trying = serial.is_some();
-            // 5 s after the first attempt, then 10, 15 and at most 20 s.
-            auto.fails = if auto.trying {
-                (auto.fails + 1).min(3)
-            } else {
-                0
-            };
-            auto.skip = auto.fails;
+            if serial.is_none() {
+                auto.retry.reset();
+            } else if auto.retry.tried() {
+                // The last try: it waits for the phone to be plugged in again.
+                auto.held = true;
+            }
             (serial, first)
         };
         let Some(serial) = serial else { return };

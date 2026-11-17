@@ -370,8 +370,10 @@ command shows the setting. The desktop app has the same switch.
 The daemon looks every 5 seconds, and only while the setting is on and no tunnel is up or
 reconnecting. If the remembered phone is plugged in (or, when it is not, exactly one phone is), it
 tries to connect. If that fails, for example because the phone app is not sharing yet, it tries
-again, a little less often after each failure (every 5 s at first, at most every 20 s), until you
-tap Start sharing. With several phones and none of them the
+again, a little less often after each failure (every 5 s at first, at most every 20 s), so you can
+tap Start sharing after plugging in. If the phone has not answered after six tries, about a minute
+and a half, Kite stops trying until the phone is unplugged and plugged in again, as after
+Disconnect. With several phones and none of them the
 remembered one, it does nothing. Pairing is unchanged: a phone that is not paired is refused as
 before.
 

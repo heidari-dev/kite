@@ -80,9 +80,88 @@ pub fn pick(
     (on && !busy && !*held).then(|| phone.clone())
 }
 
+/// Tries in a row before auto-connect gives up until the phone is plugged in again: about a
+/// minute and a half with the pauses of [`Retry`].
+pub const MAX_TRIES: u32 = 6;
+
+/// The pause between tries, in polls. A phone that is only charging is not dialled every 5 s, and
+/// not for ever: on Windows and macOS each try runs the TUN cleanup first.
+#[derive(Default)]
+pub struct Retry {
+    tries: u32,
+    skip: u32,
+}
+
+impl Retry {
+    /// True while the pause between two tries goes on; this poll does nothing then.
+    pub fn pause(&mut self) -> bool {
+        let pausing = self.skip > 0;
+        self.skip = self.skip.saturating_sub(1);
+        pausing
+    }
+
+    /// A try is being made. True when it is the last one.
+    pub fn tried(&mut self) -> bool {
+        self.tries += 1;
+        // 5 s after the first try, then 10, 15 and at most 20 s.
+        self.skip = self.tries.min(3);
+        self.tries >= MAX_TRIES
+    }
+
+    /// The phone connected or went away: start over.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gives_up_after_about_a_minute_and_a_half() {
+        let l = Last {
+            mode: Mode::Tun,
+            kill_switch: false,
+            serial: Some("A".into()),
+        };
+        let here = vec!["A".to_string()];
+        let (mut retry, mut held) = (Retry::default(), false);
+        let (mut tries, mut polls) = (0, 0);
+        // The phone stays plugged in and never answers.
+        while polls < 200 {
+            polls += 1;
+            if retry.pause() {
+                continue;
+            }
+            if pick(true, false, Some(&l), &here, &mut held).is_some() {
+                tries += 1;
+                if retry.tried() {
+                    held = true;
+                }
+            }
+        }
+        assert_eq!(tries, MAX_TRIES);
+        // Unplugged and plugged in again: it tries again.
+        assert_eq!(pick(true, false, Some(&l), &[], &mut held), None);
+        retry.reset();
+        assert!(pick(true, false, Some(&l), &here, &mut held).is_some());
+    }
+
+    #[test]
+    fn pauses_grow_to_three_polls() {
+        let mut retry = Retry::default();
+        let mut pauses = Vec::new();
+        for _ in 0..MAX_TRIES {
+            retry.tried();
+            let mut n = 0;
+            while retry.pause() {
+                n += 1;
+            }
+            pauses.push(n);
+        }
+        assert_eq!(pauses, [1, 2, 3, 3, 3, 3]);
+    }
 
     fn last(serial: Option<&str>) -> Last {
         Last {
