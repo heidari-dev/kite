@@ -81,6 +81,10 @@ pub enum Request {
     RemovePeer {
         key: String,
     },
+    /// Turns "connect when the phone is plugged in" on or off. It repeats the last USB connection.
+    SetAutoConnect {
+        on: bool,
+    },
 }
 
 impl Request {
@@ -101,7 +105,8 @@ impl Request {
         Ok(req)
     }
 
-    fn check(&self) -> Result<(), String> {
+    /// Checks the values of a request that did not come from a line.
+    pub fn check(&self) -> Result<(), String> {
         let bad = |what: &str| Err(format!("bad {what}"));
         match self {
             Self::Connect {
@@ -194,6 +199,9 @@ pub struct Status {
     pub error: Option<String>,
     /// A `PairStart` is waiting for its code.
     pub pairing: bool,
+    /// The daemon connects by itself when the phone is plugged in.
+    #[serde(default)]
+    pub auto_connect: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -329,6 +337,12 @@ mod tests {
             })
         );
         assert!(parse(r#"{"cmd":"pair","code":"012345"}"#).is_ok());
+        assert_eq!(
+            parse(r#"{"cmd":"set_auto_connect","on":true}"#),
+            Ok(Request::SetAutoConnect { on: true })
+        );
+        assert!(parse(r#"{"cmd":"set_auto_connect"}"#).is_err());
+        assert!(parse(r#"{"cmd":"set_auto_connect","on":"yes"}"#).is_err());
         assert!(
             parse(r#"{"cmd":"pair_start","transport":{"type":"tcp","addr":"10.0.0.2:7000"}}"#)
                 .is_ok()
@@ -439,6 +453,7 @@ mod tests {
                 kill_switch: true,
                 error: None,
                 pairing: false,
+                auto_connect: true,
             }),
             ..Response::default()
         };

@@ -10,6 +10,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 use tokio::net::{TcpSocket, TcpStream};
 
+mod auto;
 #[cfg(any(unix, windows))]
 mod client;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -53,8 +54,12 @@ const USAGE: &str = "usage:
       Close the tunnel and lift the kill switch.
   kite devices
       List the phones connected by USB.
+  kite auto-connect [on|off]
+      Connect by itself when a phone is plugged in by USB, repeating the last USB
+      connection (mode, kill switch, phone). Off until turned on. Without an argument,
+      show the setting.
   kite status
-      Show the running tunnel.
+      Show the running tunnel, and whether auto-connect is on.
   kite restore
       Remove routes, rules and DNS settings left behind by a TUN mode run that was killed.
   kite allow USER
@@ -144,6 +149,7 @@ fn run(args: &[String], socket: &Path, foreground: bool) -> io::Result<()> {
             peers(&args[1..])
         }
         Some("disconnect" | "devices") => daemon_only(args, socket),
+        Some("auto-connect") => auto_connect(&args[1..], socket),
         Some("status") => block_on(status(socket), false),
         Some("restore") => block_on(restore(), false),
         Some("allow") => allow(&args[1..]),
@@ -278,6 +284,26 @@ fn daemon_only(args: &[String], socket: &Path) -> io::Result<()> {
         },
         false,
     )
+}
+
+/// `auto-connect [on|off]`, which the daemon keeps.
+#[cfg(any(unix, windows))]
+fn auto_connect(args: &[String], socket: &Path) -> io::Result<()> {
+    let on = match args {
+        [] => None,
+        [a] if a == "on" => Some(true),
+        [a] if a == "off" => Some(false),
+        _ => return Err(usage("auto-connect takes on or off")),
+    };
+    block_on(client::auto_connect(socket, on), false)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn auto_connect(_: &[String], _: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "the daemon is only available on Linux and Windows",
+    ))
 }
 
 #[cfg(not(any(unix, windows)))]

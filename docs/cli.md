@@ -12,6 +12,7 @@ kite connect (--tcp HOST:PORT | --wifi [ADDR[:PORT]] | --usb [--serial SERIAL]) 
 kite connect (--tcp HOST:PORT | --wifi [ADDR[:PORT]] | --usb [--serial SERIAL]) --tun [--kill-switch]
 kite disconnect
 kite devices
+kite auto-connect [on|off]
 kite status
 kite restore
 kite allow USER
@@ -20,7 +21,7 @@ kite --help | -h | help
 ```
 
 On Linux, macOS and Windows the tunnel is owned by the [daemon](#kite-daemon) (a systemd unit, a launchd daemon, a Windows
-service), and `pair`, `peers`, `connect`, `disconnect`, `devices` and `status` talk to it. `pair`,
+service), and `pair`, `peers`, `connect`, `disconnect`, `devices`, `auto-connect` and `status` talk to it. `pair`,
 `peers` and `connect` also take `--foreground`: they then run in the `kite` process itself, with the
 key and the paired phones of the user who runs it, and need no daemon. Every command takes `--socket
 PATH` to reach a daemon that listens somewhere other than `/run/kite/kite.sock` (`/var/run/kite/kite.sock` on macOS; on Windows the pipe
@@ -60,7 +61,7 @@ sc start Kite
 ```
 
 The protocol is one JSON object per line (`crates/kite-ipc`): `status`, `devices`, `connect`,
-`disconnect`, `stats`, `pair_start`, `pair`, `peers` and `remove_peer`. Requests over 4 KiB, with
+`disconnect`, `stats`, `pair_start`, `pair`, `peers`, `remove_peer` and `set_auto_connect`. Requests over 4 KiB, with
 unknown commands or unknown fields, or that take over 10 s to arrive, are refused; at most 8 clients
 are served at once. `connect` returns when the tunnel is starting, and `status` tells how it went.
 State-changing requests are written to the system log, never with keys, codes, addresses or the
@@ -354,11 +355,38 @@ pass rules keep no state for that reason. A block that a crash left also stops a
 Stopping the daemon (a package upgrade, `launchctl bootout`, shutdown) is an orderly stop and lifts
 the block.
 
+## kite auto-connect
+
+```
+kite auto-connect [on|off]
+```
+
+With `on`, the daemon connects by itself when a phone is plugged in by USB, so the steps are plug
+in, tap Start sharing, done. It repeats the last USB connection that came up: the mode (all traffic
+or proxy), the kill switch and the phone. Until there has been one, it does nothing. It is off
+until you turn it on, and the daemon keeps the choice across restarts. Without an argument the
+command shows the setting. The desktop app has the same switch.
+
+The daemon looks every 5 seconds, and only while the setting is on and no tunnel is up or
+reconnecting. If the remembered phone is plugged in (or, when it is not, exactly one phone is), it
+tries to connect. If that fails, for example because the phone app is not sharing yet, it tries
+again, a little less often after each failure (every 5 s at first, at most every 20 s), so you can
+tap Start sharing after plugging in. If the phone has not answered after six tries, about a minute
+and a half, Kite stops trying until the phone is unplugged and plugged in again, as after
+Disconnect. With several phones and none of them the
+remembered one, it does nothing. Pairing is unchanged: a phone that is not paired is refused as
+before.
+
+When you press Disconnect while the phone stays plugged in, the daemon does not connect again until
+the phone has been unplugged and plugged in again. USB only: there is no automatic connection over
+WiFi. A `--listen` address given to `kite connect` is not remembered; proxy mode uses the default.
+
 ## kite status
 
 Prints the tunnel of the daemon:
 
 ```
+auto-connect: off
 state: connected
 relay: 192.168.1.50:7000
 mode: SOCKS5 proxy
@@ -367,7 +395,7 @@ reconnects: 0
 uptime: 42s
 ```
 
-`state` is `connecting`, `connected`, `reconnecting` or, once the tunnel has ended, `idle`; then
+`auto-connect` is `on` or `off`, see [kite auto-connect](#kite-auto-connect). `state` is `connecting`, `connected`, `reconnecting` or, once the tunnel has ended, `idle`; then
 `last error` says why. `mode` is `all traffic through the tunnel` in TUN mode. With no daemon, it
 shows a tunnel started with `--foreground` instead: that kite listens on
 `$XDG_RUNTIME_DIR/kite.sock` (a Unix socket, mode 0600) and only writes `relay`, `mode`, `streams`

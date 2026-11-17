@@ -161,8 +161,29 @@ pub async fn devices(socket: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Sets "connect when the phone is plugged in" if `on` is given, and says how it stands.
+pub async fn auto_connect(socket: &Path, on: Option<bool>) -> io::Result<()> {
+    if let Some(on) = on {
+        call(socket, &Request::SetAutoConnect { on }).await?;
+    }
+    println!(
+        "auto-connect: {}",
+        on_off(state(socket).await?.auto_connect)
+    );
+    Ok(())
+}
+
+fn on_off(on: bool) -> &'static str {
+    if on {
+        "on"
+    } else {
+        "off"
+    }
+}
+
 pub async fn status(socket: &Path) -> io::Result<()> {
     let s = state(socket).await?;
+    println!("auto-connect: {}", on_off(s.auto_connect));
     let (Some(relay), Some(mode)) = (s.transport, s.mode) else {
         return Err(io::Error::new(io::ErrorKind::NotFound, "not connected"));
     };

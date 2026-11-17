@@ -213,6 +213,7 @@ mod tests {
                 kill_switch: false,
                 error: None,
                 pairing: false,
+                auto_connect: false,
             }),
             ..Response::ok()
         }

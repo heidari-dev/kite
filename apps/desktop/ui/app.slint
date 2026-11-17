@@ -456,6 +456,8 @@ export component AppWindow inherits Window {
     in property <string> wifi-error;
     in property <int> mode;
     in property <bool> kill-switch;
+    // The daemon's own setting: connect when the phone is plugged in.
+    in property <bool> auto-connect;
     // A tunnel is up: mode and kill switch show what runs and cannot change until it stops.
     in property <bool> locked;
     in property <string> speed-up;
@@ -473,6 +475,7 @@ export component AppWindow inherits Window {
     callback set-wifi-addr(string);
     callback set-mode(int);
     callback set-kill-switch(bool);
+    callback set-auto-connect(bool);
     callback pair-start();
     callback pair-submit(string);
     callback pair-cancel();
@@ -672,6 +675,13 @@ export component AppWindow inherits Window {
                         toggled(on) => { root.set-kill-switch(on); }
                         revealed(y, h) => { root.reveal(y, h); }
                     }
+                    Toggle {
+                        text: "Connect when the phone is plugged in";
+                        checked: root.auto-connect;
+                        toggled(on) => { root.set-auto-connect(on); }
+                        revealed(y, h) => { root.reveal(y, h); }
+                    }
+                    Note { text: "USB only. It repeats your last USB connection."; }
                 }
 
                 VerticalLayout {

@@ -30,6 +30,10 @@ pub enum Cmd {
         kill_switch: bool,
     },
     Disconnect,
+    /// "Connect when the phone is plugged in", which the daemon keeps.
+    SetAutoConnect {
+        on: bool,
+    },
     // Not sent on Windows, where pairing runs elevated in its own window.
     #[cfg_attr(windows, allow(dead_code))]
     PairStart {
@@ -50,6 +54,7 @@ impl std::fmt::Debug for Cmd {
             Self::Pair { .. } => f.write_str("Pair { code: .. }"),
             Self::Connect { mode, .. } => write!(f, "Connect {{ mode: {mode:?}, .. }}"),
             Self::Disconnect => f.write_str("Disconnect"),
+            Self::SetAutoConnect { on } => write!(f, "SetAutoConnect {{ on: {on} }}"),
             Self::PairStart { .. } => f.write_str("PairStart { .. }"),
             Self::PairCancel => f.write_str("PairCancel"),
             Self::Refresh => f.write_str("Refresh"),
@@ -246,6 +251,9 @@ impl Worker {
             Cmd::Disconnect => {
                 self.ask(Request::Disconnect {}, COMMAND_WAIT).await;
             }
+            Cmd::SetAutoConnect { on } => {
+                self.ask(Request::SetAutoConnect { on }, COMMAND_WAIT).await;
+            }
             Cmd::PairStart { transport } => {
                 let req = Request::PairStart { transport };
                 if let Some(r) = self.ask(req, COMMAND_WAIT).await {
@@ -407,6 +415,7 @@ mod tests {
             kill_switch: false,
             error: error.map(Into::into),
             pairing: false,
+            auto_connect: false,
         }
     }
 
@@ -521,6 +530,18 @@ mod tests {
         };
         assert_eq!(asked[0], connect(Mode::Tun, true));
         assert_eq!(asked[1], connect(Mode::Proxy, false));
+    }
+
+    #[tokio::test]
+    async fn auto_connect_goes_to_the_daemon() {
+        let (path, asked) = idle_daemon("auto");
+        let mut w = worker(path);
+        w.command(Cmd::SetAutoConnect { on: true }).await;
+        w.command(Cmd::SetAutoConnect { on: false }).await;
+        assert_eq!(w.view.message, None);
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked[0], Request::SetAutoConnect { on: true });
+        assert_eq!(asked[1], Request::SetAutoConnect { on: false });
     }
 
     #[tokio::test]
