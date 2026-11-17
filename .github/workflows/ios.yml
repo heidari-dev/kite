@@ -4,6 +4,13 @@ name: iOS
 on:
   push:
     branches: [main]
+    paths:
+      - apps/ios/**
+      - crates/kite-ffi/**
+      - crates/kite-relay/**
+      - Cargo.lock
+      - scripts/ios-screens.sh
+      - .github/workflows/ios.yml
   pull_request:
     paths:
       - apps/ios/**

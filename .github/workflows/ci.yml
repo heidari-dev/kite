@@ -15,6 +15,30 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Pull requests that change only documentation skip the slow build, test and package jobs. Pushes
+  # to main, the weekly run and manual runs always run everything.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          code=true
+          if [ "$EVENT" = pull_request ]; then
+            # HEAD is the merge commit, so its first parent is the base branch.
+            files=$(git diff --name-only HEAD^1 HEAD)
+            grep -qvE '^(docs|site)/|\.md$|^(LICENSE|osv-scanner\.toml)$' <<<"$files" || code=false
+          fi
+          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
+
   fmt:
     runs-on: ubuntu-latest
     steps:
@@ -36,6 +60,8 @@ jobs:
 
   # The Windows-only code (kite-win, the pipe, TUN mode) is not built on Linux.
   clippy-windows:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -44,6 +70,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -77,6 +105,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   fuzz:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -102,6 +132,8 @@ jobs:
           done
 
   systemd:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -112,6 +144,8 @@ jobs:
       - run: systemd-analyze security --offline=true packaging/linux/kite.service | tail -1
 
   tun:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -128,6 +162,8 @@ jobs:
 
   # The runner is an administrator, so Wintun can make its adapter and the routes can change.
   tun-windows:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -143,6 +179,8 @@ jobs:
   # The runner has passwordless sudo, so a utun device can be made and the routes and DNS settings
   # can change. The macOS-only code is linted here, since the Linux and Windows jobs do not build it.
   macos:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
@@ -159,6 +197,8 @@ jobs:
   # The macOS package: built as a universal binary, installed on the runner (its postinstall loads
   # the daemon), used by an administrator, then taken off again with its own uninstall script.
   pkg-macos:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
@@ -180,6 +220,8 @@ jobs:
   # The installer: installs it on the runner, runs the TUN smoke test against the installed service
   # (with its cut-down token), uninstalls it and checks that nothing is left.
   msi-windows:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
@@ -202,6 +244,8 @@ jobs:
           retention-days: 14
 
   android:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -232,6 +276,8 @@ jobs:
 
   # Built on the oldest Ubuntu we run so the binaries only need its glibc.
   linux-packages:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
