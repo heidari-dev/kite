@@ -80,6 +80,7 @@ does after you press Disconnect.
 
 - **Proxy only** (under Share) sends only the programs you point at Kite's local proxy through the
   phone, and needs no special rights. Everything else uses your normal connection.
+  To send just one browser: [One browser through the phone](browser.md).
 - **Block traffic if the phone disconnects** stops the computer from falling back to its own
   connection if the cable comes out. It is off until you turn it on. It is available on Linux only
   for now.

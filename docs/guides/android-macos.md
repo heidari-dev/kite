@@ -75,6 +75,7 @@ does after you click Disconnect.
 
 - **Proxy only** (under Share) sends only the programs you point at Kite's local proxy through the
   phone. Everything else uses your normal connection.
+  To send just one browser: [One browser through the phone](browser.md).
 - If the phone drops out, the Mac goes back to its normal connection, with your own address, unless
   you turned on **Block traffic if the phone disconnects**. With it on, nothing leaves until the
   phone is back or you press Disconnect. If Kite itself crashes, the block stays; press Disconnect,
