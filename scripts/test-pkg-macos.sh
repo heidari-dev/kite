@@ -50,6 +50,11 @@ echo "an administrator reaches the daemon: ${out:-no phones paired}"
 
 "$support/uninstall.sh"
 
+# launchd can take a moment after bootout to let go of the daemon and for the process to exit.
+for _ in $(seq 1 20); do
+  launchctl print "system/$label" >/dev/null 2>&1 || pgrep -x kite >/dev/null || break
+  sleep 0.5
+done
 if launchctl print "system/$label" >/dev/null 2>&1; then fail "the daemon is still loaded"; fi
 for f in "$support" /Applications/Kite.app /usr/local/bin/kite /var/run/kite \
   /Library/LaunchDaemons/$label.plist /Library/LaunchAgents/$label.desktop.plist /var/log/kite.log; do
