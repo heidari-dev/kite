@@ -328,13 +328,19 @@ async fn undo(lift: bool) -> io::Result<()> {
         Ok(_) => {}
         Err(e) => note(Err(e)),
     }
-    note(
-        powershell(&format!(
-            "Get-DnsClientNrptRule | Where-Object {{ $_.Comment -eq '{RULE}' }} | \
-             Remove-DnsClientNrptRule -Force"
-        ))
-        .await,
-    );
+    // The DNS rule is added only after tun.state is written, and tun.state goes only once the rule
+    // is gone: without the file there is no rule, and no reason to start PowerShell. If the file
+    // cannot be checked, look anyway.
+    let state = dir().and_then(|d| d.join("tun.state").try_exists());
+    if state.unwrap_or(true) {
+        note(
+            powershell(&format!(
+                "Get-DnsClientNrptRule | Where-Object {{ $_.Comment -eq '{RULE}' }} | \
+                 Remove-DnsClientNrptRule -Force"
+            ))
+            .await,
+        );
+    }
     if lift {
         note(firewall::lift());
     }
