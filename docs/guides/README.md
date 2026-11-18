@@ -10,6 +10,9 @@ time and about ten seconds after that.
 | Android | Mac | [Android and macOS](android-macos.md) |
 | iPhone | Linux, Windows or Mac | [iPhone](iphone.md) |
 
+Only one browser through the phone, the rest of the computer as it is:
+[One browser through the phone](browser.md).
+
 Something went wrong: [Troubleshooting](troubleshooting.md). Wondering what Kite does, whether it is
 safe or what it costs you: [FAQ](faq.md).
 
