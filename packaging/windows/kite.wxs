@@ -43,6 +43,9 @@
       <ComponentRef Id="Cli" />
       <ComponentRef Id="Wintun" />
       <ComponentRef Id="Adb" />
+      <ComponentRef Id="AdbWinApi" />
+      <ComponentRef Id="AdbWinUsbApi" />
+      <ComponentRef Id="AdbNotice" />
       <ComponentRef Id="Licenses" />
       <ComponentRef Id="Desktop" />
       <ComponentRef Id="StartMenu" />
@@ -75,11 +78,18 @@
            here and from nowhere else, so these files stay under Program Files, which only
            administrators can change. Never from this repository: scripts/fetch-adb.ps1 downloads
            and checks it. -->
+      <!-- One component for each versioned file: light refuses two in a component (LGHT0367). -->
       <Component Id="Adb" Guid="*" Win64="yes">
         <File Id="AdbExe" Source="$(var.Adb)\adb.exe" KeyPath="yes" />
-        <File Id="AdbWinApi" Source="$(var.Adb)\AdbWinApi.dll" />
-        <File Id="AdbWinUsbApi" Source="$(var.Adb)\AdbWinUsbApi.dll" />
-        <File Id="AdbNotice" Source="$(var.Adb)\adb-NOTICE.txt" />
+      </Component>
+      <Component Id="AdbWinApi" Guid="*" Win64="yes">
+        <File Id="AdbWinApiDll" Source="$(var.Adb)\AdbWinApi.dll" KeyPath="yes" />
+      </Component>
+      <Component Id="AdbWinUsbApi" Guid="*" Win64="yes">
+        <File Id="AdbWinUsbApiDll" Source="$(var.Adb)\AdbWinUsbApi.dll" KeyPath="yes" />
+      </Component>
+      <Component Id="AdbNotice" Guid="*" Win64="yes">
+        <File Id="AdbNoticeTxt" Source="$(var.Adb)\adb-NOTICE.txt" KeyPath="yes" />
       </Component>
 
       <Component Id="Licenses" Guid="*" Win64="yes">
