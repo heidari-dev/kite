@@ -4,13 +4,15 @@
 #
 #   cargo build --release -p kite-cli -p kite-desktop
 #   scripts\fetch-wintun.ps1 target\wintun
-#   scripts\build-msi.ps1 -Version 0.1.0 -Bin target\release -Wintun target\wintun -Out dist
+#   scripts\fetch-adb.ps1 target\adb
+#   scripts\build-msi.ps1 -Version 0.1.0 -Bin target\release -Wintun target\wintun -Adb target\adb -Out dist
 #
 # The installer is not signed yet, see docs/windows.md.
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [Parameter(Mandatory = $true)][string]$Bin,
     [Parameter(Mandatory = $true)][string]$Wintun,
+    [Parameter(Mandatory = $true)][string]$Adb,
     [string]$Out = 'dist'
 )
 
@@ -37,8 +39,17 @@ $productVersion = "$($Matches[1]).$($Matches[2]).$third"
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $bin = (Resolve-Path $Bin).Path
 $wintun = (Resolve-Path $Wintun).Path
-foreach ($f in @("$bin\kite.exe", "$bin\kite-desktop.exe", "$wintun\wintun.dll", "$wintun\wintun-LICENSE.txt")) {
+$adb = (Resolve-Path $Adb).Path
+foreach ($f in @("$bin\kite.exe", "$bin\kite-desktop.exe", "$wintun\wintun.dll", "$wintun\wintun-LICENSE.txt",
+        "$adb\adb.exe", "$adb\AdbWinApi.dll", "$adb\AdbWinUsbApi.dll", "$adb\adb-NOTICE.txt")) {
     if (-not (Test-Path $f)) { throw "$f is missing" }
+}
+# The service runs adb.exe as SYSTEM: whatever scripts\fetch-adb.ps1 left must still be Google's.
+foreach ($f in 'adb.exe', 'AdbWinApi.dll', 'AdbWinUsbApi.dll') {
+    $sig = Get-AuthenticodeSignature "$adb\$f"
+    if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.GetNameInfo('SimpleName', $false) -ne 'Google LLC') {
+        throw "$adb\$f is not validly signed by Google LLC"
+    }
 }
 
 $work = Join-Path ([IO.Path]::GetTempPath()) ("kite-msi-" + [Guid]::NewGuid().ToString('N'))
@@ -54,7 +65,7 @@ try {
     $obj = Join-Path $work 'obj'
     New-Item -ItemType Directory -Path $obj | Out-Null
     & "$wix\candle.exe" -nologo -arch x64 -ext "$wix\WixUtilExtension.dll" `
-        "-dProductVersion=$productVersion" "-dBin=$bin" "-dWintun=$wintun" "-dRoot=$root" `
+        "-dProductVersion=$productVersion" "-dBin=$bin" "-dWintun=$wintun" "-dAdb=$adb" "-dRoot=$root" `
         -out "$obj\" "$root\packaging\windows\kite.wxs"
     if ($LASTEXITCODE -ne 0) { throw "candle failed with $LASTEXITCODE" }
 

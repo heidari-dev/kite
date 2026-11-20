@@ -4,6 +4,8 @@
     ProductVersion  a.b.c for Windows Installer (see the script)
     Bin             directory with kite.exe and kite-desktop.exe
     Wintun          directory with wintun.dll and wintun-LICENSE.txt (scripts/fetch-wintun.ps1)
+    Adb             directory with Google's adb.exe, AdbWinApi.dll, AdbWinUsbApi.dll and adb-NOTICE.txt
+                    (scripts/fetch-adb.ps1)
     Root            the repository
 
   One prompt (UAC) installs for the whole computer. It installs the programs, the service Kite and a
@@ -40,6 +42,7 @@
     <Feature Id="Kite" Title="Kite" Level="1">
       <ComponentRef Id="Cli" />
       <ComponentRef Id="Wintun" />
+      <ComponentRef Id="Adb" />
       <ComponentRef Id="Licenses" />
       <ComponentRef Id="Desktop" />
       <ComponentRef Id="StartMenu" />
@@ -66,6 +69,17 @@
       <Component Id="Wintun" Guid="*" Win64="yes">
         <File Id="WintunDll" Source="$(var.Wintun)\wintun.dll" KeyPath="yes" />
         <File Id="WintunLicense" Source="$(var.Wintun)\wintun-LICENSE.txt" />
+      </Component>
+
+      <!-- Google's adb, for phones whose USB driver WinUSB cannot use. The daemon starts it from
+           here and from nowhere else, so these files stay under Program Files, which only
+           administrators can change. Never from this repository: scripts/fetch-adb.ps1 downloads
+           and checks it. -->
+      <Component Id="Adb" Guid="*" Win64="yes">
+        <File Id="AdbExe" Source="$(var.Adb)\adb.exe" KeyPath="yes" />
+        <File Id="AdbWinApi" Source="$(var.Adb)\AdbWinApi.dll" />
+        <File Id="AdbWinUsbApi" Source="$(var.Adb)\AdbWinUsbApi.dll" />
+        <File Id="AdbNotice" Source="$(var.Adb)\adb-NOTICE.txt" />
       </Component>
 
       <Component Id="Licenses" Guid="*" Win64="yes">
@@ -129,6 +143,13 @@
     <CustomAction Id="Restore" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred"
                   Impersonate="no" Return="ignore" />
 
+    <!-- An adb server that Kite started (the service stops its own, the pairing window leaves
+         one) keeps adb.exe in use, which would block removing or replacing it. -->
+    <CustomAction Id="AdbStop.Set" Property="AdbStop" Execute="immediate"
+        Value="&quot;[InstallFolder]adb.exe&quot; kill-server" />
+    <CustomAction Id="AdbStop" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred"
+                  Impersonate="no" Return="ignore" />
+
     <CustomAction Id="RemoveData.Set" Property="RemoveData" Execute="immediate"
         Value="&quot;[System64Folder]cmd.exe&quot; /c rd /s /q &quot;[CommonAppDataFolder]Kite&quot;" />
     <CustomAction Id="RemoveData" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred"
@@ -147,7 +168,8 @@
       <Custom Action="Allow.Set" After="AddMember.Set">NOT Installed</Custom>
       <Custom Action="Privs.Set" After="Allow.Set">NOT Installed</Custom>
       <Custom Action="Restore.Set" After="Privs.Set">REMOVE="ALL"</Custom>
-      <Custom Action="RemoveData.Set" After="Restore.Set">REMOVE="ALL"</Custom>
+      <Custom Action="AdbStop.Set" After="Restore.Set">REMOVE="ALL"</Custom>
+      <Custom Action="RemoveData.Set" After="AdbStop.Set">REMOVE="ALL"</Custom>
       <Custom Action="RemoveGroup.Set" After="RemoveData.Set">REMOVE="ALL"</Custom>
 
       <!-- Installing: the group before the service starts, the person's access after the files
@@ -161,6 +183,7 @@
            files (3500), the data and the group, unless this is an upgrade, which keeps keys and
            pairings. The data goes last, so an uninstall that fails earlier loses nothing. -->
       <Custom Action="Restore" Sequence="1950">REMOVE="ALL"</Custom>
+      <Custom Action="AdbStop" Sequence="1960">REMOVE="ALL"</Custom>
       <Custom Action="RemoveData" Sequence="3510">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
       <Custom Action="RemoveGroup" Sequence="1970">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
     </InstallExecuteSequence>

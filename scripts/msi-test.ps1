@@ -46,7 +46,8 @@ Check (-not (Get-LocalGroup -Name kite -ErrorAction SilentlyContinue)) 'the grou
 Msiexec '/i' 'install'
 
 # What the install did.
-foreach ($f in 'kite.exe', 'kite-desktop.exe', 'wintun.dll', 'wintun-LICENSE.txt', 'LICENSE.txt') {
+foreach ($f in 'kite.exe', 'kite-desktop.exe', 'wintun.dll', 'wintun-LICENSE.txt', 'LICENSE.txt',
+        'adb.exe', 'AdbWinApi.dll', 'AdbWinUsbApi.dll', 'adb-NOTICE.txt') {
     Check (Test-Path (Join-Path $app $f)) "$f was not installed"
 }
 $svc = Get-CimInstance Win32_Service -Filter "Name='Kite'"
@@ -71,6 +72,8 @@ $acl = (icacls $data | Out-String)
 foreach ($other in 'BUILTIN\Users', 'Everyone', 'Authenticated Users') {
     Check (-not $acl.Contains($other)) "$other can reach $data"
 }
+$adbSig = Get-AuthenticodeSignature (Join-Path $app 'adb.exe')
+Check ($adbSig.Status -eq 'Valid' -and $adbSig.SignerCertificate.GetNameInfo('SimpleName', $false) -eq 'Google LLC') 'adb.exe is not signed by Google LLC'
 Write-Host 'installed as expected'
 
 # The service answers on its pipe.
