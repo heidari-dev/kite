@@ -22,8 +22,9 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{
     GetSecurityDescriptorDacl, GetTokenInformation, LookupAccountNameW, SidTypeAlias, SidTypeUser,
-    TokenUser, ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
-    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
+    TokenElevation, TokenUser, ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_ELEVATION, TOKEN_QUERY,
+    TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
@@ -140,6 +141,35 @@ pub fn current_user_sid() -> io::Result<String> {
 /// Whether this process runs as SYSTEM, as a service does.
 pub fn is_system() -> io::Result<bool> {
     Ok(current_user_sid()? == SYSTEM_SID)
+}
+
+/// Whether this process has an elevated token (an administrator's full rights, or SYSTEM's).
+pub fn is_elevated() -> io::Result<bool> {
+    let mut token: HANDLE = null_mut();
+    // SAFETY: the pseudo handle from GetCurrentProcess is always valid; `token` is an out value.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+    let mut size = 0u32;
+    // SAFETY: `elevation` is a TOKEN_ELEVATION, and its exact size is what we pass.
+    let got = unsafe {
+        GetTokenInformation(
+            token,
+            TokenElevation,
+            (&raw mut elevation).cast(),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut size,
+        )
+    };
+    let result = if got == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(elevation.TokenIsElevated != 0)
+    };
+    // SAFETY: `token` was opened above and is closed once.
+    unsafe { CloseHandle(token) };
+    result
 }
 
 /// The SID of the local group `name`, or None when there is no such local group. A user or a
@@ -391,6 +421,8 @@ mod tests {
         let me = current_user_sid().unwrap();
         assert!(me.starts_with("S-1-5-"), "{me}");
         assert_eq!(is_system().unwrap(), me == SYSTEM_SID);
+        // SYSTEM is always elevated; anyone else may or may not be, but the call must answer.
+        assert!(is_elevated().unwrap() || me != SYSTEM_SID);
     }
 
     #[test]
