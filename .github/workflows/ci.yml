@@ -67,6 +67,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # ipstack's build script copies wintun.dll into target\debug\examples and fails when a
+      # check-only build has not made that folder yet.
+      - run: New-Item -ItemType Directory -Force target\debug\examples
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   # Branch protection requires each "test (OS)" check, and a skipped matrix job reports none of
