@@ -182,7 +182,8 @@ ways:
   remembers the key lets whoever holds `adbkey` run `adb shell` on it, not only use Kite. Linux needs access to the USB device: the `kite`
   package installs `51-kite-adb.rules`, which gives the group `kite` and the person at the console
   any device with an ADB interface (class ff, subclass 42, protocol 01) unless it also has a keyboard
-  or mouse interface; replug the phone after installing. Windows needs the WinUSB driver on the phone's ADB interface, see
+  or mouse interface; replug the phone after installing. On Windows, a phone whose driver is not
+  WinUSB goes through the adb that the installer brings, which kite starts when no server runs, see
   [windows.md](windows.md). Only one program can hold the interface: close `adb` or run
   `adb start-server` to let it have it.
 

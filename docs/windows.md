@@ -32,7 +32,8 @@ by nothing else.
 ### What it installs
 
 - `C:\Program Files\Kite`: `kite.exe` (the command line and the service), `kite-desktop.exe` (the
-  window and tray icon), `wintun.dll` with its license, and Kite's license.
+  window and tray icon), `wintun.dll` with its license, Google's `adb.exe` with its two DLLs and its
+  notice (see [adb](#adb)), and Kite's license.
 - The Windows service **Kite**, started at boot and restarted if it fails. It runs as LocalSystem,
   because making the network adapter and changing routes need administrator rights; the installer cuts
   its token down to the four privileges it uses.
@@ -47,9 +48,9 @@ Installing again over an older version upgrades it and keeps your key and the pa
 1. Open **Kite** from the Start menu. Its icon sits in the tray; Windows 11 puts a new icon in the
    overflow flyout (the arrow at the right of the taskbar), and you can drag it out.
 2. Install the Kite app on the phone, turn on USB debugging, connect the phone by USB or put it on the
-   same WiFi, and start sharing on the phone. Kite talks to the phone over USB itself, without adb;
-   the phone asks once to allow this computer ("Allow USB debugging?"). It needs the WinUSB driver on
-   the phone's ADB interface, see below.
+   same WiFi, and start sharing on the phone. Kite talks to the phone over USB itself, or through the
+   adb that comes with it when the phone's driver does not allow that, see below; the phone asks once
+   to allow this computer ("Allow USB debugging?").
 3. Click **Pair a phone**. Pairing decides where all of your traffic may go, so only an administrator
    may do it: Windows asks for permission, and a window opens in which you allow this computer on the
    phone and type the 6-digit code. Do this once per phone.
@@ -68,20 +69,23 @@ itself crashes the block stays, so you are not left unprotected; connect again, 
 to get your normal connection back. Programs that already had a connection open when you connected
 keep it until they close it.
 
-### If Windows has no driver for the phone
+### Phones with a driver of their own
 
-Kite reaches the phone's ADB interface through WinUSB. Windows 10 and 11 bind WinUSB to many phones by
-themselves; if yours is not one of them (Kite says "USB: ... needs the WinUSB driver"), do one of:
+Kite first reaches the phone's ADB interface itself, through WinUSB, which Windows 10 and 11 bind to
+many phones by themselves. Some phones come with a driver that WinUSB cannot replace (Samsung's, for
+one). For those Kite goes through adb: when no adb server runs and the phone cannot be reached
+directly, the Kite service starts the `adb.exe` that is installed next to `kite.exe`, waits for it,
+and uses it. You install nothing and click nothing; the phone asks once to allow this computer, as
+it does for any adb. A phone that works directly never starts adb, and an adb server that is running
+already (yours, from Android's platform-tools, say) is used as it is. The service stops the server it
+started when it stops.
 
-- install Android's platform-tools (free, from Google). The Kite window starts adb's server when it
-  needs the phone (from a terminal, run `adb start-server`); Kite then goes through adb, and the
-  phone's own driver, Samsung's for example, is all adb needs;
-- or bind WinUSB to the phone's **ADB interface** (not the MTP or camera one), for example with
-  [Zadig](https://zadig.akeo.ie/): pick the device called "Android ADB Interface" or similar,
-  choose WinUSB and click Replace Driver. `adb.exe` works with WinUSB too.
+If that does not work either (Kite says "USB: ... WinUSB driver"), bind WinUSB to the phone's
+**ADB interface** (not the MTP or camera one), for example with [Zadig](https://zadig.akeo.ie/):
+pick the device called "Android ADB Interface" or similar, choose WinUSB and click Replace Driver.
 
-Only one program can hold the interface at a time: if `adb` is running and Kite says the interface is
-busy, run `adb start-server` and try again, or close `adb`.
+Only one program can hold the interface at a time: if another `adb` holds it and Kite says the
+interface is busy, close that `adb` (`adb kill-server`) and try again.
 
 ### Letting someone else use it
 
@@ -123,3 +127,14 @@ Kite's TUN mode uses [Wintun](https://www.wintun.net/), the driver of WireGuard,
 puts next to `kite.exe` unmodified together with its license. Kite checks that the DLL is signed by
 WireGuard LLC before it loads it. For a build from source, `scripts\fetch-wintun.ps1` downloads it and
 checks its hash.
+
+## adb
+
+The installer puts Google's `adb.exe`, `AdbWinApi.dll` and `AdbWinUsbApi.dll` (from Android's
+platform-tools, unmodified) next to `kite.exe`, with Google's notice in `adb-NOTICE.txt`. adb is
+Apache-2.0 licensed, and handing it out unchanged with its notice is allowed; it is what scrcpy does
+too. The build downloads the zip from `dl.google.com`, checks it against a SHA-256 in
+`scripts\fetch-adb.ps1` and checks that the three files are signed by Google LLC; it fails otherwise.
+Kite starts adb only from its own folder under Program Files, which only administrators can change,
+never from `PATH` or another folder. For a build from source, run `scripts\fetch-adb.ps1` and put
+the files next to `kite.exe` in a folder under Program Files; elsewhere Kite does not start adb.

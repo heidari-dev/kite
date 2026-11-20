@@ -106,13 +106,11 @@ removes leftover routing rules and the DNS rule. Connecting again in Full mode c
 
 ### Windows says Kite needs the WinUSB driver
 
-Kite talks to the phone's ADB interface through a driver called WinUSB. Windows 10 and 11 attach it
-to many phones by themselves; yours is one that does not. Pick one:
-
-- Install Android's platform-tools and run `adb start-server` in a terminal. Kite then goes through
-  adb.
-- Or attach WinUSB to the phone's ADB interface (not the file transfer or camera one) with
-  [Zadig](https://zadig.akeo.ie/): pick "Android ADB Interface", choose WinUSB, click Replace Driver.
+Kite talks to the phone's ADB interface through a driver called WinUSB, and goes through the adb
+that comes with it when the phone has a driver of its own. If you see this message, neither worked.
+Reinstall Kite (the adb files may be missing), then try again. If it still fails, attach WinUSB to
+the phone's ADB interface (not the file transfer or camera one) with
+[Zadig](https://zadig.akeo.ie/): pick "Android ADB Interface", choose WinUSB, click Replace Driver.
 
 **The USB interface is busy.** Only one program can hold it. Run `adb start-server`, or close
 whatever runs `adb`.
