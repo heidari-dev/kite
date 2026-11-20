@@ -4,6 +4,8 @@
 
 pub mod adb;
 mod bridge;
+#[cfg(windows)]
+mod bundled;
 pub mod mdns;
 pub mod usb;
 pub mod usbmux;
