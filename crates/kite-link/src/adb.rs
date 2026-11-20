@@ -158,11 +158,17 @@ async fn body<S: AsyncRead + Unpin>(s: &mut S) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// One line per device: `serial state key:value...`, padded with spaces. Only phones on USB (they
-/// have a `usb:` field) count; adb can also list WiFi devices, which this transport must not use.
+/// One line per device: `serial state key:value...`, padded with spaces. Only phones on USB count;
+/// adb can also list WiFi devices and emulators, which this transport must not use. adb on Linux
+/// and macOS gives a USB device a `usb:` field. adb on Windows gives none, so there a USB phone is
+/// one whose serial is not an address (`host:port`), an mDNS name (it has dots) or an emulator.
 /// Lines that do not fit are ignored, and so are serials with characters outside what adb itself
 /// uses, since the serial goes back into a request.
 fn parse_devices(text: &str) -> Vec<(String, String)> {
+    parse_devices_for(text, cfg!(windows))
+}
+
+fn parse_devices_for(text: &str, windows: bool) -> Vec<(String, String)> {
     text.lines()
         .filter_map(|line| {
             let mut words = line.split_whitespace();
@@ -171,7 +177,12 @@ fn parse_devices(text: &str) -> Vec<(String, String)> {
                 && serial
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || "._:-".contains(c));
-            (ok && words.any(|w| w.starts_with("usb:"))).then(|| (serial.into(), state.into()))
+            let hardware = !serial.starts_with("emulator-")
+                && serial
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-');
+            let usb = words.any(|w| w.starts_with("usb:")) || (windows && hardware);
+            (ok && usb).then(|| (serial.into(), state.into()))
         })
         .collect()
 }
@@ -343,6 +354,20 @@ mod tests {
             "ok-1.2 device usb:1-3 model:m\nx;y device usb:1-4\nlonely\n\n192.168.1.9:5555 device product:p\n",
         );
         assert_eq!(list, [("ok-1.2".to_string(), "device".to_string())]);
+    }
+
+    #[test]
+    fn takes_windows_usb_phones_without_a_usb_field() {
+        // adb on Windows: no `usb:` field for a phone on USB.
+        let text =
+            "R58M12AB3C device product:j6ltecis model:SM_J600F device:j6lte transport_id:3\n\
+                    192.168.1.9:5555 device product:p transport_id:4\n\
+                    adb-R58M-x._adb-tls-connect._tcp device product:p transport_id:5\n\
+                    emulator-5554 device product:sdk transport_id:6\n";
+        let phone = [("R58M12AB3C".to_string(), "device".to_string())];
+        assert_eq!(parse_devices_for(text, true), phone);
+        // Elsewhere adb always names the USB port, so a line without one is not a USB phone.
+        assert!(parse_devices_for(text, false).is_empty());
     }
 
     #[tokio::test]

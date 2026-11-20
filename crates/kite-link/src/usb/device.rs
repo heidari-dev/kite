@@ -110,7 +110,10 @@ fn usb_error(e: nusb::Error) -> io::Error {
         Disconnected => (io::ErrorKind::NotConnected, "the phone was unplugged".into()),
         _ if cfg!(windows) => (
             io::ErrorKind::Other,
-            format!("{e}; the phone's ADB interface needs the WinUSB driver, see docs/windows.md"),
+            format!(
+                "{e}; install Android's platform-tools so that Kite can go through adb, or give \
+                 the phone's ADB interface the WinUSB driver; see docs/windows.md"
+            ),
         ),
         _ => (io::ErrorKind::Other, e.to_string()),
     };
