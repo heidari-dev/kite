@@ -240,6 +240,9 @@ impl Worker {
                 kill_switch,
             } => {
                 self.meter.reset();
+                if matches!(transport, Transport::Usb { .. }) {
+                    crate::adb::ensure_server().await;
+                }
                 let req = Request::Connect {
                     transport,
                     mode,
@@ -252,6 +255,9 @@ impl Worker {
                 self.ask(Request::Disconnect {}, COMMAND_WAIT).await;
             }
             Cmd::SetAutoConnect { on } => {
+                if on {
+                    crate::adb::ensure_server().await;
+                }
                 self.ask(Request::SetAutoConnect { on }, COMMAND_WAIT).await;
             }
             Cmd::PairStart { transport } => {
@@ -297,6 +303,10 @@ impl Worker {
             return;
         };
         self.view.status = r.status;
+        // Auto-connect may need adb's server for a phone that Kite cannot reach over WinUSB.
+        if self.view.status.as_ref().is_some_and(|s| s.auto_connect) {
+            crate::adb::start_server();
+        }
         // The daemon drops a pairing after two minutes; the code field must go with it.
         let waiting = self.view.status.as_ref().is_some_and(|s| s.pairing);
         let started = self.pair_at.is_some_and(|t| t.elapsed() > PAIR_GRACE);

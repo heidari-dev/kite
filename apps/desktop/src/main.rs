@@ -6,6 +6,7 @@
 // written here, and `ui` is the only place it is allowed.
 #![deny(unsafe_code)]
 
+mod adb;
 mod daemon;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod elevate;
@@ -403,6 +404,10 @@ fn wire(ui: &AppWindow, tray: &Tray, cmds: &UnboundedSender<Cmd>, visible: &Arc<
             // On Windows pairing needs an administrator, so it runs in a window of its own.
             #[cfg(windows)]
             {
+                // Started now, adb's server is up by the time the Windows prompt is answered.
+                if matches!(transport, Transport::Usb { .. }) {
+                    adb::start_server();
+                }
                 let note = elevate::start(&transport).map_or_else(|m| m, |()| elevate::NOTE.into());
                 with_state(|s| s.pair_note = Some((note, Instant::now())));
                 r();

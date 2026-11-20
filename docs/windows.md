@@ -73,8 +73,9 @@ keep it until they close it.
 Kite reaches the phone's ADB interface through WinUSB. Windows 10 and 11 bind WinUSB to many phones by
 themselves; if yours is not one of them (Kite says "USB: ... needs the WinUSB driver"), do one of:
 
-- install Android's platform-tools and run `adb start-server`; Kite then uses adb, and the phone's
-  own driver (or Google's USB driver) is whatever adb needs;
+- install Android's platform-tools (free, from Google). The Kite window starts adb's server when it
+  needs the phone (from a terminal, run `adb start-server`); Kite then goes through adb, and the
+  phone's own driver, Samsung's for example, is all adb needs;
 - or bind WinUSB to the phone's **ADB interface** (not the MTP or camera one), for example with
   [Zadig](https://zadig.akeo.ie/): pick the device called "Android ADB Interface" or similar,
   choose WinUSB and click Replace Driver. `adb.exe` works with WinUSB too.
