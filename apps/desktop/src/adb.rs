@@ -72,7 +72,10 @@ mod imp {
             dirs.push(local.join(r"Android\Sdk\platform-tools"));
             dirs.push(local.join(r"Android\platform-tools"));
         }
+        // A relative entry would be looked up in the current directory; a network share can
+        // stall this check for seconds.
         dirs.into_iter()
+            .filter(|d| d.is_absolute() && !d.as_os_str().to_string_lossy().starts_with(r"\\"))
             .map(|d| d.join("adb.exe"))
             .find(|p| p.is_file())
     }

@@ -648,7 +648,9 @@ async fn dial_tcp(relay: &str, tun: bool) -> io::Result<TcpStream> {
             io::ErrorKind::HostUnreachable | io::ErrorKind::NetworkUnreachable => io::Error::new(
                 last.kind(),
                 format!(
-                    "this computer cannot reach {relay}: it is not on the phone's network (the same                      WiFi, or the phone's hotspot), or a VPN on this computer takes the traffic ({last})"
+                    "this computer cannot reach {relay}: it is not on the phone's network (the \
+                     same WiFi, or the phone's hotspot), or a VPN on this computer takes the \
+                     traffic ({last})"
                 ),
             ),
             _ => last,
