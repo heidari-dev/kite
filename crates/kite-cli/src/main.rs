@@ -644,7 +644,15 @@ async fn dial_tcp(relay: &str, tun: bool) -> io::Result<TcpStream> {
                 Err(e) => last = e,
             }
         }
-        Err(last)
+        Err(match last.kind() {
+            io::ErrorKind::HostUnreachable | io::ErrorKind::NetworkUnreachable => io::Error::new(
+                last.kind(),
+                format!(
+                    "this computer cannot reach {relay}: it is not on the phone's network (the same                      WiFi, or the phone's hotspot), or a VPN on this computer takes the traffic ({last})"
+                ),
+            ),
+            _ => last,
+        })
     };
     tokio::time::timeout(Duration::from_secs(10), connect)
         .await
