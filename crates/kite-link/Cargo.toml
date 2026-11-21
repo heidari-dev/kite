@@ -11,6 +11,8 @@ rust-version.workspace = true
 [dependencies]
 base64ct = { version = "1", features = ["alloc"] }
 getrandom = { version = "0.4", features = ["sys_rng"] }
+if-addrs = "0.15.0"
+socket2 = { version = "0.6", features = ["all"] }
 # Pure Rust USB access (usbfs on Linux, WinUSB on Windows). rsa 0.10 is the first release past RUSTSEC-2023-0071 (Marvin).
 nusb = { version = "0.2.9", features = ["tokio"] }
 rsa = { version = "0.10.0", features = ["pkcs1v15"] }

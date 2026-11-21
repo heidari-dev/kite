@@ -49,6 +49,12 @@ fn no_ipv6(family: AddressFamily, e: &io::Error) -> bool {
     family == AddressFamily::Inet6 && matches!(e.raw_os_error(), Some(97 | 95)) // EAFNOSUPPORT, EOPNOTSUPP
 }
 
+/// IPv6 switched off with sysctl on the device (not on the whole kernel): the kernel refuses a route
+/// through it with EACCES, though other interfaces may still carry IPv6.
+fn ipv6_off_on_device(family: AddressFamily, e: &io::Error) -> bool {
+    family == AddressFamily::Inet6 && e.raw_os_error() == Some(13) // EACCES
+}
+
 /// Metric of the blackhole route: the device's routes (metric 0) win while the device exists.
 // Above 1024: the kernel stores an IPv6 route's metric 0 as 1024.
 const BLACKHOLE_METRIC: u32 = 4096;
@@ -73,6 +79,7 @@ fn blackhole(family: AddressFamily) -> RouteMessage {
 pub async fn setup(link: u32, kill_switch: bool) -> io::Result<()> {
     let h = handle()?;
     for family in FAMILIES {
+        let mut no_v6_device = false;
         let route = match family {
             AddressFamily::Inet => RouteMessageBuilder::<Ipv4Addr>::new()
                 .output_interface(link)
@@ -85,9 +92,12 @@ pub async fn setup(link: u32, kill_switch: bool) -> io::Result<()> {
         };
         match h.route().add(route).execute().await.map_err(nl) {
             Err(e) if no_ipv6(family, &e) => continue,
+            // No IPv6 through the tunnel device. The blackhole below still stops IPv6 from leaving
+            // by another interface with the real address; programs fall back to IPv4.
+            Err(e) if ipv6_off_on_device(family, &e) => no_v6_device = true,
             r => r?,
         }
-        if kill_switch {
+        if kill_switch || no_v6_device {
             h.route()
                 .add(blackhole(family))
                 .execute()
@@ -158,6 +168,17 @@ fn rules(family: AddressFamily) -> [RuleMessage; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ipv6_disabled_on_the_device_is_skipped_for_ipv6_only() {
+        let eacces = io::Error::from_raw_os_error(13);
+        assert!(ipv6_off_on_device(AddressFamily::Inet6, &eacces));
+        assert!(!ipv6_off_on_device(AddressFamily::Inet, &eacces));
+        assert!(!ipv6_off_on_device(
+            AddressFamily::Inet6,
+            &io::Error::from_raw_os_error(1)
+        ));
+    }
 
     #[test]
     fn blackhole_is_a_default_route_behind_the_tunnel_device() {

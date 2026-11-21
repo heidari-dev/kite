@@ -63,6 +63,14 @@ const HALVES: [(IpAddr, u8); 4] = [
     (IpAddr::V6(Ipv6Addr::new(0x8000, 0, 0, 0, 0, 0, 0, 0)), 1),
 ];
 
+/// Lets the kill switch pass a dial to `relay`, and with `discovery` this program's mDNS lookup of
+/// the phone. The block is replaced in one step, so nothing leaks between the old rules and the new.
+pub async fn allow(relay: Option<SocketAddr>, discovery: bool) -> io::Result<()> {
+    let luid = route::luid_of_alias(NAME)?
+        .ok_or_else(|| io::Error::other("the tunnel adapter is gone"))?;
+    firewall::engage(luid, relay.map(|a| a.ip().to_canonical()), discovery)
+}
+
 /// Runs TUN mode until `shutdown` completes or tun2proxy fails. `serve_link` carries the traffic
 /// that reaches the proxy at `proxy` through a tunnel to the relay, until the token it is given is
 /// cancelled. `relay` is the address that tunnel connects to, so it can stay out of the tunnel.
@@ -272,7 +280,7 @@ async fn setup(index: u32, relay: Option<IpAddr>, kill_switch: bool) -> io::Resu
     let luid = route::luid_of_index(index)?;
     // Before the routes change, so nothing leaks between the two.
     if kill_switch {
-        firewall::engage(luid, relay)?;
+        firewall::engage(luid, relay, false)?;
     }
     // The relay's way out, before the tunnel's routes change it. A more specific route than the
     // halves (a LAN) keeps winning on its own; only the default route needs a host route beside it.

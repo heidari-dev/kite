@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
@@ -23,6 +23,10 @@ const BUF: usize = 16 * 1024;
 
 /// A local client must send its first bytes within this time, or it gives up its slot.
 const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The relay closes a tunnel that carried no stream for 5 minutes (`kite_relay::Config`). An idle
+/// proxy would end that way, so a stream is opened and dropped well before then.
+const KEEPALIVE: Duration = Duration::from_secs(120);
 
 type OpenRequest = oneshot::Sender<yamux::Stream>;
 
@@ -158,7 +162,30 @@ where
     cfg.set_max_connection_receive_window(Some(MAX_STREAMS * yamux::DEFAULT_CREDIT as usize));
     let mut conn = yamux::Connection::new(tunnel.compat(), cfg, yamux::Mode::Client);
     let mut waiting: Option<OpenRequest> = None;
+    let mut keepalive =
+        tokio::time::interval_at(tokio::time::Instant::now() + KEEPALIVE, KEEPALIVE);
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut ping = false;
     poll_fn(|cx| loop {
+        if keepalive.poll_tick(cx).is_ready() {
+            ping = true;
+        }
+        if ping {
+            match conn.poll_new_outbound(cx) {
+                Poll::Ready(Ok(stream)) => {
+                    ping = false;
+                    // The relay learns of a stream with its first frame, so send a SOCKS5
+                    // greeting and close. It restarts the relay's idle timer; its reply is dropped.
+                    tokio::spawn(async move {
+                        let mut stream = stream.compat();
+                        let _ = stream.write_all(&[5, 1, 0]).await;
+                        let _ = stream.shutdown().await;
+                    });
+                }
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::other(e))),
+                Poll::Pending => {}
+            }
+        }
         if waiting.is_none() {
             match requests.poll_recv(cx) {
                 Poll::Ready(Some(tx)) => waiting = Some(tx),
@@ -357,6 +384,16 @@ mod tests {
                 .is_ok(),
             "the dropped client still counts as active"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_tunnel_outlives_the_relays_idle_timeout() {
+        let (tunnel, relay) = relay();
+        let p = proxy(tunnel).await;
+        // The relay's idle timeout is 5 minutes; the clock is paused, so this takes no real time.
+        tokio::time::sleep(Duration::from_secs(1000)).await;
+        assert!(!relay.is_finished(), "the relay closed an idle tunnel");
+        assert!(!p.task.is_finished(), "the proxy ended");
     }
 
     #[tokio::test]
