@@ -10,8 +10,8 @@ android {
         applicationId = "io.github.heidaridev.kite"
         minSdk = 26
         targetSdk = 36
-        versionCode = 10001
-        versionName = "0.1.0-rc.1"
+        versionCode = 10002
+        versionName = "0.1.0-rc.2"
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
