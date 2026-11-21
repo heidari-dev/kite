@@ -79,6 +79,7 @@ fn blackhole(family: AddressFamily) -> RouteMessage {
 pub async fn setup(link: u32, kill_switch: bool) -> io::Result<()> {
     let h = handle()?;
     for family in FAMILIES {
+        let mut no_v6_device = false;
         let route = match family {
             AddressFamily::Inet => RouteMessageBuilder::<Ipv4Addr>::new()
                 .output_interface(link)
@@ -91,13 +92,12 @@ pub async fn setup(link: u32, kill_switch: bool) -> io::Result<()> {
         };
         match h.route().add(route).execute().await.map_err(nl) {
             Err(e) if no_ipv6(family, &e) => continue,
-            // No IPv6 through the tunnel device. Without the kill switch there is nothing to
-            // catch; with it, the blackhole below still stops IPv6 from leaving by another interface.
-            Err(e) if ipv6_off_on_device(family, &e) && !kill_switch => continue,
-            Err(e) if ipv6_off_on_device(family, &e) => {}
+            // No IPv6 through the tunnel device. The blackhole below still stops IPv6 from leaving
+            // by another interface with the real address; programs fall back to IPv4.
+            Err(e) if ipv6_off_on_device(family, &e) => no_v6_device = true,
             r => r?,
         }
-        if kill_switch {
+        if kill_switch || no_v6_device {
             h.route()
                 .add(blackhole(family))
                 .execute()

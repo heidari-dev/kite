@@ -184,6 +184,7 @@ impl Link {
     /// at another address (a new hotspot subnet, a new DHCP lease), so when the old one fails it is
     /// looked up again, and the kill switch is told to let the new address through.
     async fn redial(&self, phones: &Phones) -> io::Result<(Tunnel, Option<SocketAddr>)> {
+        // Runs only with the kill switch on (`keep` redials only then), which is what `permit` serves.
         let lost = match self.establish(phones).await {
             Ok(tunnel) => return Ok(tunnel),
             Err(e) => e,
@@ -199,7 +200,8 @@ impl Link {
         }
         let found = crate::find_phone(self.mark()).await;
         let new = found.as_ref().ok().copied().or(old);
-        self.permit(new, false).await?;
+        // Failing to close the lookup again is not worth losing the new address for.
+        let _ = self.permit(new, false).await;
         match found {
             Ok(new) if Some(new) != old => {
                 *self
