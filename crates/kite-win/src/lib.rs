@@ -6,6 +6,7 @@
 //! - [`private_dir`]: a directory only the user, SYSTEM and Administrators can use, for keys.
 //! - [`pipe`]: the daemon's named pipe, with a DACL, and a check for an administrator caller.
 //! - [`route`]: the IP Helper calls TUN mode needs.
+//! - [`prefs`]: the text size and animation choices of Windows settings.
 //! - [`firewall`]: the Windows Filtering Platform filters of the kill switch.
 
 use std::ffi::c_void;
@@ -34,6 +35,7 @@ use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken}
 pub mod elevate;
 pub mod firewall;
 pub mod pipe;
+pub mod prefs;
 pub mod route;
 pub mod service;
 
