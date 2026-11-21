@@ -25,14 +25,85 @@ const SRV: u16 = 33;
 
 /// Phones that answered within a few seconds, as `address:port`, in the order they answered.
 /// Only private IPv4 senders count: that is where the phone listens.
-// shortcut: the question leaves on the default route's interface only; a computer on several
-// networks may need `--wifi ADDRESS`. Enumerate the interfaces when that turns out to matter.
+///
+/// The question goes out on every up interface that has a private IPv4 address. Without choosing
+/// one, Windows sends it out of whichever interface has the lowest multicast metric, which is often
+/// a virtual adapter (WSL, Hyper-V, Docker, a VPN) that the phone is not on.
 pub async fn discover() -> io::Result<Vec<SocketAddr>> {
-    discover_at(GROUP, WAIT).await
+    discover_at(GROUP, WAIT, &interfaces()).await
 }
 
-async fn discover_at(group: SocketAddr, wait: Duration) -> io::Result<Vec<SocketAddr>> {
-    let sock = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
+/// Most interfaces asked, so a host with many virtual adapters does not open dozens of sockets.
+const MAX_INTERFACES: usize = 16;
+
+/// Private IPv4 addresses of the up interfaces; the unspecified address (the system's choice) if
+/// there is none or the list cannot be read.
+fn interfaces() -> Vec<Ipv4Addr> {
+    let mut found = Vec::new();
+    for interface in if_addrs::get_if_addrs().unwrap_or_default() {
+        if let IpAddr::V4(ip) = interface.ip() {
+            if interface.is_oper_up()
+                && ip.is_private()
+                && !found.contains(&ip)
+                && found.len() < MAX_INTERFACES
+            {
+                found.push(ip);
+            }
+        }
+    }
+    if found.is_empty() {
+        found.push(Ipv4Addr::UNSPECIFIED);
+    }
+    found
+}
+
+/// A socket on the interface that has address `from`, so its multicast leaves there.
+fn socket_on(from: Ipv4Addr) -> io::Result<UdpSocket> {
+    let sock = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+    if !from.is_unspecified() {
+        sock.set_multicast_if_v4(&from)?;
+    }
+    sock.bind(&SocketAddr::new(from.into(), 0).into())?;
+    sock.set_nonblocking(true)?;
+    UdpSocket::from_std(sock.into())
+}
+
+async fn discover_at(
+    group: SocketAddr,
+    wait: Duration,
+    from: &[Ipv4Addr],
+) -> io::Result<Vec<SocketAddr>> {
+    let mut asking = tokio::task::JoinSet::new();
+    let mut last_error = None;
+    for &ip in from {
+        // An interface that refuses is skipped; the others may still reach the phone.
+        match socket_on(ip) {
+            Ok(sock) => {
+                asking.spawn(ask(sock, group, wait));
+            }
+            Err(e) => last_error = Some(e),
+        }
+    }
+    if asking.is_empty() {
+        return Err(last_error.unwrap_or_else(|| io::Error::other("no interface to ask on")));
+    }
+    let mut found: Vec<SocketAddr> = Vec::new();
+    while let Some(done) = asking.join_next().await {
+        for at in done.map_err(io::Error::other)?.unwrap_or_default() {
+            if found.len() < MAX_FOUND && !found.iter().any(|f| f.ip() == at.ip()) {
+                found.push(at);
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Asks on `sock` for `wait` and returns who answered.
+async fn ask(sock: UdpSocket, group: SocketAddr, wait: Duration) -> io::Result<Vec<SocketAddr>> {
     let query = query();
     let end = Instant::now() + wait;
     let mut found = Vec::new();
@@ -41,7 +112,8 @@ async fn discover_at(group: SocketAddr, wait: Duration) -> io::Result<Vec<Socket
     let mut ask = Instant::now();
     while Instant::now() < end && found.len() < MAX_FOUND {
         if Instant::now() >= ask {
-            sock.send_to(&query, group).await?;
+            // One interface failing to send (it just went down) must not end the others.
+            let _ = sock.send_to(&query, group).await;
             ask = Instant::now() + Duration::from_secs(1);
         }
         let Ok(got) = tokio::time::timeout_at(ask.min(end), sock.recv_from(&mut buf)).await else {
@@ -229,8 +301,43 @@ mod tests {
                 phone.send_to(&response("Kite", 47810), from).await.unwrap();
             }
         });
-        let found = discover_at(at, Duration::from_millis(1500)).await.unwrap();
+        let found = discover_at(at, Duration::from_millis(1500), &[Ipv4Addr::LOCALHOST])
+            .await
+            .unwrap();
         assert_eq!(found, vec!["127.0.0.1:47810".parse().unwrap()]);
+    }
+
+    #[tokio::test]
+    async fn merges_answers_from_every_interface_and_survives_a_bad_one() {
+        let phone = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let at = phone.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            while let Ok((_, from)) = phone.recv_from(&mut buf).await {
+                phone.send_to(&response("Kite", 47810), from).await.unwrap();
+            }
+        });
+        // 192.0.2.1 (TEST-NET) is on no interface of this machine, so its socket cannot bind.
+        let bad = Ipv4Addr::new(192, 0, 2, 1);
+        let from = [bad, Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST];
+        let found = discover_at(at, Duration::from_millis(1500), &from)
+            .await
+            .unwrap();
+        assert_eq!(
+            found,
+            vec!["127.0.0.1:47810".parse().unwrap()],
+            "one entry per phone"
+        );
+        assert!(discover_at(at, Duration::from_millis(100), &[bad])
+            .await
+            .is_err());
+    }
+
+    #[test]
+    fn asks_on_private_interfaces_or_leaves_the_choice_to_the_system() {
+        let from = interfaces();
+        assert!(!from.is_empty() && from.len() <= MAX_INTERFACES);
+        assert!(from.iter().all(|ip| ip.is_private() || ip.is_unspecified()));
     }
 
     #[test]
