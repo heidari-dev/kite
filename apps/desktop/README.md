@@ -39,7 +39,7 @@ settings file is `%APPDATA%\kite\desktop.json`.
 The tray icon is Slint's own (no extra crate: Slint uses the Windows notification area API and
 `ksni` is only for Linux). Windows 11 puts a new icon in the overflow flyout of the taskbar; drag
 it out to keep it visible.
-Reduced motion and text scaling are not read from the system on Windows; `--reduced-motion` works.
+Reduced motion ("Animation effects" off) and text scaling ("Make text bigger") are read from Windows settings each time the window opens; `--reduced-motion` forces the first.
 
 ## Look and feel
 

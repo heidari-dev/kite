@@ -181,6 +181,7 @@ fn read_system_prefs(ui: &AppWindow) {
     }
 }
 
+#[cfg(not(windows))]
 fn gsettings(key: &str) -> Option<String> {
     let out = std::process::Command::new("/usr/bin/gsettings")
         .args(["get", "org.gnome.desktop.interface", key])
@@ -192,7 +193,19 @@ fn gsettings(key: &str) -> Option<String> {
 }
 
 /// Whether to reduce motion, and by what factor to scale text (never below the designed size).
+#[cfg(windows)]
+fn system_prefs() -> (bool, f32) {
+    let reduced = kite_win::prefs::animations() == Some(false);
+    (
+        reduced,
+        present::text_scale(kite_win::prefs::text_scale_percent()),
+    )
+}
+
+/// Whether to reduce motion, and by what factor to scale text (never below the designed size).
 /// shortcut: GNOME's settings only; read KDE's and the desktop portal's when they are asked for.
+/// macOS is not read.
+#[cfg(not(windows))]
 fn system_prefs() -> (bool, f32) {
     if !cfg!(target_os = "linux") {
         return (false, 1.0);

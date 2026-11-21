@@ -39,6 +39,12 @@ pub struct Card {
     pub enabled: bool,
 }
 
+/// The text scale for a percentage from the system, never below the designed size.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn text_scale(percent: Option<u32>) -> f32 {
+    percent.map_or(1.0, |p| (p as f32 / 100.0).clamp(1.0, 3.0))
+}
+
 /// The phone to use: the one the user picked if it is still there and ready, else the first
 /// ready one.
 pub fn pick<'a>(devices: &'a [Device], picked: Option<&str>) -> Option<&'a str> {
@@ -185,6 +191,15 @@ mod tests {
         assert_eq!(pick(&list, Some("a")), Some("b"));
         assert_eq!(pick(&[dev("a", "offline")], None), None);
         assert_eq!(pick(&[], None), None);
+    }
+
+    #[test]
+    fn the_text_scale_is_a_percentage_kept_in_range() {
+        assert_eq!(text_scale(None), 1.0);
+        assert_eq!(text_scale(Some(100)), 1.0);
+        assert_eq!(text_scale(Some(150)), 1.5);
+        assert_eq!(text_scale(Some(0)), 1.0);
+        assert_eq!(text_scale(Some(u32::MAX)), 3.0);
     }
 
     #[test]
