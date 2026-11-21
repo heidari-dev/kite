@@ -89,6 +89,24 @@ impl Drop for Claim {
     }
 }
 
+/// An error that says Windows, or the phone's driver, does not let Kite use the ADB interface,
+/// which adb may still be able to.
+#[derive(Debug)]
+struct DriverRefused(String);
+
+impl std::fmt::Display for DriverRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for DriverRefused {}
+
+/// Whether `e` is the USB layer saying that the phone's driver stands in the way (Windows only).
+pub fn driver_refused(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|inner| inner.is::<DriverRefused>())
+}
+
 /// What went wrong with the USB device, in words that say what to do.
 fn usb_error(e: nusb::Error) -> io::Error {
     use nusb::ErrorKind::{Busy, Disconnected, PermissionDenied};
@@ -111,13 +129,19 @@ fn usb_error(e: nusb::Error) -> io::Error {
         _ if cfg!(windows) => (
             io::ErrorKind::Other,
             format!(
-                "{e}; install Android's platform-tools so that Kite can go through adb, or give \
-                 the phone's ADB interface the WinUSB driver; see docs/windows.md"
+                "{e}; give the phone's ADB interface the WinUSB driver, or reinstall Kite, which \
+                 comes with adb; see docs/windows.md"
             ),
         ),
         _ => (io::ErrorKind::Other, e.to_string()),
     };
-    io::Error::new(kind, format!("USB: {advice}"))
+    let text = format!("USB: {advice}");
+    // On Windows these two are the driver's doing; elsewhere nothing here goes through adb.
+    if cfg!(windows) && matches!(kind, io::ErrorKind::PermissionDenied | io::ErrorKind::Other) {
+        io::Error::new(kind, DriverRefused(text))
+    } else {
+        io::Error::new(kind, text)
+    }
 }
 
 fn select(phones: Vec<Phone>, serial: Option<&str>) -> io::Result<Phone> {
@@ -247,6 +271,15 @@ pub async fn open(serial: Option<&str>, key_path: &Path) -> io::Result<TcpStream
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tells_the_drivers_refusal_from_other_errors() {
+        let refused = io::Error::other(DriverRefused("USB: x".into()));
+        assert!(driver_refused(&refused));
+        assert_eq!(refused.to_string(), "USB: x");
+        assert!(!driver_refused(&io::Error::other("USB: x")));
+        assert!(!driver_refused(&io::Error::from(io::ErrorKind::NotFound)));
+    }
 
     #[test]
     fn one_session_per_serial() {

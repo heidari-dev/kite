@@ -117,6 +117,7 @@ pub async fn run_with(
     daemon.inner().closing = true;
     poll.abort();
     daemon.disconnect().await;
+    kite_link::adb::stop_started().await;
     Ok(())
 }
 

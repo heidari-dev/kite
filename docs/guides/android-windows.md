@@ -82,7 +82,8 @@ does after you click Disconnect.
   restart Windows to get your normal connection back.
 - While connected, names that only your home network knows (a router's `.lan` name) stop resolving.
   Disconnect to get them back.
-- If Windows has no driver for the phone, Kite says it needs the WinUSB driver. The fix is in
+- Some phones (Samsung's, for one) have a USB driver of their own. Kite then uses the adb that comes
+  with it, by itself; there is nothing to install. If it still says it needs the WinUSB driver, see
   [troubleshooting](troubleshooting.md#windows-says-kite-needs-the-winusb-driver).
 
 ## Taking Kite off

@@ -18,5 +18,9 @@ sha1 = { version = "0.11.0", features = ["oid"] }
 tokio = { version = "1.53", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 zeroize = "1.9.1"
 
+[target.'cfg(windows)'.dependencies]
+# Starts the adb that ships with Kite.
+tokio = { version = "1.53", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+
 [dev-dependencies]
 tokio = { version = "1.53", features = ["macros", "rt", "test-util"] }

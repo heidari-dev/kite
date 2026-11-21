@@ -6,4 +6,4 @@ mod key;
 mod session;
 pub mod wire;
 
-pub use device::{devices, open};
+pub use device::{devices, driver_refused, open};

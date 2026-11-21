@@ -89,7 +89,9 @@ names the secret when one is missing or the keystore, password or alias does not
 ## The Windows installer
 
 The `windows` job builds `kite-VERSION-x86_64.msi` with `scripts/build-msi.ps1` (WiX 3.14.1, checked
-against a SHA-256 in the script, and Wintun, checked by `scripts/fetch-wintun.ps1`). It is not signed
+against a SHA-256 in the script, Wintun, checked by `scripts/fetch-wintun.ps1`, and Google's adb,
+checked by `scripts/fetch-adb.ps1`: update its version and SHA-256 there when platform-tools
+move on). It is not signed
 yet, so Windows shows an unknown publisher warning, see [windows.md](windows.md); like every other file
 it gets a checksum, an attestation and a Sigstore bundle. Windows Installer versions have three
 numbers, so the third is `PATCH*100 + R`, with R the release candidate number or 99 for the release

@@ -28,13 +28,48 @@ const MAX_REPLY: usize = 16 * 1024;
 
 /// Opens the relay stream on the phone with serial `serial`, or on the only connected phone:
 /// through the adb server if one runs, else directly over USB, with the ADB key in `key_path`.
+/// On Windows, when the phone's driver stops the direct way, through the adb that comes with
+/// Kite, which is started for the purpose, see [`crate::bundled`].
 pub async fn open(serial: Option<&str>, key_path: &std::path::Path) -> io::Result<TcpStream> {
-    match open_with(|| TcpStream::connect(SERVER), serial).await {
+    let server = || TcpStream::connect(SERVER);
+    match open_with(server, serial).await {
         Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
-            crate::usb::open(serial, key_path).await
+            match crate::usb::open(serial, key_path).await {
+                Err(e) if crate::usb::driver_refused(&e) => {
+                    if start_bundled().await {
+                        // A server that has just started needs a moment to see the phones.
+                        for _ in 0..10 {
+                            if devices_with(server).await.is_ok_and(|d| !d.is_empty()) {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+                        open_with(server, serial).await
+                    } else {
+                        Err(e)
+                    }
+                }
+                r => r,
+            }
         }
         r => r,
     }
+}
+
+/// Stops the adb server that [`open`] started, if it did.
+pub async fn stop_started() {
+    #[cfg(windows)]
+    crate::bundled::stop().await;
+}
+
+#[cfg(windows)]
+async fn start_bundled() -> bool {
+    crate::bundled::start().await
+}
+
+#[cfg(not(windows))]
+async fn start_bundled() -> bool {
+    false
 }
 
 /// The phones connected by USB as `(serial, adb state)`, from the adb server if one runs, else
