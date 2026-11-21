@@ -265,6 +265,27 @@ impl Shared {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
+impl Shared {
+    /// One computer that reached the abstract socket. It counts as a tunnel only after the
+    /// handshake and any pairing, so one that is still pairing or is refused is not "connected".
+    async fn usb_tunnel(&self, stream: tokio::net::UnixStream) {
+        let stream = Counted {
+            inner: stream,
+            counters: self.counters.clone(),
+        };
+        // Unpaired computers stop here, unless pairing is open.
+        let Ok(session) = kite_relay::pair::accept(stream, &self.key, &self.pairing).await else {
+            return;
+        };
+        let Some(_slot) = self.counters.admit() else {
+            return;
+        };
+        let _ =
+            kite_relay::pair::serve(session, kite_relay::Config::default(), &self.pairing).await;
+    }
+}
+
 impl Relay {
     fn run(
         socket_name: Option<String>,
@@ -468,7 +489,6 @@ async fn accept(
     shared: Shared,
     mut stopped: oneshot::Receiver<()>,
 ) {
-    let counters = &shared.counters;
     let allowed = allowed_uids();
     let mut tunnels = tokio::task::JoinSet::new();
     loop {
@@ -482,18 +502,11 @@ async fn accept(
                     // root on debug builds) and this app may use the relay; others would get
                     // network access they were not granted.
                     let peer = stream.peer_cred().map(|c| c.uid());
-                    let slot = peer.is_ok_and(|uid| allowed.contains(&uid)).then(|| counters.admit()).flatten();
-                    if let Some(slot) = slot {
-                        let stream = Counted { inner: stream, counters: counters.clone() };
-                        let (key, pairing) = (shared.key.clone(), shared.pairing.clone());
-                        tunnels.spawn(async move {
-                            let _slot = slot;
-                            // Unpaired computers stop here, unless pairing is open.
-                            let Ok(session) = kite_relay::pair::accept(stream, &key, &pairing).await else {
-                                return;
-                            };
-                            let _ = kite_relay::pair::serve(session, kite_relay::Config::default(), &pairing).await;
-                        });
+                    // Handshakes in flight are capped like the places; a computer counts only
+                    // once it has proved it is paired, as over WiFi.
+                    if peer.is_ok_and(|uid| allowed.contains(&uid)) && tunnels.len() < MAX_TUNNELS {
+                        let shared = shared.clone();
+                        tunnels.spawn(async move { shared.usb_tunnel(stream).await });
                     }
                 }
                 Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
@@ -812,6 +825,17 @@ mod tests {
         relay.stop(); // twice is fine
                       // The name is free again once the relay stopped.
         drop(Relay::start(name, key(), vec![]).unwrap());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn counts_a_usb_computer_only_after_its_handshake() {
+        let name = name("count");
+        let relay = Relay::start(name.clone(), key(), vec![]).unwrap();
+        // Connected but silent: the relay is waiting for its handshake.
+        let _waiting = dial(&name).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(relay.stats().tunnels, 0);
     }
 
     #[cfg(target_os = "linux")]

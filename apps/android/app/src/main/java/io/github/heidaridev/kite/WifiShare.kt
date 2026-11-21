@@ -63,6 +63,8 @@ internal object WifiShare {
             wanted = null
             synced = false
         } else if (want == wanted && error == null) {
+            // Nothing to redo, but a switch toggled since the last pass is answered all the same.
+            synced = true
             return
         } else {
             wanted = want

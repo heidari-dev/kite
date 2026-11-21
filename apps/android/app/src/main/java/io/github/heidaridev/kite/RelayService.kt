@@ -8,10 +8,12 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.text.format.Formatter
 import io.github.heidaridev.kite.ffi.Relay
@@ -29,6 +31,8 @@ class RelayService : Service() {
     private var previous: Stats? = null
     private var previousAt = 0L
     private var wifiAt = 0L
+    private var wifiLock: WifiManager.WifiLock? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     private val tick = object : Runnable {
         override fun run() {
@@ -62,6 +66,7 @@ class RelayService : Service() {
             fail(e)
             return START_NOT_STICKY
         }
+        hold()
         handler.removeCallbacks(tick)
         handler.post(tick)
         val context = applicationContext
@@ -90,6 +95,7 @@ class RelayService : Service() {
     override fun onDestroy() {
         serving = false
         handler.removeCallbacks(tick)
+        release()
         val context = applicationContext
         worker.execute {
             guarded { save(context) }
@@ -100,6 +106,32 @@ class RelayService : Service() {
             running?.close()
         }
         super.onDestroy()
+    }
+
+    /**
+     * With the screen off the radio drops into power save and the CPU sleeps between packets, which
+     * slows the tunnel. FULL_HIGH_PERF is used on every version: LOW_LATENCY only takes effect while
+     * the app is in front and the screen is on.
+     */
+    @Suppress("DEPRECATION")
+    private fun hold() {
+        if (wifiLock == null) {
+            wifiLock = getSystemService(WifiManager::class.java)
+                .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "kite:wifi")
+                .apply { setReferenceCounted(false) }
+        }
+        if (wakeLock == null) {
+            wakeLock = getSystemService(PowerManager::class.java)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "kite:relay")
+                .apply { setReferenceCounted(false) }
+        }
+        wifiLock?.acquire()
+        wakeLock?.acquire()
+    }
+
+    private fun release() {
+        wifiLock?.takeIf { it.isHeld }?.release()
+        wakeLock?.takeIf { it.isHeld }?.release()
     }
 
     private fun fail(e: Throwable) {
