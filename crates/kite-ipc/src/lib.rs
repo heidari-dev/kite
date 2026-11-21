@@ -227,9 +227,9 @@ pub struct Device {
     pub state: String,
 }
 
-/// The answer to one request. Only the field that belongs to the command is set.
+/// The answer to one request. Only the field that belongs to the command is set. Unknown fields are
+/// ignored, so an older client keeps working with a newer daemon (requests stay strict).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Response {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -440,6 +440,14 @@ mod tests {
         let old = br#"{"ok":true,"stats":{"streams":1,"max_streams":224,"reconnects":0,"uptime_secs":5}}"#;
         let stats = Response::parse(old).unwrap().stats.unwrap();
         assert_eq!((stats.bytes_up, stats.bytes_down), (0, 0));
+    }
+
+    #[test]
+    fn responses_ignore_fields_they_do_not_know() {
+        let r = Response::parse(br#"{"ok":true,"from_a_newer_daemon":{"a":1},"peers":["ab"]}"#)
+            .unwrap();
+        assert!(r.ok);
+        assert_eq!(r.peers, Some(vec!["ab".to_string()]));
     }
 
     #[test]
