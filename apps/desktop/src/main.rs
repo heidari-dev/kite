@@ -10,6 +10,7 @@ mod daemon;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod elevate;
 mod kite;
+mod launch;
 mod present;
 mod settings;
 mod worker;
@@ -229,7 +230,10 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
 fn main() -> Result<(), slint::PlatformError> {
     let _lock = match single_instance() {
         Lock::Taken => {
-            eprintln!("kite-desktop: already running");
+            // The copy that started at login may be hidden: ask it to show its window.
+            if !launch::dir().is_some_and(|d| launch::wake(&d)) {
+                eprintln!("kite-desktop: already running");
+            }
             return Ok(());
         }
         Lock::Held(file) => Some(file),
@@ -299,11 +303,41 @@ fn main() -> Result<(), slint::PlatformError> {
         .map_err(|e| slint::PlatformError::Other(e.to_string()))?;
 
     wire(&ui, &tray, &cmds, &visible);
+    listen_for_launches(&ui, &cmds, &visible);
     if !hidden {
         show(&ui, &cmds, &visible)?;
     }
     render(&ui, &tray);
     slint::run_event_loop_until_quit()
+}
+
+/// Shows the window each time another launch of Kite knocks, so the app menu works even where
+/// there is no tray icon to open it from.
+fn listen_for_launches(ui: &AppWindow, cmds: &UnboundedSender<Cmd>, visible: &Arc<AtomicBool>) {
+    let Some(listener) = launch::dir().and_then(|d| launch::announce(&d)) else {
+        return;
+    };
+    let (ui, cmds, visible) = (ui.as_weak(), cmds.clone(), visible.clone());
+    let _ = std::thread::Builder::new()
+        .name("kite-launch".into())
+        .spawn(move || {
+            for knock in listener.incoming() {
+                if knock.is_err() {
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+                let (ui, cmds, visible) = (ui.clone(), cmds.clone(), visible.clone());
+                let queued = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui.upgrade() {
+                        ui.window().set_minimized(false);
+                        let _ = show(&ui, &cmds, &visible);
+                    }
+                });
+                if queued.is_err() {
+                    return; // the event loop has ended
+                }
+            }
+        });
 }
 
 fn show(
@@ -654,11 +688,7 @@ enum Lock {
 /// way it ends. It lives in the user's runtime directory, or else in their own config directory,
 /// never in a directory that other users share.
 fn single_instance() -> Lock {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|d| d.is_absolute())
-        .or_else(|| Settings::path()?.parent().map(PathBuf::from));
-    let Some(dir) = dir else {
+    let Some(dir) = launch::dir() else {
         return Lock::Unavailable;
     };
     let open = || {
