@@ -44,6 +44,9 @@ final class Sharing {
     @ObservationIgnored private var syncing: Relay?
     /// The last start, so a new one waits until a start that was stopped has given its port back.
     @ObservationIgnored private var starting: Task<Void, Never>?
+    /// Computers removed after a start read its list and before its relay was up; the relay is told
+    /// once it is, or it would accept them.
+    @ObservationIgnored private var removedWhileStarting: [Data] = []
     @ObservationIgnored private var ticks = 0
     @ObservationIgnored private var openedAt: ContinuousClock.Instant?
     @ObservationIgnored private var sawCode = false
@@ -83,6 +86,8 @@ final class Sharing {
             }
             switch result {
             case .success(let relay):
+                for key in removedWhileStarting { _ = relay.removePeer(key: key) }
+                removedWhileStarting = []
                 self.relay = relay
                 paired = relay.peers()
                 refresh()
@@ -95,6 +100,7 @@ final class Sharing {
                 error = Self.describe(failure)
                 serving = false
                 wanted = false
+                removedWhileStarting = []
             }
         }
     }
@@ -145,6 +151,7 @@ final class Sharing {
             paired = relay.peers()
         } else {
             paired.removeAll { $0 == key }
+            if serving { removedWhileStarting.append(key) }
         }
         save(paired)
     }
@@ -152,6 +159,7 @@ final class Sharing {
     private func halt() {
         guard serving else { return }
         serving = false
+        removedWhileStarting = []
         generation += 1
         let running = relay
         relay = nil
