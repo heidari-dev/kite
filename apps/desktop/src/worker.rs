@@ -36,8 +36,9 @@ pub enum Cmd {
     SetAutoConnect {
         on: bool,
     },
-    // Not sent on Windows, where pairing runs elevated in its own window.
-    #[cfg_attr(windows, allow(dead_code))]
+    // Not sent on Windows (pairing runs elevated in its own window) or on Linux (the daemon refuses
+    // the app, so the window shows the command to run).
+    #[cfg_attr(any(windows, target_os = "linux"), allow(dead_code))]
     PairStart {
         transport: Transport,
     },

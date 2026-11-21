@@ -661,6 +661,7 @@ export component AppWindow inherits Window {
     in property <string> fingerprint;
     in property <string> pair-note;
     in property <bool> pair-enabled;
+    in property <string> pair-label: "Pair a phone";
 
     callback action();
     callback select-phone(int);
@@ -1114,7 +1115,7 @@ export component AppWindow inherits Window {
                         spacing: 8px;
                         Heading { text: "Pairing"; }
                         Btn {
-                            text: "Pair a phone";
+                            text: root.pair-label;
                             enabled: root.pair-enabled;
                             clicked => { root.pair-start(); }
                             revealed(y, h) => { root.reveal(y, h); }

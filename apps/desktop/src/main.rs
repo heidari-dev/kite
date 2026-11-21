@@ -10,8 +10,11 @@ mod daemon;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod elevate;
 mod kite;
+mod launch;
 mod present;
 mod settings;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod terminal;
 mod worker;
 
 use kite::Kite;
@@ -55,7 +58,8 @@ struct State {
     last: Instant,
     /// `--reduced-motion`: the reduced variant whatever the system says.
     reduced: bool,
-    /// Windows: what the window says about the elevated pairing it started, and since when.
+    /// Windows and Linux: what the window says about pairing outside the app (the elevated window,
+    /// the command to run in a terminal), and since when.
     pair_note: Option<(String, Instant)>,
 }
 
@@ -65,6 +69,13 @@ thread_local! {
     /// A look at the minimised window is already scheduled.
     static WATCHING: Cell<bool> = const { Cell::new(false) };
 }
+
+/// The pairing button: on Linux it copies the command to run, as the daemon refuses the app.
+const PAIR_LABEL: &str = if cfg!(target_os = "linux") {
+    "Copy the pairing command"
+} else {
+    "Pair a phone"
+};
 
 /// 30 frames a second is all the kite's loops need.
 const FRAME: Duration = Duration::from_millis(33);
@@ -242,7 +253,10 @@ fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
 fn main() -> Result<(), slint::PlatformError> {
     let _lock = match single_instance() {
         Lock::Taken => {
-            eprintln!("kite-desktop: already running");
+            // The copy that started at login may be hidden: ask it to show its window.
+            if !launch::dir().is_some_and(|d| launch::wake(&d)) {
+                eprintln!("kite-desktop: already running");
+            }
             return Ok(());
         }
         Lock::Held(file) => Some(file),
@@ -276,6 +290,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }));
 
     let ui = AppWindow::new()?;
+    ui.set_pair_label(PAIR_LABEL.into());
     ui.set_phones(ModelRc::from(phones));
     ui.set_steps(ModelRc::from(steps));
     ui.set_chips(ModelRc::from(chips));
@@ -312,11 +327,48 @@ fn main() -> Result<(), slint::PlatformError> {
         .map_err(|e| slint::PlatformError::Other(e.to_string()))?;
 
     wire(&ui, &tray, &cmds, &visible);
+    listen_for_launches(&ui, &cmds, &visible);
     if !hidden {
         show(&ui, &cmds, &visible)?;
     }
     render(&ui, &tray);
     slint::run_event_loop_until_quit()
+}
+
+/// Shows the window each time another launch of Kite knocks, so the app menu works even where
+/// there is no tray icon to open it from.
+fn listen_for_launches(ui: &AppWindow, cmds: &UnboundedSender<Cmd>, visible: &Arc<AtomicBool>) {
+    let Some(listener) = launch::dir().and_then(|d| launch::announce(&d)) else {
+        return;
+    };
+    let (ui, cmds, visible) = (ui.as_weak(), cmds.clone(), visible.clone());
+    // Knocks that arrive before the window has been shown count once.
+    let pending = Arc::new(AtomicBool::new(false));
+    let _ = std::thread::Builder::new()
+        .name("kite-launch".into())
+        .spawn(move || {
+            for knock in listener.incoming() {
+                if knock.is_err() {
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+                if pending.swap(true, Ordering::Relaxed) {
+                    continue;
+                }
+                let (ui, cmds, visible, done) =
+                    (ui.clone(), cmds.clone(), visible.clone(), pending.clone());
+                let queued = slint::invoke_from_event_loop(move || {
+                    done.store(false, Ordering::Relaxed);
+                    if let Some(ui) = ui.upgrade() {
+                        ui.window().set_minimized(false);
+                        let _ = show(&ui, &cmds, &visible);
+                    }
+                });
+                if queued.is_err() {
+                    return; // the event loop has ended
+                }
+            }
+        });
 }
 
 fn show(
@@ -444,7 +496,20 @@ fn wire(ui: &AppWindow, tray: &Tray, cmds: &UnboundedSender<Cmd>, visible: &Arc<
                 r();
                 let _ = &c;
             }
-            #[cfg(not(windows))]
+            // The daemon lets only root and its own user pair, so on Linux the window shows the
+            // command to run in a terminal and copies it.
+            #[cfg(target_os = "linux")]
+            {
+                let note = match terminal::command(&transport) {
+                    Some(cmd) if terminal::copy(&cmd) => format!("Copied. {}", terminal_note(&cmd)),
+                    Some(cmd) => terminal_note(&cmd),
+                    None => "The phone's address has characters that cannot be passed on.".into(),
+                };
+                with_state(|s| s.pair_note = Some((note, Instant::now())));
+                r();
+                let _ = &c;
+            }
+            #[cfg(not(any(windows, target_os = "linux")))]
             {
                 let _ = &r;
                 let _ = c.send(Cmd::PairStart { transport });
@@ -463,6 +528,11 @@ fn wire(ui: &AppWindow, tray: &Tray, cmds: &UnboundedSender<Cmd>, visible: &Arc<
     ui.on_pair_cancel(move || {
         let _ = c.send(Cmd::PairCancel);
     });
+}
+
+#[cfg(target_os = "linux")]
+fn terminal_note(cmd: &str) -> String {
+    format!("Pairing needs a terminal. Run this, then type the 6-digit code the phone shows: {cmd}")
 }
 
 fn picked(s: &State) -> Option<&str> {
@@ -549,14 +619,7 @@ fn render(ui: &AppWindow, tray: &Tray) {
         ui.set_detail(guide.map_or(card.detail.as_str(), |su| su.detail()).into());
         ui.set_details(card.details.clone().into());
         ui.set_main_pair(pair_next);
-        ui.set_action_label(
-            if pair_next {
-                "Pair a phone"
-            } else {
-                card.label
-            }
-            .into(),
-        );
+        ui.set_action_label(if pair_next { PAIR_LABEL } else { card.label }.into());
         ui.set_action_enabled(card.enabled || pair_next);
         ui.set_current_step(setup.as_ref().map_or(0, |su| su.current() as i32));
         sync(
@@ -616,6 +679,12 @@ fn render(ui: &AppWindow, tray: &Tray) {
             }
             _ => note,
         };
+        // On Linux the window always says what to run, until the pairing has started some other way.
+        #[cfg(target_os = "linux")]
+        let note = match transport(s, false).as_ref().and_then(terminal::command) {
+            Some(cmd) if step == 0 && note.is_empty() => terminal_note(&cmd),
+            _ => note,
+        };
         ui.set_pair_step(step);
         ui.set_fingerprint(fingerprint.into());
         ui.set_pair_note(note.into());
@@ -667,11 +736,7 @@ enum Lock {
 /// way it ends. It lives in the user's runtime directory, or else in their own config directory,
 /// never in a directory that other users share.
 fn single_instance() -> Lock {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|d| d.is_absolute())
-        .or_else(|| Settings::path()?.parent().map(PathBuf::from));
-    let Some(dir) = dir else {
+    let Some(dir) = launch::dir() else {
         return Lock::Unavailable;
     };
     let open = || {
