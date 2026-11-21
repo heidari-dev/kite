@@ -70,7 +70,6 @@ thread_local! {
     static WATCHING: Cell<bool> = const { Cell::new(false) };
 }
 
-/// 30 frames a second is all the kite's loops need.
 /// The pairing button: on Linux it copies the command to run, as the daemon refuses the app.
 const PAIR_LABEL: &str = if cfg!(target_os = "linux") {
     "Copy the pairing command"
@@ -78,6 +77,7 @@ const PAIR_LABEL: &str = if cfg!(target_os = "linux") {
     "Pair a phone"
 };
 
+/// 30 frames a second is all the kite's loops need.
 const FRAME: Duration = Duration::from_millis(33);
 
 /// The kite's frames go to the window only while it is open and something moves; at rest and
@@ -329,6 +329,8 @@ fn listen_for_launches(ui: &AppWindow, cmds: &UnboundedSender<Cmd>, visible: &Ar
         return;
     };
     let (ui, cmds, visible) = (ui.as_weak(), cmds.clone(), visible.clone());
+    // Knocks that arrive before the window has been shown count once.
+    let pending = Arc::new(AtomicBool::new(false));
     let _ = std::thread::Builder::new()
         .name("kite-launch".into())
         .spawn(move || {
@@ -337,8 +339,13 @@ fn listen_for_launches(ui: &AppWindow, cmds: &UnboundedSender<Cmd>, visible: &Ar
                     std::thread::sleep(Duration::from_millis(100));
                     continue;
                 }
-                let (ui, cmds, visible) = (ui.clone(), cmds.clone(), visible.clone());
+                if pending.swap(true, Ordering::Relaxed) {
+                    continue;
+                }
+                let (ui, cmds, visible, done) =
+                    (ui.clone(), cmds.clone(), visible.clone(), pending.clone());
                 let queued = slint::invoke_from_event_loop(move || {
+                    done.store(false, Ordering::Relaxed);
                     if let Some(ui) = ui.upgrade() {
                         ui.window().set_minimized(false);
                         let _ = show(&ui, &cmds, &visible);

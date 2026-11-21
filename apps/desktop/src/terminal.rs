@@ -9,7 +9,20 @@ use kite_ipc::Transport;
 /// character that must not reach a command line.
 pub fn command(transport: &Transport) -> Option<String> {
     let args = pair_args(transport)?;
-    Some(format!("sudo kite {}", args.strip_suffix(" --pause")?))
+    let args = args.strip_suffix(" --pause")?;
+    // `[` and `%` are allowed in an address; a shell would take `[fd00::1]` for a pattern.
+    let args = args
+        .split(' ')
+        .map(|a| {
+            if a.contains(['[', '%']) {
+                format!("'{a}'")
+            } else {
+                a.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(format!("sudo kite {args}"))
 }
 
 /// Puts `text` on the clipboard with whichever of the usual tools is installed. True if one took
@@ -42,11 +55,26 @@ pub fn copy(text: &str) -> bool {
             .stdin
             .take()
             .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
-        // xclip and xsel stay until something else is copied; this reaps them without waiting.
+        // The tools usually hand the text to a copy that stays and exit at once; one that exits with
+        // an error (no display of its kind) is not taken. One still running is serving the text.
+        let mut failed = !wrote;
+        for _ in 0..10 {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    failed |= !status.success();
+                    break;
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(30)),
+                Err(_) => {
+                    failed = true;
+                    break;
+                }
+            }
+        }
         std::thread::spawn(move || {
             let _ = child.wait();
         });
-        if wrote {
+        if !failed {
             return true;
         }
     }
@@ -75,6 +103,14 @@ mod tests {
             command(&wifi).unwrap(),
             "sudo kite pair --wifi 192.168.43.1:47810"
         );
+    }
+
+    #[test]
+    fn an_ipv6_address_is_quoted_for_the_shell() {
+        let wifi = Transport::Wifi {
+            addr: Some("[fd00::1]".into()),
+        };
+        assert_eq!(command(&wifi).unwrap(), "sudo kite pair --wifi '[fd00::1]'");
     }
 
     #[test]
