@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Off: an outline in the line colour (3.4:1 on the paper). On: the brand accent. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_checked="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/kite_button" />
+            <stroke
+                android:width="2dp"
+                android:color="@color/kite_button" />
+            <corners android:radius="16dp" />
+            <size
+                android:width="52dp"
+                android:height="32dp" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <stroke
+                android:width="2dp"
+                android:color="@color/kite_line" />
+            <corners android:radius="16dp" />
+            <size
+                android:width="52dp"
+                android:height="32dp" />
+        </shape>
+    </item>
+</selector>

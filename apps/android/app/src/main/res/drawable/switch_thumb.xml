@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Off: a disc in the line colour. On: a disc in the colour of the text on the accent. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_checked="true">
+        <inset
+            android:insetBottom="6dp"
+            android:insetLeft="6dp"
+            android:insetRight="6dp"
+            android:insetTop="6dp">
+            <shape android:shape="oval">
+                <solid android:color="@color/kite_on_button" />
+                <size
+                    android:width="20dp"
+                    android:height="20dp" />
+            </shape>
+        </inset>
+    </item>
+    <item>
+        <inset
+            android:insetBottom="6dp"
+            android:insetLeft="6dp"
+            android:insetRight="6dp"
+            android:insetTop="6dp">
+            <shape android:shape="oval">
+                <solid android:color="@color/kite_line" />
+                <size
+                    android:width="20dp"
+                    android:height="20dp" />
+            </shape>
+        </inset>
+    </item>
+</selector>

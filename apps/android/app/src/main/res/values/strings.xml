@@ -2,7 +2,8 @@
 <resources>
     <string name="app_name">Kite</string>
     <string name="start">Start sharing</string>
-    <string name="stop">Stop</string>
+    <string name="stop">Stop sharing</string>
+    <string name="try_again">Try again</string>
     <string name="status_stopped">Not sharing</string>
     <string name="status_starting">Starting</string>
     <string name="status_waiting">Waiting for a computer</string>
@@ -11,11 +12,24 @@
         <item quantity="one">Sharing with %d computer</item>
         <item quantity="other">Sharing with %d computers</item>
     </plurals>
-    <string name="hint_stopped">Start sharing, then run kite connect --usb on the computer.</string>
-    <string name="hint_waiting">Connect the phone by USB with USB debugging on, then run kite connect --usb on the computer.</string>
+    <string name="hint_stopped">Three steps to share this phone\'s internet.</string>
+    <string name="error_plain">Kite could not start sharing. Try again, and open the details if it keeps failing.</string>
+    <string name="show_details">Show details</string>
+    <string name="hide_details">Hide details</string>
+    <string name="step_start">Start sharing</string>
+    <string name="step_start_text">Keeps Kite running while the screen is off.</string>
+    <string name="step_plug">Plug the phone into the computer</string>
+    <string name="step_plug_text">USB debugging must be on.</string>
+    <string name="developer_options">Open developer options</string>
+    <string name="step_open">Open Kite on the computer</string>
+    <string name="step_open_text">Pair once, then press Connect. Command line: kite connect --usb.</string>
+    <string name="step_open_paired">Press Connect. Command line: kite connect --usb.</string>
+    <string name="step_description">Step %1$d of 3: %2$s. %3$s</string>
+    <string name="step_done">Done.</string>
+    <string name="step_current">Do this now.</string>
     <string name="speeds">Down %1$s, up %2$s</string>
     <string name="pair">Pair a computer</string>
-    <string name="pairing_open">Pairing is open for two minutes. On the computer, run kite pair --usb, then allow it here.</string>
+    <string name="pairing_open">Pairing is open for two minutes. On the computer, press Pair a phone in Kite, then allow it here. Command line: kite pair --usb.</string>
     <string name="pairing_type">Type this code on the computer.</string>
     <string name="channel_name">Sharing</string>
     <string name="notification_title">Kite is sharing this phone\'s connection</string>
@@ -39,6 +53,9 @@
     <string name="computers">Paired computers</string>
     <string name="remove">Remove</string>
     <string name="remove_computer">Remove computer %1$s</string>
+    <string name="remove_title">Remove %1$s?</string>
+    <string name="remove_message">It must be paired again before it can use this phone\'s connection.</string>
+    <string name="cancel">Cancel</string>
     <string name="battery_title">Keep sharing in the background</string>
     <string name="battery_message">Android can stop an app that runs for a long time with the screen off, and that would cut the computer\'s connection. Let Kite run without battery limits?</string>
 </resources>
