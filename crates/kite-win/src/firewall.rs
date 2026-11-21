@@ -52,6 +52,7 @@ const MAX_FILTERS: u32 = 64;
 const NAME: &str = "Kite kill switch";
 
 const UDP: u8 = 17;
+const MDNS_PORT: u16 = 5353;
 const ICMPV6: u8 = 58;
 /// ICMPv6 that keeps an IPv6 link up: multicast listener discovery (130 to 132, 143) and neighbour
 /// discovery (133 to 137: router and neighbour solicitation and advertisement, redirect).
@@ -100,7 +101,7 @@ struct Spec {
 }
 
 /// Every filter, in the order their keys are numbered.
-fn specs(tunnel: u64, relay: Option<IpAddr>) -> Vec<Spec> {
+fn specs(tunnel: u64, relay: Option<IpAddr>, discovery: bool) -> Vec<Spec> {
     // WFP sees a connection to ::ffff:a.b.c.d on the IPv4 layers, as a.b.c.d.
     let relay = relay.map(|ip| ip.to_canonical());
     let mut out = Vec::new();
@@ -122,6 +123,30 @@ fn specs(tunnel: u64, relay: Option<IpAddr>) -> Vec<Spec> {
         }
         if let Some(ip) = relay.filter(|ip| ip.is_ipv6() == v6 && !ip.is_loopback()) {
             add(connect, true, vec![Cond::Program, Cond::Remote(ip)]);
+        }
+        // Looking the phone up again: this program's mDNS question to the group and the direct
+        // answers, which come from port 5353. Nothing else of this program passes on these.
+        if discovery && !v6 {
+            let group = IpAddr::from([224, 0, 0, 251]);
+            add(
+                connect,
+                true,
+                vec![
+                    Cond::Program,
+                    Cond::Protocol(UDP),
+                    Cond::Remote(group),
+                    Cond::RemotePort(MDNS_PORT),
+                ],
+            );
+            add(
+                recv,
+                true,
+                vec![
+                    Cond::Program,
+                    Cond::Protocol(UDP),
+                    Cond::RemotePort(MDNS_PORT),
+                ],
+            );
         }
         // DHCP: the client sends from port 68 (546) to port 67 (547) and is answered the other way.
         let (client, server) = if v6 { (546, 547) } else { (68, 67) };
@@ -211,8 +236,10 @@ impl Drop for Engine {
 
 /// Blocks everything except what the tunnel needs, until [`lift`] runs. `tunnel` is the LUID of the
 /// tunnel adapter, `relay` the address this program reaches the relay at (none for a phone on a
-/// direct USB link). Any filters of an earlier run are replaced.
-pub fn engage(tunnel: u64, relay: Option<IpAddr>) -> io::Result<()> {
+/// direct USB link). Any filters of an earlier run are replaced, all at once, so calling this again
+/// with another relay address never opens a gap. With `discovery` the program may also ask the
+/// network for the phone with mDNS.
+pub fn engage(tunnel: u64, relay: Option<IpAddr>, discovery: bool) -> io::Result<()> {
     let program = AppId::of_current_exe()?;
     let name = wide(NAME);
     Engine::open()
@@ -226,7 +253,7 @@ pub fn engage(tunnel: u64, relay: Option<IpAddr>) -> io::Result<()> {
             sublayer.weight = u16::MAX;
             // SAFETY: a valid engine and sublayer; `name` outlives the call.
             check(unsafe { FwpmSubLayerAdd0(engine, &sublayer, null_mut()) })?;
-            for (i, spec) in specs(tunnel, relay).iter().enumerate() {
+            for (i, spec) in specs(tunnel, relay, discovery).iter().enumerate() {
                 add_filter(engine, &name, filter_key(i as u32), spec, &program)?;
             }
             Ok(())
@@ -409,7 +436,7 @@ mod tests {
 
     #[test]
     fn every_layer_gets_one_block_for_everything() {
-        let all = specs(7, None);
+        let all = specs(7, None, false);
         for layer in LAYERS {
             let blocks: Vec<_> = all
                 .iter()
@@ -422,14 +449,14 @@ mod tests {
 
     #[test]
     fn a_permit_always_names_what_it_lets_through() {
-        for spec in specs(7, Some("203.0.113.9".parse().unwrap())) {
+        for spec in specs(7, Some("203.0.113.9".parse().unwrap()), false) {
             assert_eq!(spec.permit, !spec.conds.is_empty(), "{spec:?}");
         }
     }
 
     #[test]
     fn loopback_and_the_tunnel_pass_on_every_layer() {
-        let all = specs(7, None);
+        let all = specs(7, None, false);
         for layer in LAYERS {
             for want in [Cond::Loopback, Cond::Interface(7)] {
                 assert!(
@@ -447,7 +474,7 @@ mod tests {
         let ip6: IpAddr = "2001:db8::9".parse().unwrap();
         for (ip, layer) in [(ip4, Layer::Connect4), (ip6, Layer::Connect6)] {
             let want = vec![Cond::Program, Cond::Remote(ip)];
-            let found: Vec<_> = specs(7, Some(ip))
+            let found: Vec<_> = specs(7, Some(ip), false)
                 .into_iter()
                 .filter(|s| s.conds == want)
                 .collect();
@@ -487,12 +514,12 @@ mod tests {
     fn a_mapped_relay_address_is_the_ipv4_one() {
         let mapped: IpAddr = "::ffff:203.0.113.9".parse().unwrap();
         let want = vec![Cond::Program, Cond::Remote("203.0.113.9".parse().unwrap())];
-        let all = specs(7, Some(mapped));
+        let all = specs(7, Some(mapped), false);
         assert!(all
             .iter()
             .any(|s| s.layer == Layer::Connect4 && s.conds == want));
         let loopback: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
-        assert!(!specs(7, Some(loopback))
+        assert!(!specs(7, Some(loopback), false)
             .iter()
             .any(|s| s.conds.contains(&Cond::Program)));
     }
@@ -504,7 +531,7 @@ mod tests {
             Some(IpAddr::from([127, 0, 0, 1])),
             Some(IpAddr::from(Ipv6Addr::LOCALHOST)),
         ] {
-            assert!(!specs(7, relay)
+            assert!(!specs(7, relay, false)
                 .iter()
                 .any(|s| s.conds.contains(&Cond::Program)));
         }
@@ -512,7 +539,7 @@ mod tests {
 
     #[test]
     fn dhcp_and_neighbour_discovery_keep_the_link_up() {
-        let all = specs(7, None);
+        let all = specs(7, None, false);
         let has = |layer, want: &[Cond]| all.iter().any(|s| s.layer == layer && s.conds == want);
         let dhcp = |client, server| {
             vec![
@@ -540,7 +567,7 @@ mod tests {
 
     #[test]
     fn the_keys_are_distinct_and_cover_every_filter() {
-        let n = specs(7, Some("203.0.113.9".parse().unwrap())).len();
+        let n = specs(7, Some("203.0.113.9".parse().unwrap()), false).len();
         assert!(
             n <= MAX_FILTERS as usize,
             "{n} filters, lift tries {MAX_FILTERS}"
@@ -551,5 +578,19 @@ mod tests {
         keys.sort_unstable();
         keys.dedup();
         assert_eq!(keys.len(), MAX_FILTERS as usize + 1);
+    }
+
+    #[test]
+    fn discovery_lets_only_this_program_ask_for_the_phone() {
+        let without = specs(7, None, false);
+        let with = specs(7, None, true);
+        assert_eq!(with.len(), without.len() + 2);
+        let extra: Vec<_> = with.iter().filter(|s| !without.contains(s)).collect();
+        for spec in extra {
+            assert!(spec.permit);
+            assert!(spec.conds.contains(&Cond::Program));
+            assert!(spec.conds.contains(&Cond::Protocol(UDP)));
+            assert!(spec.conds.contains(&Cond::RemotePort(MDNS_PORT)));
+        }
     }
 }

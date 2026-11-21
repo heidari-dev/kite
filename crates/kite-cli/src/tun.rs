@@ -20,6 +20,12 @@ const UDPGW: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)
 /// as DNS over TCP through the relay.
 const DNS: IpAddr = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
 
+/// Lets the kill switch pass a lookup of the phone and a dial to `relay`. Nothing to do here: the
+/// sockets carry the firewall mark that keeps them out of the tunnel and its blackhole.
+pub async fn allow(_relay: Option<SocketAddr>, _discovery: bool) -> io::Result<()> {
+    Ok(())
+}
+
 /// Runs TUN mode until `shutdown` completes or tun2proxy fails. `serve_link` carries the traffic
 /// that reaches the proxy at `proxy` through a tunnel to the relay, until the token it is given is
 /// cancelled; that tunnel must bypass the routes set up here, see [`route::TABLE`].

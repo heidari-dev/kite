@@ -75,6 +75,15 @@ const TEARDOWN: Duration = Duration::from_secs(4);
 const HALVES_V4: [&str; 2] = ["0.0.0.0/1", "128.0.0.0/1"];
 const HALVES_V6: [&str; 2] = ["::/1", "8000::/1"];
 
+/// Lets the kill switch pass a lookup of the phone and a dial to a new relay address. Not done on
+/// macOS yet: the pf block keeps the address it started with, so the caller does not look again.
+pub async fn allow(_relay: Option<SocketAddr>, _discovery: bool) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "the kill switch cannot follow a new relay address on macOS",
+    ))
+}
+
 /// Runs TUN mode until `shutdown` completes or tun2proxy fails. `serve_link` carries the traffic
 /// that reaches the proxy at `proxy` through a tunnel to the relay, until the token it is given is
 /// cancelled. `relay` is the address that tunnel connects to, so it can stay out of the tunnel.

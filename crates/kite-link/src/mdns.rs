@@ -29,8 +29,11 @@ const SRV: u16 = 33;
 /// The question goes out on every up interface that has a private IPv4 address. Without choosing
 /// one, Windows sends it out of whichever interface has the lowest multicast metric, which is often
 /// a virtual adapter (WSL, Hyper-V, Docker, a VPN) that the phone is not on.
-pub async fn discover() -> io::Result<Vec<SocketAddr>> {
-    discover_at(GROUP, WAIT, &interfaces()).await
+///
+/// `mark` is a firewall mark for the sockets (Linux only), so the question can leave while a kill
+/// switch routes everything unmarked into a blackhole.
+pub async fn discover(mark: Option<u32>) -> io::Result<Vec<SocketAddr>> {
+    discover_at(GROUP, WAIT, &interfaces(), mark).await
 }
 
 /// Most interfaces asked, so a host with many virtual adapters does not open dozens of sockets.
@@ -58,12 +61,18 @@ fn interfaces() -> Vec<Ipv4Addr> {
 }
 
 /// A socket on the interface that has address `from`, so its multicast leaves there.
-fn socket_on(from: Ipv4Addr) -> io::Result<UdpSocket> {
+fn socket_on(from: Ipv4Addr, mark: Option<u32>) -> io::Result<UdpSocket> {
     let sock = socket2::Socket::new(
         socket2::Domain::IPV4,
         socket2::Type::DGRAM,
         Some(socket2::Protocol::UDP),
     )?;
+    #[cfg(target_os = "linux")]
+    if let Some(mark) = mark {
+        sock.set_mark(mark)?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = mark;
     if !from.is_unspecified() {
         sock.set_multicast_if_v4(&from)?;
     }
@@ -76,12 +85,13 @@ async fn discover_at(
     group: SocketAddr,
     wait: Duration,
     from: &[Ipv4Addr],
+    mark: Option<u32>,
 ) -> io::Result<Vec<SocketAddr>> {
     let mut asking = tokio::task::JoinSet::new();
     let mut last_error = None;
     for &ip in from {
         // An interface that refuses is skipped; the others may still reach the phone.
-        match socket_on(ip) {
+        match socket_on(ip, mark) {
             Ok(sock) => {
                 asking.spawn(ask(sock, group, wait));
             }
@@ -301,9 +311,14 @@ mod tests {
                 phone.send_to(&response("Kite", 47810), from).await.unwrap();
             }
         });
-        let found = discover_at(at, Duration::from_millis(1500), &[Ipv4Addr::LOCALHOST])
-            .await
-            .unwrap();
+        let found = discover_at(
+            at,
+            Duration::from_millis(1500),
+            &[Ipv4Addr::LOCALHOST],
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(found, vec!["127.0.0.1:47810".parse().unwrap()]);
     }
 
@@ -320,7 +335,7 @@ mod tests {
         // 192.0.2.1 (TEST-NET) is on no interface of this machine, so its socket cannot bind.
         let bad = Ipv4Addr::new(192, 0, 2, 1);
         let from = [bad, Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST];
-        let found = discover_at(at, Duration::from_millis(1500), &from)
+        let found = discover_at(at, Duration::from_millis(1500), &from, None)
             .await
             .unwrap();
         assert_eq!(
@@ -328,7 +343,7 @@ mod tests {
             vec!["127.0.0.1:47810".parse().unwrap()],
             "one entry per phone"
         );
-        assert!(discover_at(at, Duration::from_millis(100), &[bad])
+        assert!(discover_at(at, Duration::from_millis(100), &[bad], None)
             .await
             .is_err());
     }

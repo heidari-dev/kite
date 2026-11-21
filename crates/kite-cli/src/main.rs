@@ -373,7 +373,7 @@ impl std::fmt::Display for Transport {
 async fn resolve(t: &Transport) -> io::Result<Transport> {
     Ok(match t {
         Transport::Wifi(Some(addr)) => Transport::Tcp(with_default_port(addr)),
-        Transport::Wifi(None) => Transport::Tcp(find_phone().await?.to_string()),
+        Transport::Wifi(None) => Transport::Tcp(find_phone(None).await?.to_string()),
         t => t.clone(),
     })
 }
@@ -391,8 +391,8 @@ fn with_default_port(addr: &str) -> String {
     }
 }
 
-async fn find_phone() -> io::Result<SocketAddr> {
-    let found = kite_link::mdns::discover().await?;
+async fn find_phone(mark: Option<u32>) -> io::Result<SocketAddr> {
+    let found = kite_link::mdns::discover(mark).await?;
     let list = || {
         found
             .iter()

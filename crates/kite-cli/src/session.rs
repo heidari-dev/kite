@@ -151,7 +151,12 @@ impl Shared {
 
 /// How to reach and recognise the phone.
 struct Link {
-    transport: Transport,
+    /// Where the relay is dialled; replaced when a lookup finds the phone at a new address.
+    transport: Mutex<Transport>,
+    /// The phone was found with mDNS (`--wifi` without an address), so it can be looked up again.
+    lookup: bool,
+    /// Where the last tunnel reached the relay.
+    reached: Mutex<Option<SocketAddr>>,
     tun: bool,
     key: StaticKey,
     /// Where the ADB key is, for a phone reached directly over USB.
@@ -162,11 +167,68 @@ impl Link {
     /// A tunnel to the relay, once the phone proved to be a paired one, and the address it
     /// reaches the relay at (the adb server's, for USB).
     async fn establish(&self, phones: &Phones) -> io::Result<(Tunnel, Option<SocketAddr>)> {
-        let stream = dial(&self.transport, self.tun, &self.adb_key).await?;
+        let transport = self
+            .transport
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let stream = dial(&transport, self.tun, &self.adb_key).await?;
         let relay = stream.peer_addr().ok();
+        *self.reached.lock().unwrap_or_else(PoisonError::into_inner) = relay;
         let known = phones.list().clone();
         let tunnel = pair::connect(stream, &self.key, &known).await?;
         Ok((tunnel, relay))
+    }
+
+    /// `establish` for a link that was lost. A phone that was found with mDNS may have come back
+    /// at another address (a new hotspot subnet, a new DHCP lease), so when the old one fails it is
+    /// looked up again, and the kill switch is told to let the new address through.
+    async fn redial(&self, phones: &Phones) -> io::Result<(Tunnel, Option<SocketAddr>)> {
+        let lost = match self.establish(phones).await {
+            Ok(tunnel) => return Ok(tunnel),
+            Err(e) => e,
+        };
+        if !self.lookup {
+            return Err(lost);
+        }
+        let old = *self.reached.lock().unwrap_or_else(PoisonError::into_inner);
+        // The block lets the question out only while it is asked. Where it cannot be told to
+        // (macOS), the old address is all there is.
+        if self.permit(old, true).await.is_err() {
+            return Err(lost);
+        }
+        let found = crate::find_phone(self.mark()).await;
+        let new = found.as_ref().ok().copied().or(old);
+        self.permit(new, false).await?;
+        match found {
+            Ok(new) if Some(new) != old => {
+                *self
+                    .transport
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Transport::Tcp(new.to_string());
+                self.establish(phones).await
+            }
+            _ => Err(lost),
+        }
+    }
+
+    /// The routing mark that lets the lookup past the kill switch (Linux).
+    fn mark(&self) -> Option<u32> {
+        #[cfg(target_os = "linux")]
+        return self.tun.then_some(crate::route::TABLE);
+        #[cfg(not(target_os = "linux"))]
+        None
+    }
+
+    /// Tells the kill switch which relay address to let through, and whether this program may ask
+    /// the network for the phone.
+    async fn permit(&self, relay: Option<SocketAddr>, discovery: bool) -> io::Result<()> {
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        if self.tun {
+            return crate::tun::allow(relay, discovery).await;
+        }
+        let _ = (relay, discovery);
+        Ok(())
     }
 }
 
@@ -208,8 +270,10 @@ pub async fn start(p: &Params, store: &Store, shared: &Shared) -> io::Result<Sta
     };
     let listener = TcpListener::bind(listen).await?;
     let link = Link {
-        // Once, before the tunnel exists: a redial with the link down must not need a lookup.
-        transport: crate::resolve(&p.transport).await?,
+        // Once, before the tunnel exists, so the first dial does not wait on a lookup twice.
+        transport: Mutex::new(crate::resolve(&p.transport).await?),
+        lookup: matches!(p.transport, Transport::Wifi(None)),
+        reached: Mutex::new(None),
         tun: p.tun,
         key: store.key()?,
         adb_key: store.adb_key_path(),
@@ -322,7 +386,7 @@ async fn keep(
             tokio::select! {
                 () = &mut shutdown => return Ok(()),
                 never = refuse(listener) => match never {},
-                r = link.establish(&shared.phones) => match r {
+                r = link.redial(&shared.phones) => match r {
                     Ok((t, _)) => break t,
                     Err(e) => shared.set(State::Reconnecting, Some(e.to_string())),
                 },
