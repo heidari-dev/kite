@@ -322,8 +322,10 @@ impl Worker {
             self.view.message = Some("The pairing expired. Start it again.".into());
         }
         if !open {
-            // A reading from before the window closed would give a wrong speed on reopening.
+            // A reading from before the window closed would give a wrong speed on reopening, and
+            // the tray must not keep showing one.
             self.meter.reset();
+            (self.view.up, self.view.down, self.view.uptime) = (0, 0, 0);
             return;
         }
         let connected = self.view.state() == Some(State::Connected);
@@ -334,7 +336,12 @@ impl Worker {
         } else {
             None
         };
-        self.view.uptime = stats.as_ref().map_or(0, |s| s.uptime_secs);
+        // One missed answer does not blank the time.
+        self.view.uptime = match &stats {
+            Some(s) => s.uptime_secs,
+            None if connected => self.view.uptime,
+            None => 0,
+        };
         (self.view.up, self.view.down) = match stats {
             Some(s) => self.meter.rate(Instant::now(), s.bytes_up, s.bytes_down),
             None => {

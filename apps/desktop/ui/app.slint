@@ -620,7 +620,7 @@ export component AppWindow inherits Window {
     preferred-width: 380px;
     preferred-height: 500px;
     min-width: 340px;
-    min-height: 320px;
+    min-height: 320px * Theme.text-scale;
     background: Theme.bg;
 
     // The daemon cannot be used: this is all there is to show.
@@ -820,6 +820,7 @@ export component AppWindow inherits Window {
                             text: root.copied ? "Copied" : "Copy";
                             description: "Copies the details to the clipboard.";
                             clicked => {
+                                root.show-details = true;
                                 raw.select-all();
                                 raw.copy();
                                 root.copied = true;
@@ -841,6 +842,8 @@ export component AppWindow inherits Window {
                             width: parent.width - 20px;
                             text: root.details;
                             read-only: true;
+                            // Hidden, it is not a stop for the keyboard or the screen reader.
+                            enabled: root.show-details;
                             wrap: word-wrap;
                             font-size: 13px * Theme.text-scale;
                             color: Theme.text;

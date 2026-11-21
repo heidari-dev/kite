@@ -101,14 +101,7 @@ pub fn explain(raw: &str) -> (String, String) {
         "This computer is not paired with the phone yet."
     } else if has(&["not found", "no device", "no phone"]) {
         "The phone was not found. Check the cable and that USB debugging is on."
-    } else if has(&[
-        "timed out",
-        "timeout",
-        "did not answer",
-        "refused",
-        "unreachable",
-        "no route",
-    ]) {
+    } else if has(&["did not answer", "not listening"]) {
         "The phone did not answer. Open Kite on the phone and turn Sharing on."
     } else if raw.chars().count() <= 80 {
         // Already a short sentence of ours, in the daemon's lower case.
@@ -236,7 +229,7 @@ pub fn setup(v: &View, link: Link, serial: Option<&str>, wifi_error: &str) -> Op
         },
         (Link::Wifi { .. }, _) => Step {
             title: "Fix the phone's address",
-            text: wifi_error.into(),
+            text: format!("{wifi_error} Open Options to fix it."),
             done: false,
         },
         _ => Step {
@@ -289,6 +282,8 @@ pub fn link_meta(v: &View) -> String {
 pub fn link_name(v: &View, serial: Option<&str>) -> String {
     match v.status.as_ref().and_then(|s| s.transport.as_deref()) {
         Some("usb") => serial.unwrap_or("Phone").into(),
+        // The daemon says "wifi" when no address was typed.
+        Some("wifi") => "Phone".into(),
         Some(addr) => addr.into(),
         None => String::new(),
     }
@@ -538,7 +533,7 @@ mod tests {
 
         // A bad WiFi address is step 1's text.
         let s = step(&v, Link::Wifi { addr_ok: false }, "not an address").unwrap();
-        assert_eq!(s.steps[0].text, "not an address");
+        assert!(s.steps[0].text.starts_with("not an address"));
     }
 
     #[test]
