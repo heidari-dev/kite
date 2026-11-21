@@ -12,6 +12,9 @@ cargo run -p kite-desktop -- --hidden  # tray only
 
 Building on Linux needs the fontconfig headers (`libfontconfig1-dev` on Debian and Ubuntu).
 
+- On first run the window shows three steps (phone, pairing, connect) and the main button does the
+  next one. While connected it shows the phone, how it is reached, how long, and the speeds; the
+  phone, share and pairing settings are under Options.
 - The daemon must be running and your user must be in the `kite` group. If not, the window says what
   to do.
 - Pairing a phone changes where all of your traffic can go, so the daemon allows it only for root

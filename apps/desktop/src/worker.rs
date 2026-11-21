@@ -17,6 +17,8 @@ const SLOW: Duration = Duration::from_secs(3);
 /// The daemon answers a poll at once; a command may take long (pairing dials the phone).
 const POLL_WAIT: Duration = Duration::from_secs(5);
 const COMMAND_WAIT: Duration = Duration::from_secs(35);
+/// Connecting this long gets a hint about the phone.
+const SLOW_CONNECT: Duration = Duration::from_secs(15);
 
 const NO_FINGERPRINT: &str = "The daemon did not say which computer this is, so the phone's \
      fingerprint cannot be checked. Update Kite and try again.";
@@ -90,6 +92,10 @@ pub struct View {
     pub pair: Pair,
     /// The daemon refused the last command; its words.
     pub message: Option<String>,
+    /// Seconds the tunnel has been up.
+    pub uptime: u64,
+    /// Connecting has gone on longer than [`SLOW_CONNECT`].
+    pub slow: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,6 +180,8 @@ struct Worker {
     slow_at: Option<Instant>,
     /// When the last `PairStart` was answered.
     pair_at: Option<Instant>,
+    /// Since when the daemon says Connecting.
+    connecting_at: Option<Instant>,
 }
 
 /// A pairing the daemon does not report yet is given this long before it counts as over.
@@ -193,6 +201,7 @@ pub async fn run(
         meter: Meter::default(),
         slow_at: None,
         pair_at: None,
+        connecting_at: None,
     };
     let mut shown = None;
     loop {
@@ -293,10 +302,18 @@ impl Worker {
                     ..View::default()
                 };
                 self.meter.reset();
+                self.connecting_at = None;
             }
             return;
         };
         self.view.status = r.status;
+        self.connecting_at = match self.view.state() {
+            Some(State::Connecting) => self.connecting_at.or_else(|| Some(Instant::now())),
+            _ => None,
+        };
+        self.view.slow = self
+            .connecting_at
+            .is_some_and(|t| t.elapsed() >= SLOW_CONNECT);
         // The daemon drops a pairing after two minutes; the code field must go with it.
         let waiting = self.view.status.as_ref().is_some_and(|s| s.pairing);
         let started = self.pair_at.is_some_and(|t| t.elapsed() > PAIR_GRACE);
@@ -305,8 +322,10 @@ impl Worker {
             self.view.message = Some("The pairing expired. Start it again.".into());
         }
         if !open {
-            // A reading from before the window closed would give a wrong speed on reopening.
+            // A reading from before the window closed would give a wrong speed on reopening, and
+            // the tray must not keep showing one.
             self.meter.reset();
+            (self.view.up, self.view.down, self.view.uptime) = (0, 0, 0);
             return;
         }
         let connected = self.view.state() == Some(State::Connected);
@@ -316,6 +335,12 @@ impl Worker {
                 .and_then(|r| r.stats)
         } else {
             None
+        };
+        // One missed answer does not blank the time.
+        self.view.uptime = match &stats {
+            Some(s) => s.uptime_secs,
+            None if connected => self.view.uptime,
+            None => 0,
         };
         (self.view.up, self.view.down) = match stats {
             Some(s) => self.meter.rate(Instant::now(), s.bytes_up, s.bytes_down),
@@ -404,6 +429,7 @@ mod tests {
             meter: Meter::default(),
             slow_at: None,
             pair_at: None,
+            connecting_at: None,
         }
     }
 
@@ -488,10 +514,28 @@ mod tests {
         assert_eq!(w.view.devices[0].serial, "R5CT");
         assert_eq!(w.view.paired, 2);
         assert_eq!((w.view.up, w.view.down), (0, 0), "one reading is no speed");
+        assert_eq!(w.view.uptime, 3);
         // The window closed: only the state is asked for.
         let before = asked.lock().unwrap().len();
         w.poll(false).await;
         assert_eq!(asked.lock().unwrap().len(), before + 1);
+    }
+
+    #[tokio::test]
+    async fn connecting_for_long_is_marked_slow() {
+        let (path, _) = daemon("slow", |req| match req {
+            Request::Status {} => Response {
+                status: Some(status(State::Connecting, None)),
+                ..Response::ok()
+            },
+            _ => Response::ok(),
+        });
+        let mut w = worker(path);
+        w.poll(true).await;
+        assert!(!w.view.slow);
+        w.connecting_at = Some(Instant::now() - SLOW_CONNECT);
+        w.poll(true).await;
+        assert!(w.view.slow);
     }
 
     #[tokio::test]

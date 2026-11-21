@@ -2,6 +2,12 @@ import { Palette, ScrollView } from "std-widgets.slint";
 
 export enum Kind { disconnected, connecting, connected, error }
 
+export struct SetupStep {
+    title: string,
+    text: string,
+    done: bool,
+}
+
 export struct PhoneRow {
     serial: string,
     /// Why it cannot be used yet; empty when it is ready.
@@ -42,6 +48,8 @@ component Btn inherits Rectangle {
     in property <bool> primary: false;
     in property <bool> enabled: true;
     in property <bool> selected: false;
+    /// The big label of the main button without its fill.
+    in property <bool> large: false;
     /// Read after the label when the button gets focus.
     in property <string> description;
     /// What a screen reader says instead of the text, when the state belongs to it.
@@ -93,8 +101,8 @@ component Btn inherits Rectangle {
         padding-right: 12px;
         Text {
             text: root.text;
-            font-size: (root.primary ? 17px : 14px) * Theme.text-scale;
-            font-weight: root.primary || root.selected ? 700 : 500;
+            font-size: (root.primary || root.large ? 17px : 14px) * Theme.text-scale;
+            font-weight: root.primary || root.large || root.selected ? 700 : 500;
             color: !root.enabled ? Theme.muted
                 : root.primary ? Theme.on-primary : Theme.text;
             horizontal-alignment: center;
@@ -309,21 +317,23 @@ component KiteStage inherits Rectangle {
     in property <KiteFrame> f;
     in property <string> label;
 
-    // The stage is 64 units; the picture is 144 px, so a unit is 2.25 px and a 2 unit stroke
-    // is 4.5 px.
-    width: 160px;
-    height: 160px;
-    border-radius: 28px;
+    // The stage is 64 units and the picture 0.9 of the tile, so every size follows the width.
+    width: 72px;
+    height: 72px;
+    property <length> pad: root.width * 0.05;
+    property <length> art-size: root.width * 0.9;
+    property <length> unit: root.art-size / 64;
+    border-radius: root.width * 0.175;
     // The brand colours need the paper tile to be seen on a dark window.
     background: Theme.dark ? #F6F1E7 : transparent;
     accessible-role: AccessibleRole.image;
     accessible-label: root.label;
 
     Path {
-        x: 8px;
-        y: 8px;
-        width: 144px;
-        height: 144px;
+        x: root.pad;
+        y: root.pad;
+        width: root.art-size;
+        height: root.art-size;
         viewbox-width: 64;
         viewbox-height: 64;
         fill: #E4572E;
@@ -334,10 +344,10 @@ component KiteStage inherits Rectangle {
         Close {}
     }
     Path {
-        x: 8px;
-        y: 8px;
-        width: 144px;
-        height: 144px;
+        x: root.pad;
+        y: root.pad;
+        width: root.art-size;
+        height: root.art-size;
         viewbox-width: 64;
         viewbox-height: 64;
         fill: #B63E1C;
@@ -349,54 +359,54 @@ component KiteStage inherits Rectangle {
     }
     // The strings: slack and snapped are baked, the taut one follows the rig.
     Path {
-        x: 8px;
-        y: 8px;
-        width: 144px;
-        height: 144px;
+        x: root.pad;
+        y: root.pad;
+        width: root.art-size;
+        height: root.art-size;
         viewbox-width: 64;
         viewbox-height: 64;
         stroke: #B63E1C;
-        stroke-width: 4.5px;
+        stroke-width: 2 * root.unit;
         stroke-line-cap: round;
         opacity: root.f.slack * root.f.art;
         commands: "M6 62 C10 65 15 58 20 50";
     }
     Path {
-        x: 8px;
-        y: 8px;
-        width: 144px;
-        height: 144px;
+        x: root.pad;
+        y: root.pad;
+        width: root.art-size;
+        height: root.art-size;
         viewbox-width: 64;
         viewbox-height: 64;
         stroke: #B63E1C;
-        stroke-width: 4.5px;
+        stroke-width: 2 * root.unit;
         stroke-line-cap: round;
         opacity: root.f.snapped * root.f.art;
         commands: "M6 62 Q9 59 11 60 M20 50 Q18 52 19 55";
     }
     Path {
-        x: 8px;
-        y: 8px;
-        width: 144px;
-        height: 144px;
+        x: root.pad;
+        y: root.pad;
+        width: root.art-size;
+        height: root.art-size;
         viewbox-width: 64;
         viewbox-height: 64;
         stroke: #B63E1C;
-        stroke-width: 4.5px;
+        stroke-width: 2 * root.unit;
         stroke-line-cap: round;
         opacity: root.f.taut * root.f.art;
         MoveTo { x: 6; y: 62; }
         QuadraticTo { control-x: root.f.x7; control-y: root.f.y7; x: root.f.x8; y: root.f.y8; }
     }
     Path {
-        x: 8px;
-        y: 8px;
-        width: 144px;
-        height: 144px;
+        x: root.pad;
+        y: root.pad;
+        width: root.art-size;
+        height: root.art-size;
         viewbox-width: 64;
         viewbox-height: 64;
         stroke: #B63E1C;
-        stroke-width: 4.5px;
+        stroke-width: 2 * root.unit;
         stroke-line-cap: round;
         opacity: root.f.art;
         MoveTo { x: root.f.x3; y: root.f.y3; }
@@ -411,10 +421,10 @@ component KiteStage inherits Rectangle {
     }
     // The error badge: the accent disc and a white exclamation mark, as in the tray icon.
     Rectangle {
-        width: 40.5px * root.f.badge-scale;
+        width: 18 * root.unit * root.f.badge-scale;
         height: self.width;
-        x: 8px + 52 * 2.25px - self.width / 2;
-        y: 8px + 13 * 2.25px - self.height / 2;
+        x: root.pad + 52 * root.unit - self.width / 2;
+        y: root.pad + 13 * root.unit - self.height / 2;
         border-radius: self.width / 2;
         background: #E4572E;
         opacity: root.f.badge * root.f.art;
@@ -431,13 +441,186 @@ component KiteStage inherits Rectangle {
     }
 }
 
+/// One of the three steps of the first run: done, the one to do now, or still to come.
+component StepCard inherits Rectangle {
+    in property <int> number;
+    in property <SetupStep> step;
+    in property <bool> current;
+
+    border-radius: 8px;
+    border-width: root.current ? 2px : 1px;
+    border-color: root.current ? Theme.primary : Theme.line;
+    background: root.current ? Theme.primary.with-alpha(0.14) : Theme.surface;
+    accessible-role: AccessibleRole.text;
+    accessible-label: "Step " + root.number + ", " + root.step.title + ". " + root.step.text
+        + (root.step.done ? " Done." : (root.current ? " This is the step to do now." : ""));
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 12px;
+        Rectangle {
+            width: 28px;
+            height: 28px;
+            y: 0px;
+            border-radius: 14px;
+            border-width: root.step.done ? 0px : (root.current ? 2px : 1px);
+            border-color: root.current ? Theme.primary : Theme.line;
+            background: root.step.done ? Theme.text : transparent;
+            Text {
+                text: root.number;
+                font-size: 14px * Theme.text-scale;
+                font-weight: 700;
+                color: root.current ? Theme.text : Theme.muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                opacity: root.step.done ? 0 : 1;
+                animate opacity { duration: 200ms; easing: cubic-bezier(0.23, 1, 0.32, 1); }
+                accessible-role: AccessibleRole.none;
+            }
+            // The mark of a finished step: a fade, which is also what reduced motion keeps.
+            Path {
+                width: 14px;
+                height: 14px;
+                x: 7px;
+                y: 7px;
+                viewbox-width: 14;
+                viewbox-height: 14;
+                stroke: Theme.bg;
+                stroke-width: 2.5px;
+                stroke-line-cap: round;
+                stroke-line-join: round;
+                commands: "M2 7.5 L5.5 11 L12 3.5";
+                opacity: root.step.done ? 1 : 0;
+                animate opacity { duration: 200ms; easing: cubic-bezier(0.23, 1, 0.32, 1); }
+            }
+        }
+        VerticalLayout {
+            spacing: 2px;
+            Text {
+                text: root.step.title;
+                wrap: word-wrap;
+                font-size: 15px * Theme.text-scale;
+                font-weight: 700;
+                color: Theme.text;
+                accessible-role: AccessibleRole.none;
+            }
+            Text {
+                text: root.step.text;
+                wrap: word-wrap;
+                font-size: 13px * Theme.text-scale;
+                color: Theme.muted;
+                accessible-role: AccessibleRole.none;
+            }
+        }
+    }
+}
+
+/// A short label for a setting that applies to the running link.
+component Chip inherits Rectangle {
+    in property <string> text;
+    min-width: 0px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: Theme.line;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 5px;
+        padding-bottom: 5px;
+        Text {
+            text: root.text;
+            font-size: 13px * Theme.text-scale;
+            font-weight: 600;
+            color: Theme.text;
+            overflow: elide;
+            vertical-alignment: center;
+            accessible-role: AccessibleRole.none;
+        }
+    }
+}
+
+/// The row that shows or hides the settings.
+component OptionsRow inherits Rectangle {
+    in property <bool> open;
+    callback toggled();
+    callback revealed(length, length);
+
+    min-height: 44px;
+    accessible-role: AccessibleRole.button;
+    // Not `expandable`: Windows then offers no plain press, and Slint answers no expand request.
+    accessible-label: root.open ? "Options, shown" : "Options, hidden";
+    accessible-action-default => { root.toggled(); }
+
+    Rectangle {
+        height: 1px;
+        y: 0px;
+        background: Theme.line;
+        opacity: 0.5;
+    }
+    ta := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.toggled(); }
+    }
+    fs := FocusScope {
+        focus-on-click: false;
+        changed has-focus => {
+            if self.has-focus {
+                root.revealed(root.absolute-position.y, root.height);
+            }
+        }
+        key-pressed(event) => {
+            if (event.text == " " || event.text == Key.Return) {
+                root.toggled();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        Text {
+            text: "Options";
+            font-size: 14px * Theme.text-scale;
+            font-weight: 700;
+            color: ta.has-hover ? Theme.text : Theme.muted;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            accessible-role: AccessibleRole.none;
+        }
+        Path {
+            width: 16px;
+            height: 16px;
+            y: (root.height - self.height) / 2;
+            viewbox-width: 16;
+            viewbox-height: 16;
+            stroke: Theme.muted;
+            stroke-width: 2px;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+            commands: root.open ? "M3 5.5 L8 10.5 L13 5.5" : "M5.5 3 L10.5 8 L5.5 13";
+        }
+    }
+    if fs.has-focus: Rectangle {
+        x: -3px;
+        y: -3px;
+        width: root.width + 6px;
+        height: root.height + 6px;
+        border-radius: 8px;
+        border-width: 2px;
+        border-color: Theme.focus;
+    }
+}
+
 export component AppWindow inherits Window {
     title: "Kite";
     icon: @image-url("../../../assets/brand/app-icon.svg");
+    // Fits a 1366 by 768 screen at 100%; at 200% the header and the main button stay and the rest
+    // scrolls.
     preferred-width: 380px;
-    preferred-height: 760px;
+    preferred-height: 500px;
     min-width: 340px;
-    min-height: 420px;
+    min-height: 320px * Theme.text-scale;
     background: Theme.bg;
 
     // The daemon cannot be used: this is all there is to show.
@@ -446,8 +629,15 @@ export component AppWindow inherits Window {
     in property <KiteFrame> kite;
     in property <string> headline;
     in property <string> detail;
+    // The daemon's or adb's own words behind `detail`, to read or copy.
+    in property <string> details;
     in property <string> action-label;
     in property <bool> action-enabled;
+    // The main button pairs instead of connecting: the phone is there and only the pairing is left.
+    in property <bool> main-pair;
+    // Empty unless something is missing before Connect can work; then there are three.
+    in property <[SetupStep]> steps;
+    in property <int> current-step;
     in property <[PhoneRow]> phones;
     in property <string> phones-note;
     // Reach the phone over WiFi instead of USB, and the address typed for it.
@@ -460,6 +650,9 @@ export component AppWindow inherits Window {
     in property <bool> auto-connect;
     // A tunnel is up: mode and kill switch show what runs and cannot change until it stops.
     in property <bool> locked;
+    in property <string> summary-name;
+    in property <string> summary-meta;
+    in property <[string]> chips;
     in property <string> speed-up;
     in property <string> speed-down;
     in property <bool> show-speed;
@@ -482,297 +675,299 @@ export component AppWindow inherits Window {
 
     // Set when a pairing button goes away under the keyboard, so the next one takes the focus.
     property <bool> refocus: false;
+    property <bool> options-open: false;
+    property <bool> show-details: false;
+    property <bool> copied: false;
     property <string> wifi-hint: "Share over WiFi must be on in the Kite app on the phone. The phone and this computer must be on the same WiFi or hotspot.";
     property <string> pair-text: "This computer is " + root.fingerprint + ". Allow it on the phone if the phone shows the same, then type the 6-digit code the phone shows.";
 
-    // Scrolls the content so the control at `y` (in the window) with height `h` is in view.
-    function reveal(y: length, h: length) {
-        sv.content-y = min(0px, max(sv.height - sv.content-height,
-            sv.content-y + (y < 8px ? 8px - y : (y + h > sv.height - 8px ? sv.height - 8px - (y + h) : 0px))));
+    changed details => {
+        if self.details == "" {
+            self.show-details = false;
+        }
     }
 
-    sv := ScrollView {
-        // The content takes the width of the window; long text wraps or is cut, never widens it.
-        content-width: self.width;
+    // Scrolls the content so the control at `window-y` (in the window) with height `h` is in view.
+    function reveal(window-y: length, h: length) {
+        // The header and the main button stay above the scrolling part.
+        if window-y < sv.absolute-position.y {
+            sv.content-y = min(0px, sv.content-y + sv.absolute-position.y + 8px - window-y);
+        } else {
+            sv.content-y = min(0px, max(sv.height - sv.content-height,
+                sv.content-y + (window-y + h > sv.absolute-position.y + sv.height - 8px
+                    ? sv.absolute-position.y + sv.height - 8px - (window-y + h) : 0px)));
+        }
+    }
+
+    // Lets go of the "Copied" mark after a moment.
+    Timer {
+        interval: 1500ms;
+        running: root.copied;
+        triggered => { root.copied = false; }
+    }
+
+    VerticalLayout {
+        // Always on screen: what the state is and the one button that matters.
         VerticalLayout {
-            padding: 24px;
-            spacing: 16px;
-            alignment: start;
+            padding: 16px;
+            padding-bottom: 8px;
+            spacing: 12px;
 
             HorizontalLayout {
-                alignment: center;
+                spacing: 16px;
                 KiteStage {
                     f: root.kite;
                     // The state is the headline's to say; the picture only needs a name.
                     label: "Kite";
+                    y: 0px;
                 }
-            }
-
-            if root.blocker != "": Text {
-                text: root.blocker;
-                wrap: word-wrap;
-                font-size: 16px * Theme.text-scale;
-                color: Theme.text;
-            }
-
-            if root.blocker == "": VerticalLayout {
-                spacing: 16px;
-
                 VerticalLayout {
-                    spacing: 4px;
+                    alignment: center;
+                    spacing: 2px;
+                    min-width: 0px;
                     Text {
-                        text: root.headline;
+                        text: root.blocker != "" ? "Kite is not available" : root.headline;
                         wrap: word-wrap;
-                        font-size: 26px * Theme.text-scale;
+                        font-size: 24px * Theme.text-scale;
                         font-weight: 700;
                         color: Theme.text;
-                        horizontal-alignment: center;
                     }
-                    if root.detail != "": Text {
-                        text: root.detail;
-                        wrap: word-wrap;
-                        font-size: 14px * Theme.text-scale;
-                        color: Theme.muted;
-                        horizontal-alignment: center;
-                    }
-                }
-
-                Btn {
-                    text: root.action-label;
-                    primary: true;
-                    enabled: root.action-enabled;
-                    min-height: 52px;
-                    // The result of the press is the button's own state, so it is read with it.
-                    spoken: root.action-label + ", " + root.headline;
-                    description: root.detail;
-                    clicked => { root.action(); }
-                    revealed(y, h) => { root.reveal(y, h); }
-                }
-
-                if root.show-speed: HorizontalLayout {
-                    spacing: 24px;
-                    alignment: center;
-                    Text {
-                        text: "Up  " + root.speed-up;
-                        font-size: 14px * Theme.text-scale;
-                        color: Theme.text;
-                    }
-                    Text {
-                        text: "Down  " + root.speed-down;
-                        font-size: 14px * Theme.text-scale;
-                        color: Theme.text;
-                    }
-                }
-
-                if root.pair-step == 0: VerticalLayout {
-                    spacing: 8px;
-                    Heading { text: "Phone"; }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Choice {
-                            text: "USB";
-                            selected: !root.wifi;
-                            enabled: !root.locked;
-                            clicked => { root.set-wifi(false); }
-                            revealed(y, h) => { root.reveal(y, h); }
-                        }
-                        Choice {
-                            text: "WiFi";
-                            selected: root.wifi;
-                            enabled: !root.locked;
-                            clicked => { root.set-wifi(true); }
-                            revealed(y, h) => { root.reveal(y, h); }
-                        }
-                    }
-                    if !root.wifi: VerticalLayout {
-                        spacing: 8px;
-                        for item[i] in root.phones: Phone {
-                            phone: item;
-                            picked => { root.select-phone(i); }
-                            revealed(y, h) => { root.reveal(y, h); }
-                        }
-                        if root.phones-note != "": Note { text: root.phones-note; }
-                    }
-                    if root.wifi: VerticalLayout {
-                        spacing: 8px;
-                        Rectangle {
-                            min-height: 44px;
-                            clip: true;
-                            border-radius: 8px;
-                            border-width: addr.has-focus ? 2px : 1px;
-                            border-color: addr.has-focus ? Theme.focus : (root.wifi-error != "" ? Theme.primary : Theme.line);
-                            background: Theme.surface;
-                            HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                addr := TextInput {
-                                    min-width: 0px;
-                                    text: root.wifi-addr;
-                                    font-size: 16px * Theme.text-scale;
-                                    color: Theme.text;
-                                    single-line: true;
-                                    vertical-alignment: center;
-                                    enabled: !root.locked;
-                                    accessible-label: "Phone address";
-                                    accessible-description: root.wifi-error != "" ? root.wifi-error : "Leave it empty to find the phone automatically. " + root.wifi-hint;
-                                    changed has-focus => {
-                                        if self.has-focus {
-                                            root.reveal(self.absolute-position.y, self.height);
-                                        }
-                                    }
-                                    edited => { root.set-wifi-addr(self.text); }
-                                }
-                            }
-                            if addr.text == "": Text {
-                                x: 12px;
-                                text: "Find it automatically";
-                                font-size: 16px * Theme.text-scale;
-                                color: Theme.muted;
-                                vertical-alignment: center;
-                                height: parent.height;
-                            }
-                        }
-                        if root.wifi-error != "": Text {
-                            text: root.wifi-error;
-                            wrap: word-wrap;
-                            font-size: 13px * Theme.text-scale;
-                            font-weight: 600;
-                            color: Theme.text;
-                        }
-                        Note { text: root.wifi-hint; }
-                    }
-                }
-
-                if root.pair-step == 0: VerticalLayout {
-                    spacing: 8px;
-                    Heading { text: "Share"; }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Choice {
-                            text: "Full";
-                            selected: root.mode == 0;
-                            enabled: !root.locked;
-                            clicked => { root.set-mode(0); }
-                            revealed(y, h) => { root.reveal(y, h); }
-                        }
-                        Choice {
-                            text: "Proxy only";
-                            selected: root.mode == 1;
-                            enabled: !root.locked;
-                            clicked => { root.set-mode(1); }
-                            revealed(y, h) => { root.reveal(y, h); }
-                        }
-                    }
-                    Note {
-                        text: root.mode == 0
-                            ? "All traffic of this computer goes through the phone."
-                            : "A SOCKS5 proxy on 127.0.0.1:1080. Only programs set to use it go through the phone.";
-                    }
-                    Toggle {
-                        text: "Block traffic if the phone disconnects";
-                        enabled: root.mode == 0 && !root.locked;
-                        checked: root.kill-switch;
-                        toggled(on) => { root.set-kill-switch(on); }
-                        revealed(y, h) => { root.reveal(y, h); }
-                    }
-                    Toggle {
-                        text: "Connect when the phone is plugged in";
-                        checked: root.auto-connect;
-                        toggled(on) => { root.set-auto-connect(on); }
-                        revealed(y, h) => { root.reveal(y, h); }
-                    }
-                    Note { text: "USB only. It repeats your last USB connection."; }
-                }
-
-                VerticalLayout {
-                    spacing: 8px;
-                    Heading { text: "Pairing"; }
-                    if root.pair-step == 0: Btn {
-                        text: "Pair a phone";
-                        enabled: root.pair-enabled;
-                        // Back from the pairing, the focus returns to where it was.
-                        init => {
-                            if root.refocus {
-                                root.refocus = false;
-                                self.take-focus();
-                            }
-                        }
-                        clicked => { root.pair-start(); }
-                        revealed(y, h) => { root.reveal(y, h); }
-                    }
-                    if root.pair-step == 1: VerticalLayout {
-                        spacing: 8px;
+                    // The phone, how it is reached and for how long. The name is cut when it is
+                    // long; the way and the time are not.
+                    if root.blocker == "" && root.locked && root.summary-name != "": HorizontalLayout {
+                        spacing: 4px;
                         Text {
-                            text: root.pair-text;
-                            wrap: word-wrap;
+                            text: root.summary-name;
+                            font-size: 14px * Theme.text-scale;
+                            color: Theme.text;
+                            min-width: 0px;
+                            horizontal-stretch: 0;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: "· " + root.summary-meta;
                             font-size: 14px * Theme.text-scale;
                             color: Theme.text;
                         }
-                        Rectangle {
-                            min-height: 44px;
-                            border-radius: 8px;
-                            border-width: code.has-focus ? 2px : 1px;
-                            border-color: code.has-focus ? Theme.focus : Theme.line;
-                            background: Theme.surface;
-                            HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                code := TextInput {
-                                    font-size: 18px * Theme.text-scale;
-                                    color: Theme.text;
-                                    input-type: InputType.number;
-                                    single-line: true;
-                                    vertical-alignment: center;
-                                    accessible-label: "6-digit code from the phone";
-                                    // The fingerprint is read with the field, which has the focus.
-                                    accessible-description: root.pair-text;
-                                    init => { self.focus(); }
-                                    changed has-focus => {
-                                        if self.has-focus {
-                                            root.reveal(self.absolute-position.y, self.height);
-                                        }
-                                    }
-                                    accepted => {
-                                        if self.text.character-count == 6 {
-                                            root.refocus = true;
-                                            root.pair-submit(self.text);
-                                        }
-                                    }
-                                }
-                            }
-                            if code.text == "": Text {
-                                x: 12px;
-                                text: "6-digit code";
-                                font-size: 16px * Theme.text-scale;
-                                color: Theme.muted;
-                                vertical-alignment: center;
-                                height: parent.height;
-                            }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    // Two lines are always kept: a message does not move the button, and a wrapped text is
+                    // given the room of its second line.
+                    if root.blocker == "": Text {
+                        text: root.detail;
+                        wrap: word-wrap;
+                        font-size: 13px * Theme.text-scale;
+                        color: Theme.muted;
+                        min-height: 2.5 * 13px * Theme.text-scale;
+                        vertical-alignment: top;
+                    }
+                }
+            }
+
+            if root.blocker == "" && root.pair-step == 0: Btn {
+                text: root.action-label;
+                primary: !root.locked;
+                large: true;
+                enabled: root.action-enabled;
+                min-height: 52px;
+                // The result of the press is the button's own state, so it is read with it.
+                spoken: root.action-label + ", " + root.headline;
+                description: root.detail;
+                // Back from the pairing, the focus returns to where it was.
+                init => {
+                    if root.refocus {
+                        root.refocus = false;
+                        self.take-focus();
+                    }
+                }
+                clicked => {
+                    if root.main-pair {
+                        root.pair-start();
+                    } else {
+                        root.action();
+                    }
+                }
+            }
+        }
+
+        sv := ScrollView {
+            // The content takes the width of the window; long text wraps or is cut, never widens it.
+            content-width: self.width;
+            VerticalLayout {
+                padding: 16px;
+                padding-top: 8px;
+                spacing: 12px;
+                alignment: start;
+
+                if root.blocker != "": Text {
+                    text: root.blocker;
+                    wrap: word-wrap;
+                    font-size: 16px * Theme.text-scale;
+                    color: Theme.text;
+                }
+
+                // The raw words behind a short message, when the user wants them.
+                if root.blocker == "" && root.details != "": VerticalLayout {
+                    spacing: 8px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Btn {
+                            text: root.show-details ? "Hide details" : "Show details";
+                            clicked => { root.show-details = !root.show-details; }
+                            revealed(y, h) => { root.reveal(y, h); }
                         }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Btn {
-                                text: "Pair";
-                                primary: true;
-                                enabled: code.text.character-count == 6;
-                                description: code.text.character-count == 6 ? "" : "Type all 6 digits first.";
-                                clicked => {
-                                    root.refocus = true;
-                                    root.pair-submit(code.text);
-                                }
-                                revealed(y, h) => { root.reveal(y, h); }
+                        Btn {
+                            text: root.copied ? "Copied" : "Copy";
+                            description: "Copies the details to the clipboard.";
+                            clicked => {
+                                root.show-details = true;
+                                raw.select-all();
+                                raw.copy();
+                                root.copied = true;
                             }
-                            Btn {
-                                text: "Cancel";
-                                clicked => {
-                                    root.refocus = true;
-                                    root.pair-cancel();
-                                }
-                                revealed(y, h) => { root.reveal(y, h); }
-                            }
+                            revealed(y, h) => { root.reveal(y, h); }
                         }
                     }
-                    if root.pair-step == 2: Btn {
+                    // Always there, so Copy works with the details hidden.
+                    Rectangle {
+                        clip: true;
+                        height: root.show-details ? raw.preferred-height + 20px : 0px;
+                        border-radius: 8px;
+                        border-width: root.show-details ? 1px : 0px;
+                        border-color: Theme.line;
+                        background: Theme.surface;
+                        raw := TextInput {
+                            x: 10px;
+                            y: 10px;
+                            width: parent.width - 20px;
+                            text: root.details;
+                            read-only: true;
+                            // Hidden, it is not a stop for the keyboard or the screen reader.
+                            enabled: root.show-details;
+                            wrap: word-wrap;
+                            font-size: 13px * Theme.text-scale;
+                            color: Theme.text;
+                            accessible-label: "Error details";
+                        }
+                    }
+                }
+
+                if root.blocker == "" && root.pair-note != "" && root.pair-step == 0: Note { text: root.pair-note; }
+
+                if root.blocker == "" && root.pair-step == 0 && root.steps.length == 3: VerticalLayout {
+                    spacing: 8px;
+                    for step[i] in root.steps: StepCard {
+                        number: i + 1;
+                        step: step;
+                        current: i == root.current-step;
+                    }
+                }
+
+                if root.blocker == "" && root.locked && root.pair-step == 0: VerticalLayout {
+                    spacing: 12px;
+                    if root.show-speed: HorizontalLayout {
+                        spacing: 16px;
+                        alignment: center;
+                        // A fixed width, so a number changing does not move the other one.
+                        Text {
+                            text: "↑ " + root.speed-up;
+                            min-width: 130px * Theme.text-scale;
+                            font-size: 14px * Theme.text-scale;
+                            color: Theme.text;
+                            accessible-label: "Upload " + root.speed-up;
+                        }
+                        Text {
+                            text: "↓ " + root.speed-down;
+                            min-width: 130px * Theme.text-scale;
+                            font-size: 14px * Theme.text-scale;
+                            color: Theme.text;
+                            accessible-label: "Download " + root.speed-down;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        accessible-role: AccessibleRole.text;
+                        accessible-label: "Settings in use";
+                        for chip in root.chips: Chip { text: chip; }
+                    }
+                }
+
+                if root.blocker == "" && root.pair-step == 1: VerticalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: root.pair-text;
+                        wrap: word-wrap;
+                        font-size: 14px * Theme.text-scale;
+                        color: Theme.text;
+                    }
+                    Rectangle {
+                        min-height: 44px;
+                        border-radius: 8px;
+                        border-width: code.has-focus ? 2px : 1px;
+                        border-color: code.has-focus ? Theme.focus : Theme.line;
+                        background: Theme.surface;
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            code := TextInput {
+                                font-size: 18px * Theme.text-scale;
+                                color: Theme.text;
+                                input-type: InputType.number;
+                                single-line: true;
+                                vertical-alignment: center;
+                                accessible-label: "6-digit code from the phone";
+                                // The fingerprint is read with the field, which has the focus.
+                                accessible-description: root.pair-text;
+                                init => { self.focus(); }
+                                changed has-focus => {
+                                    if self.has-focus {
+                                        root.reveal(self.absolute-position.y, self.height);
+                                    }
+                                }
+                                accepted => {
+                                    if self.text.character-count == 6 {
+                                        root.refocus = true;
+                                        root.pair-submit(self.text);
+                                    }
+                                }
+                            }
+                        }
+                        if code.text == "": Text {
+                            x: 12px;
+                            text: "6-digit code";
+                            font-size: 16px * Theme.text-scale;
+                            color: Theme.muted;
+                            vertical-alignment: center;
+                            height: parent.height;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Btn {
+                            text: "Pair";
+                            primary: true;
+                            enabled: code.text.character-count == 6;
+                            description: code.text.character-count == 6 ? "" : "Type all 6 digits first.";
+                            clicked => {
+                                root.refocus = true;
+                                root.pair-submit(code.text);
+                            }
+                            revealed(y, h) => { root.reveal(y, h); }
+                        }
+                        Btn {
+                            text: "Cancel";
+                            clicked => {
+                                root.refocus = true;
+                                root.pair-cancel();
+                            }
+                            revealed(y, h) => { root.reveal(y, h); }
+                        }
+                    }
+                }
+                if root.blocker == "" && root.pair-step == 2: VerticalLayout {
+                    spacing: 8px;
+                    Btn {
                         text: "Done";
                         description: root.pair-note;
                         init => { self.take-focus(); }
@@ -784,6 +979,148 @@ export component AppWindow inherits Window {
                     }
                     if root.pair-note != "": Note { text: root.pair-note; }
                 }
+
+                if root.blocker == "" && root.pair-step == 0: OptionsRow {
+                    open: root.options-open;
+                    toggled => { root.options-open = !root.options-open; }
+                    revealed(y, h) => { root.reveal(y, h); }
+                }
+
+                if root.blocker == "" && root.pair-step == 0 && root.options-open: VerticalLayout {
+                    spacing: 16px;
+                    if root.locked: Note { text: "These stay as they are until you disconnect."; }
+
+                    VerticalLayout {
+                        spacing: 8px;
+                        Heading { text: "Phone"; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Choice {
+                                text: "USB";
+                                selected: !root.wifi;
+                                enabled: !root.locked;
+                                clicked => { root.set-wifi(false); }
+                                revealed(y, h) => { root.reveal(y, h); }
+                            }
+                            Choice {
+                                text: "WiFi";
+                                selected: root.wifi;
+                                enabled: !root.locked;
+                                clicked => { root.set-wifi(true); }
+                                revealed(y, h) => { root.reveal(y, h); }
+                            }
+                        }
+                        if !root.wifi: VerticalLayout {
+                            spacing: 8px;
+                            for item[i] in root.phones: Phone {
+                                phone: item;
+                                picked => { root.select-phone(i); }
+                                revealed(y, h) => { root.reveal(y, h); }
+                            }
+                            if root.phones-note != "": Note { text: root.phones-note; }
+                        }
+                        if root.wifi: VerticalLayout {
+                            spacing: 8px;
+                            Rectangle {
+                                min-height: 44px;
+                                clip: true;
+                                border-radius: 8px;
+                                border-width: addr.has-focus ? 2px : 1px;
+                                border-color: addr.has-focus ? Theme.focus : (root.wifi-error != "" ? Theme.primary : Theme.line);
+                                background: Theme.surface;
+                                HorizontalLayout {
+                                    padding-left: 12px;
+                                    padding-right: 12px;
+                                    addr := TextInput {
+                                        min-width: 0px;
+                                        text: root.wifi-addr;
+                                        font-size: 16px * Theme.text-scale;
+                                        color: Theme.text;
+                                        single-line: true;
+                                        vertical-alignment: center;
+                                        enabled: !root.locked;
+                                        accessible-label: "Phone address";
+                                        accessible-description: root.wifi-error != "" ? root.wifi-error : "Leave it empty to find the phone automatically. " + root.wifi-hint;
+                                        changed has-focus => {
+                                            if self.has-focus {
+                                                root.reveal(self.absolute-position.y, self.height);
+                                            }
+                                        }
+                                        edited => { root.set-wifi-addr(self.text); }
+                                    }
+                                }
+                                if addr.text == "": Text {
+                                    x: 12px;
+                                    text: "Find it automatically";
+                                    font-size: 16px * Theme.text-scale;
+                                    color: Theme.muted;
+                                    vertical-alignment: center;
+                                    height: parent.height;
+                                }
+                            }
+                            if root.wifi-error != "": Text {
+                                text: root.wifi-error;
+                                wrap: word-wrap;
+                                font-size: 13px * Theme.text-scale;
+                                font-weight: 600;
+                                color: Theme.text;
+                            }
+                            Note { text: root.wifi-hint; }
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 8px;
+                        Heading { text: "Share"; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Choice {
+                                text: "Full";
+                                selected: root.mode == 0;
+                                enabled: !root.locked;
+                                clicked => { root.set-mode(0); }
+                                revealed(y, h) => { root.reveal(y, h); }
+                            }
+                            Choice {
+                                text: "Proxy only";
+                                selected: root.mode == 1;
+                                enabled: !root.locked;
+                                clicked => { root.set-mode(1); }
+                                revealed(y, h) => { root.reveal(y, h); }
+                            }
+                        }
+                        Note {
+                            text: root.mode == 0
+                                ? "All traffic of this computer goes through the phone."
+                                : "A SOCKS5 proxy on 127.0.0.1:1080. Only programs set to use it go through the phone.";
+                        }
+                        Toggle {
+                            text: "Block traffic if the phone disconnects";
+                            enabled: root.mode == 0 && !root.locked;
+                            checked: root.kill-switch;
+                            toggled(on) => { root.set-kill-switch(on); }
+                            revealed(y, h) => { root.reveal(y, h); }
+                        }
+                        Toggle {
+                            text: "Connect when the phone is plugged in";
+                            checked: root.auto-connect;
+                            toggled(on) => { root.set-auto-connect(on); }
+                            revealed(y, h) => { root.reveal(y, h); }
+                        }
+                        Note { text: "USB only. It repeats your last USB connection."; }
+                    }
+
+                    VerticalLayout {
+                        spacing: 8px;
+                        Heading { text: "Pairing"; }
+                        Btn {
+                            text: "Pair a phone";
+                            enabled: root.pair-enabled;
+                            clicked => { root.pair-start(); }
+                            revealed(y, h) => { root.reveal(y, h); }
+                        }
+                    }
+                }
             }
         }
     }
@@ -792,6 +1129,8 @@ export component AppWindow inherits Window {
 export component Tray inherits SystemTrayIcon {
     in property <Kind> kind;
     in property <string> tip: "Kite";
+    // The state in words, the first line of the menu.
+    in property <string> status: "Kite";
     in property <string> toggle-label: "Connect";
     in property <bool> toggle-enabled: true;
     callback open();
@@ -807,6 +1146,11 @@ export component Tray inherits SystemTrayIcon {
     clicked => { root.open(); }
 
     Menu {
+        MenuItem {
+            title: root.status;
+            enabled: false;
+        }
+        MenuSeparator {}
         MenuItem {
             title: "Open Kite";
             activated => { root.open(); }
