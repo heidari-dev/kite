@@ -1,14 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    One column, centred: the kite, what it is doing, one primary button. The column is capped at
-    480dp and the whole thing scrolls, so large text, landscape and small phones never clip.
+    One column from the top: the kite, what it is doing, the steps. The main button is in a bar
+    below the scrolling part, so it stays where the thumb is and nothing hides under it. The column
+    is capped at 480dp, so large text, landscape and small phones never clip.
 -->
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:clipChildren="false"
-    android:fillViewport="true"
     android:fitsSystemWindows="true"
+    android:orientation="vertical">
+
+<ScrollView
+    android:layout_width="match_parent"
+    android:layout_height="0dp"
+    android:layout_weight="1"
+    android:clipChildren="false"
     android:overScrollMode="ifContentScrolls">
 
     <LinearLayout
@@ -60,23 +66,50 @@
             android:textSize="20sp" />
 
         <Button
-            android:id="@+id/toggle"
+            android:id="@+id/details_toggle"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:textAllCaps="false"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/error_details"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="32dp"
-            android:background="@drawable/bg_button_primary"
-            android:minHeight="56dp"
-            android:stateListAnimator="@null"
-            android:textAllCaps="false"
-            android:textColor="@color/kite_on_button"
-            android:textSize="18sp"
-            android:textStyle="bold" />
+            android:fontFamily="monospace"
+            android:textColor="@color/kite_text"
+            android:textIsSelectable="true"
+            android:textSize="14sp"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/steps"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <include
+                android:id="@+id/step1"
+                layout="@layout/item_step" />
+
+            <include
+                android:id="@+id/step2"
+                layout="@layout/item_step" />
+
+            <include
+                android:id="@+id/step3"
+                layout="@layout/item_step" />
+        </LinearLayout>
 
         <Button
             android:id="@+id/pair"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="16dp"
             android:background="@drawable/bg_button_outline"
             android:minHeight="56dp"
             android:stateListAnimator="@null"
@@ -117,7 +150,10 @@
             android:layout_marginTop="32dp"
             android:minHeight="56dp"
             android:saveEnabled="false"
+            android:showText="false"
             android:text="@string/wifi_title"
+            android:thumb="@drawable/switch_thumb"
+            android:track="@drawable/switch_track"
             android:textColor="@color/kite_text"
             android:textSize="18sp" />
 
@@ -150,3 +186,34 @@
             android:orientation="vertical" />
     </LinearLayout>
 </ScrollView>
+
+<FrameLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@color/kite_bg">
+
+    <LinearLayout
+        android:id="@+id/bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal"
+        android:orientation="vertical"
+        android:paddingBottom="16dp"
+        android:paddingEnd="24dp"
+        android:paddingStart="24dp"
+        android:paddingTop="8dp">
+
+        <Button
+            android:id="@+id/toggle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_button_primary"
+            android:minHeight="56dp"
+            android:stateListAnimator="@null"
+            android:textAllCaps="false"
+            android:textColor="@color/kite_on_button"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+</FrameLayout>
+</LinearLayout>

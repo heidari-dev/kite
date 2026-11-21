@@ -8,6 +8,9 @@
     <color name="kite_button">#E4572E</color>
     <color name="kite_on_button">#12161C</color>
     <color name="kite_error">#EF8A68</color>
+    <color name="kite_surface">#1B212A</color>
+    <color name="kite_line">#98A0AC</color>
+    <color name="kite_step_current">#2F1F1F</color>
     <color name="kite_ripple">#33000000</color>
     <color name="kite_ripple_outline">#33E4572E</color>
 </resources>

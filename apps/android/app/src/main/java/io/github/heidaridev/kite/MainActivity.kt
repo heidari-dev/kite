@@ -7,6 +7,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.graphics.Paint
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -35,6 +36,9 @@ class MainActivity : Activity() {
     private lateinit var speed: TextView
     private lateinit var toggle: Button
     private lateinit var pair: Button
+    private lateinit var steps: View
+    private lateinit var detailsToggle: Button
+    private lateinit var errorDetails: TextView
     private lateinit var pairing: TextView
     private lateinit var codeView: TextView
     private lateinit var wifi: Switch
@@ -45,6 +49,8 @@ class MainActivity : Activity() {
     private var asking: AlertDialog? = null
     private var asked: String? = null
     private var battery: AlertDialog? = null
+    private var removing: AlertDialog? = null
+    private var showDetails = false
     private var openedAt = 0L
     private var sawCode = false
 
@@ -79,6 +85,9 @@ class MainActivity : Activity() {
         speed = findViewById(R.id.speed)
         toggle = findViewById(R.id.toggle)
         pair = findViewById(R.id.pair)
+        steps = findViewById(R.id.steps)
+        detailsToggle = findViewById(R.id.details_toggle)
+        errorDetails = findViewById(R.id.error_details)
         pairing = findViewById(R.id.pairing)
         codeView = findViewById(R.id.code)
         wifi = findViewById(R.id.wifi)
@@ -95,6 +104,15 @@ class MainActivity : Activity() {
         toggle.setOnClickListener {
             if (RelayService.serving) stop() else start()
             handler.postDelayed({ show() }, 200)
+        }
+        detailsToggle.setOnClickListener {
+            showDetails = !showDetails
+            show()
+        }
+        findViewById<View>(R.id.step2).findViewById<TextView>(R.id.step_link).apply {
+            text = getString(R.string.developer_options)
+            paintFlags = paintFlags or Paint.UNDERLINE_TEXT_FLAG
+            setOnClickListener { openDeveloperOptions() }
         }
         pair.setOnClickListener {
             try {
@@ -114,7 +132,9 @@ class MainActivity : Activity() {
         val dp = metrics.density
         val column = minOf(metrics.widthPixels, (480 * dp).toInt())
         findViewById<View>(R.id.content).layoutParams.width = column
-        val side = minOf(column - (48 * dp).toInt(), (metrics.heightPixels * 0.38f).toInt(), (300 * dp).toInt())
+        findViewById<View>(R.id.bar).layoutParams.width = column
+        // The steps and the buttons need the room; a small phone gets a small kite.
+        val side = minOf(column - (48 * dp).toInt(), (metrics.heightPixels * 0.26f).toInt(), (200 * dp).toInt())
         kite.layoutParams.width = side
         kite.layoutParams.height = side
     }
@@ -140,6 +160,7 @@ class MainActivity : Activity() {
         // The request stays pending on the phone; it is asked again when the app is back.
         asking?.dismiss()
         battery?.dismiss()
+        removing?.dismiss()
         super.onPause()
     }
 
@@ -190,6 +211,35 @@ class MainActivity : Activity() {
             .setNegativeButton(R.string.not_now) { _, _ -> answered() }
             .setOnDismissListener { battery = null }
             .show()
+    }
+
+    private fun openDeveloperOptions() {
+        try {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
+        } catch (e: ActivityNotFoundException) {
+            // Hidden until Developer options is turned on, and missing on some builds.
+            try {
+                startActivity(Intent(Settings.ACTION_SETTINGS))
+            } catch (_: ActivityNotFoundException) {
+                // No settings screen to open.
+            }
+        }
+    }
+
+    /** Removing a computer means pairing it again, so the user is asked first. */
+    private fun confirmRemove(key: ByteArray, name: String) {
+        removing?.dismiss()
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(getString(R.string.remove_title, name))
+            .setMessage(R.string.remove_message)
+            .setPositiveButton(R.string.remove) { _, _ -> RelayService.removePeer(this, key) }
+            .setNegativeButton(R.string.cancel, null)
+            .setOnDismissListener { removing = null }
+            .create()
+        // A dialog is its own window, so the activity's FLAG_SECURE does not cover it.
+        dialog.window?.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+        dialog.show()
+        removing = dialog
     }
 
     /** A computer that reached the phone asks to pair; only the user's yes lets it go on. */
@@ -256,16 +306,23 @@ class MainActivity : Activity() {
                 else -> getString(R.string.status_waiting)
             },
         )
+        // The words of the failure are for a bug report: one plain sentence first, the rest on request.
+        if (error == null) showDetails = false
         detail.update(
             when {
-                error != null -> error
+                error != null -> getString(R.string.error_plain)
                 stats == null -> if (serving) "" else getString(R.string.hint_stopped)
-                tunnels == 0 -> getString(R.string.hint_waiting)
                 else -> ""
             },
         )
+        detailsToggle.update(if (error == null) "" else getString(if (showDetails) R.string.hide_details else R.string.show_details))
+        errorDetails.update(if (showDetails) error ?: "" else "")
+
         speed.update(if (tunnels > 0) getString(R.string.speeds, rate(down), rate(up)) else "")
-        toggle.update(getString(if (serving) R.string.stop else R.string.start))
+        toggle.update(getString(if (error != null) R.string.try_again else if (serving) R.string.stop else R.string.start))
+        // Filled is the next step; stopping is not one, so it is an outline.
+        toggle.look(filled = !serving)
+        pair.look(filled = RelayService.paired.isEmpty())
         pair.visibility = if (stats == null) View.GONE else View.VISIBLE
 
         // The hint lasts as long as the relay keeps pairing open, or until the code has come and gone.
@@ -279,6 +336,10 @@ class MainActivity : Activity() {
                 else -> ""
             },
         )
+        // While a pairing is open its hint and code are the point; the steps make room.
+        val guide = error == null && tunnels == 0 && code == null && !open
+        steps.visibility = if (guide) View.VISIBLE else View.GONE
+        if (guide) showSteps(serving, RelayService.paired.isNotEmpty())
         val wifiError = WifiShare.error
         val wifiUp = WifiShare.listening
         wifiLine.update(
@@ -294,6 +355,45 @@ class MainActivity : Activity() {
         codeView.update(code?.chunked(3)?.joinToString(" ") ?: "")
         // A screen reader would read "123 456" as two numbers.
         codeView.contentDescription = code?.toList()?.joinToString(" ")
+    }
+
+    /** The first-run card: the step to do now is marked, a finished one has a tick. */
+    private fun showSteps(serving: Boolean, hasComputer: Boolean) {
+        val now = if (serving) 1 else 0
+        step(R.id.step1, 0, now, serving, R.string.step_start, getString(R.string.step_start_text))
+        step(R.id.step2, 1, now, false, R.string.step_plug, getString(R.string.step_plug_text))
+        step(
+            R.id.step3, 2, now, false, R.string.step_open,
+            getString(if (hasComputer) R.string.step_open_paired else R.string.step_open_text),
+        )
+        // Only the step to do now has the link: it is of no use before the phone is sharing.
+        findViewById<View>(R.id.step2).findViewById<TextView>(R.id.step_link).visibility =
+            if (now == 1) View.VISIBLE else View.GONE
+    }
+
+    private fun step(id: Int, index: Int, now: Int, done: Boolean, title: Int, text: String) {
+        val row = findViewById<View>(id)
+        val current = index == now
+        val name = getString(title)
+        row.findViewById<TextView>(R.id.step_title).update(name)
+        row.findViewById<TextView>(R.id.step_text).update(text)
+        row.findViewById<TextView>(R.id.marker).apply {
+            update(if (done) "\u2713" else (index + 1).toString())
+            setBackgroundResource(if (done) R.drawable.bg_marker_done else if (current) R.drawable.bg_marker_current else R.drawable.bg_marker)
+            setTextColor(getColor(if (done) R.color.kite_bg else R.color.kite_text))
+        }
+        row.setBackgroundResource(if (current) R.drawable.bg_step_current else R.drawable.bg_step)
+        val description = getString(R.string.step_description, index + 1, name, text) +
+            (if (done) " " + getString(R.string.step_done) else if (current) " " + getString(R.string.step_current) else "")
+        if (row.contentDescription?.toString() != description) row.contentDescription = description
+    }
+
+    /** Filled for the next step, an outline otherwise; set only when it changes, which keeps the ripple. */
+    private fun Button.look(filled: Boolean) {
+        if (tag == filled) return
+        tag = filled
+        setBackgroundResource(if (filled) R.drawable.bg_button_primary else R.drawable.bg_button_outline)
+        setTextColor(getColor(if (filled) R.color.kite_on_button else R.color.kite_button))
     }
 
     /** Bytes per second since the last look, from the relay's counters. */
@@ -336,7 +436,7 @@ class MainActivity : Activity() {
             row.findViewById<TextView>(R.id.name).text = name
             row.findViewById<Button>(R.id.remove).apply {
                 contentDescription = getString(R.string.remove_computer, name)
-                setOnClickListener { RelayService.removePeer(this@MainActivity, key) }
+                setOnClickListener { confirmRemove(key, name) }
             }
             computers.addView(row)
         }
