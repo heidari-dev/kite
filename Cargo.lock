@@ -2978,7 +2978,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kite-cli"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 dependencies = [
  "kite-ipc",
  "kite-link",
@@ -2996,7 +2996,7 @@ dependencies = [
 
 [[package]]
 name = "kite-desktop"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 dependencies = [
  "kite-ipc",
  "kite-win",
@@ -3009,7 +3009,7 @@ dependencies = [
 
 [[package]]
 name = "kite-ffi"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 dependencies = [
  "kite-relay",
  "tokio",
@@ -3018,7 +3018,7 @@ dependencies = [
 
 [[package]]
 name = "kite-ipc"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -3027,7 +3027,7 @@ dependencies = [
 
 [[package]]
 name = "kite-link"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 dependencies = [
  "base64ct",
  "getrandom 0.4.3",
@@ -3042,7 +3042,7 @@ dependencies = [
 
 [[package]]
 name = "kite-relay"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 dependencies = [
  "snow",
  "socket2",
@@ -3055,7 +3055,7 @@ dependencies = [
 
 [[package]]
 name = "kite-win"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 dependencies = [
  "tokio",
  "windows-service",
