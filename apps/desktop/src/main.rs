@@ -32,7 +32,7 @@ use worker::{format_rate, Cmd, Icon, Pair, View};
 mod ui {
     slint::include_modules!();
 }
-use ui::{AppWindow, Kind, KiteFrame, PhoneRow, Theme, Tray};
+use ui::{AppWindow, Kind, KiteFrame, PhoneRow, SetupStep, Theme, Tray};
 
 /// What the UI thread knows between events.
 struct State {
@@ -45,6 +45,9 @@ struct State {
     view: View,
     /// The rows in the window; kept, so a redraw does not replace the rows under a click.
     phones: Rc<VecModel<PhoneRow>>,
+    /// The setup steps and the chips of a running link, kept for the same reason.
+    steps: Rc<VecModel<SetupStep>>,
+    chips: Rc<VecModel<SharedString>>,
     kite: Kite,
     /// The window is open; the kite only gets frames then.
     open: bool,
@@ -205,6 +208,20 @@ fn system_prefs() -> (bool, f32) {
     (reduced, scale)
 }
 
+/// Puts `rows` in the model, touching only the rows that differ: a redraw must not replace the
+/// rows under a click or restart what a row animates.
+fn sync<T: Clone + PartialEq + 'static>(model: &VecModel<T>, rows: Vec<T>) {
+    if rows.len() != model.row_count() {
+        model.set_vec(rows);
+        return;
+    }
+    for (i, row) in rows.into_iter().enumerate() {
+        if model.row_data(i).as_ref() != Some(&row) {
+            model.set_row_data(i, row);
+        }
+    }
+}
+
 fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
     STATE.with_borrow_mut(|s| f(s.as_mut().expect("state is set before the loop starts")))
 }
@@ -223,6 +240,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let reduced = std::env::args().any(|a| a == "--reduced-motion");
     let settings_path = Settings::path();
     let phones = Rc::new(VecModel::default());
+    let steps = Rc::new(VecModel::default());
+    let chips = Rc::new(VecModel::default());
     let settings = settings_path
         .as_deref()
         .map(Settings::load)
@@ -234,6 +253,8 @@ fn main() -> Result<(), slint::PlatformError> {
         picked: None,
         view: View::default(),
         phones: phones.clone(),
+        steps: steps.clone(),
+        chips: chips.clone(),
         kite: Kite::new(),
         open: false,
         last: Instant::now(),
@@ -243,6 +264,8 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let ui = AppWindow::new()?;
     ui.set_phones(ModelRc::from(phones));
+    ui.set_steps(ModelRc::from(steps));
+    ui.set_chips(ModelRc::from(chips));
     let tray = Tray::new()?;
     let (cmds, rx) = unbounded_channel();
     let visible = Arc::new(AtomicBool::new(false));
@@ -496,6 +519,8 @@ fn render(ui: &AppWindow, tray: &Tray) {
         let v = &s.view;
         let phone = picked(s);
         let card = present::card(v, s.settings.mode, link(s, true));
+        let wifi_error = wifi_addr(s, true).err().unwrap_or_default();
+        let setup = present::setup(v, link(s, true), phone, wifi_error);
         let kind = match card.icon {
             Icon::Disconnected => Kind::Disconnected,
             Icon::Connecting => Kind::Connecting,
@@ -504,10 +529,35 @@ fn render(ui: &AppWindow, tray: &Tray) {
         };
         ui.set_blocker(v.unreachable.clone().unwrap_or_default().into());
         ui.set_kind(kind);
-        ui.set_headline(card.headline.into());
-        ui.set_detail(card.detail.clone().into());
-        ui.set_action_label(card.label.into());
-        ui.set_action_enabled(card.enabled);
+        // First run: the card says "Set up Kite", and once the phone is there the main button pairs.
+        let guide = setup.as_ref().filter(|_| card.icon != Icon::Error);
+        let pair_next = setup.as_ref().is_some_and(|su| su.pair_next);
+        ui.set_headline(guide.map_or(card.headline, |_| "Set up Kite").into());
+        ui.set_detail(guide.map_or(card.detail.as_str(), |su| su.detail()).into());
+        ui.set_details(card.details.clone().into());
+        ui.set_main_pair(pair_next);
+        ui.set_action_label(
+            if pair_next {
+                "Pair a phone"
+            } else {
+                card.label
+            }
+            .into(),
+        );
+        ui.set_action_enabled(card.enabled || pair_next);
+        ui.set_current_step(setup.as_ref().map_or(0, |su| su.current() as i32));
+        sync(
+            &s.steps,
+            setup
+                .iter()
+                .flat_map(|su| &su.steps)
+                .map(|st| SetupStep {
+                    title: st.title.into(),
+                    text: st.text.as_str().into(),
+                    done: st.done,
+                })
+                .collect(),
+        );
         let rows: Vec<PhoneRow> = v
             .devices
             .iter()
@@ -518,14 +568,7 @@ fn render(ui: &AppWindow, tray: &Tray) {
                 selected: phone == Some(d.serial.as_str()),
             })
             .collect();
-        let same = rows.len() == s.phones.row_count()
-            && rows
-                .iter()
-                .enumerate()
-                .all(|(i, r)| s.phones.row_data(i).as_ref() == Some(r));
-        if !same {
-            s.phones.set_vec(rows);
-        }
+        sync(&s.phones, rows);
         ui.set_phones_note(present::phones_note(v).into());
         // While a tunnel runs the choices cannot change it, so the window shows what the daemon
         // runs, which may have been started from the command line.
@@ -537,6 +580,15 @@ fn render(ui: &AppWindow, tray: &Tray) {
         ui.set_kill_switch(kill_switch);
         ui.set_auto_connect(v.status.as_ref().is_some_and(|st| st.auto_connect));
         ui.set_show_speed(card.icon == Icon::Connected);
+        ui.set_summary_name(present::link_name(v, phone).into());
+        ui.set_summary_meta(present::link_meta(v).into());
+        sync(
+            &s.chips,
+            present::chips(v, mode, kill_switch)
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        );
         ui.set_speed_up(format_rate(v.up).into());
         ui.set_speed_down(format_rate(v.down).into());
         let (step, fingerprint, note) = match &v.pair {
@@ -557,7 +609,7 @@ fn render(ui: &AppWindow, tray: &Tray) {
         ui.set_pair_enabled(link(s, false).ready());
         ui.set_wifi(s.settings.wifi);
         ui.set_wifi_addr(s.wifi_text.clone().into());
-        ui.set_wifi_error(wifi_addr(s, true).err().unwrap_or_default().into());
+        ui.set_wifi_error(wifi_error.into());
 
         tray.set_kind(kind);
         let tip = if v.unreachable.is_some() {
@@ -574,6 +626,9 @@ fn render(ui: &AppWindow, tray: &Tray) {
             .into(),
         );
         tray.set_toggle_enabled(card.enabled);
+        // The speed is only polled while the window is open.
+        let rate = (s.open && card.icon == Icon::Connected).then(|| v.up.saturating_add(v.down));
+        tray.set_status(present::tray_line(v, link(s, true), rate).into());
 
         s.kite.show(present::kite_state(v));
         if card.icon == Icon::Connected {
