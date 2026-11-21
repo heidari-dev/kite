@@ -13,6 +13,8 @@ mod kite;
 mod launch;
 mod present;
 mod settings;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod terminal;
 mod worker;
 
 use kite::Kite;
@@ -56,7 +58,8 @@ struct State {
     last: Instant,
     /// `--reduced-motion`: the reduced variant whatever the system says.
     reduced: bool,
-    /// Windows: what the window says about the elevated pairing it started, and since when.
+    /// Windows and Linux: what the window says about pairing outside the app (the elevated window,
+    /// the command to run in a terminal), and since when.
     pair_note: Option<(String, Instant)>,
 }
 
@@ -68,6 +71,13 @@ thread_local! {
 }
 
 /// 30 frames a second is all the kite's loops need.
+/// The pairing button: on Linux it copies the command to run, as the daemon refuses the app.
+const PAIR_LABEL: &str = if cfg!(target_os = "linux") {
+    "Copy the pairing command"
+} else {
+    "Pair a phone"
+};
+
 const FRAME: Duration = Duration::from_millis(33);
 
 /// The kite's frames go to the window only while it is open and something moves; at rest and
@@ -267,6 +277,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }));
 
     let ui = AppWindow::new()?;
+    ui.set_pair_label(PAIR_LABEL.into());
     ui.set_phones(ModelRc::from(phones));
     ui.set_steps(ModelRc::from(steps));
     ui.set_chips(ModelRc::from(chips));
@@ -465,7 +476,20 @@ fn wire(ui: &AppWindow, tray: &Tray, cmds: &UnboundedSender<Cmd>, visible: &Arc<
                 r();
                 let _ = &c;
             }
-            #[cfg(not(windows))]
+            // The daemon lets only root and its own user pair, so on Linux the window shows the
+            // command to run in a terminal and copies it.
+            #[cfg(target_os = "linux")]
+            {
+                let note = match terminal::command(&transport) {
+                    Some(cmd) if terminal::copy(&cmd) => format!("Copied. {}", terminal_note(&cmd)),
+                    Some(cmd) => terminal_note(&cmd),
+                    None => "The phone's address has characters that cannot be passed on.".into(),
+                };
+                with_state(|s| s.pair_note = Some((note, Instant::now())));
+                r();
+                let _ = &c;
+            }
+            #[cfg(not(any(windows, target_os = "linux")))]
             {
                 let _ = &r;
                 let _ = c.send(Cmd::PairStart { transport });
@@ -484,6 +508,11 @@ fn wire(ui: &AppWindow, tray: &Tray, cmds: &UnboundedSender<Cmd>, visible: &Arc<
     ui.on_pair_cancel(move || {
         let _ = c.send(Cmd::PairCancel);
     });
+}
+
+#[cfg(target_os = "linux")]
+fn terminal_note(cmd: &str) -> String {
+    format!("Pairing needs a terminal. Run this, then type the 6-digit code the phone shows: {cmd}")
 }
 
 fn picked(s: &State) -> Option<&str> {
@@ -570,14 +599,7 @@ fn render(ui: &AppWindow, tray: &Tray) {
         ui.set_detail(guide.map_or(card.detail.as_str(), |su| su.detail()).into());
         ui.set_details(card.details.clone().into());
         ui.set_main_pair(pair_next);
-        ui.set_action_label(
-            if pair_next {
-                "Pair a phone"
-            } else {
-                card.label
-            }
-            .into(),
-        );
+        ui.set_action_label(if pair_next { PAIR_LABEL } else { card.label }.into());
         ui.set_action_enabled(card.enabled || pair_next);
         ui.set_current_step(setup.as_ref().map_or(0, |su| su.current() as i32));
         sync(
@@ -635,6 +657,12 @@ fn render(ui: &AppWindow, tray: &Tray) {
             Some((text, at)) if at.elapsed() < Duration::from_secs(300) && step == 0 => {
                 text.clone()
             }
+            _ => note,
+        };
+        // On Linux the window always says what to run, until the pairing has started some other way.
+        #[cfg(target_os = "linux")]
+        let note = match transport(s, false).as_ref().and_then(terminal::command) {
+            Some(cmd) if step == 0 && note.is_empty() => terminal_note(&cmd),
             _ => note,
         };
         ui.set_pair_step(step);
