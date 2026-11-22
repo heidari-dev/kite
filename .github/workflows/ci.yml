@@ -159,6 +159,8 @@ jobs:
         with:
           persist-credentials: false
       - run: command -v dig capsh || sudo apt-get install -y --no-install-recommends bind9-dnsutils libcap2-bin
+      # The second VPN in the test: WireGuard by wg-quick, with an nftables kill switch.
+      - run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends wireguard-tools nftables
       - run: cargo build --release -p kite-cli
       - run: cargo build --release -p kite-relay --example relay-dev
       - run: ls -l target/release/kite

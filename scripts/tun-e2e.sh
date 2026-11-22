@@ -9,8 +9,12 @@
 # relay when the pc sent nothing but the relay connection, the phone forwarded nothing, and the
 # phone's own sockets carried the connections.
 #
+# A second VPN on top of the tunnel is WireGuard set up by wg-quick in the pc, with its server on
+# the Internet side: its own packets must go through the tunnel and the phone, its tunnel must carry
+# the pc's traffic, and its kill switch (nftables) must keep blocking with kite running.
+#
 # Usage: sudo bash scripts/tun-e2e.sh path/to/kite path/to/relay-dev
-# Needs: iproute2, iptables, capsh, curl, dig, python3.
+# Needs: iproute2, iptables, nft, capsh, curl, dig, python3, wg and wg-quick.
 set -euo pipefail
 
 PC=kite-pc
@@ -18,6 +22,7 @@ PHONE=kite-phone
 RELAY=10.200.0.1:7000
 HOST_IP=10.201.0.1
 UDP_ECHO=$HOST_IP:9999
+WG_CONF=/etc/wireguard/kitewg0.conf
 BIN=$(mktemp -d)
 ROOT=$(pwd)
 chmod 755 "$BIN"
@@ -36,6 +41,8 @@ cleanup() {
   for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null; done
   ip netns del "$PC" 2>/dev/null
   ip netns del "$PHONE" 2>/dev/null
+  ip link del wg-srv 2>/dev/null
+  rm -f "$WG_CONF"
   iptables -t nat -D POSTROUTING -s 10.201.0.0/24 -j MASQUERADE 2>/dev/null
   iptables -D FORWARD -s 10.201.0.0/24 -j ACCEPT 2>/dev/null
   iptables -D FORWARD -d 10.201.0.0/24 -j ACCEPT 2>/dev/null
@@ -131,6 +138,7 @@ phone iptables -A FORWARD -i veth-down -j LOG --log-prefix "kite-leak forwarded:
 phone iptables -A OUTPUT -o veth-up -p tcp --dport 443
 phone iptables -A OUTPUT -o veth-up -p tcp --dport 53
 phone iptables -A OUTPUT -o veth-up -p udp -d "$HOST_IP" --dport 9999
+phone iptables -A OUTPUT -o veth-up -p udp -d "$HOST_IP" --dport 51820
 # Packet count of rule number $4 in chain $3 of table command $2, run through $1.
 counter() { "$1" "$2" -L "$3" -v -n -x | awk -v n="$4" 'NR == n + 2 {print $1}'; }
 leaks() {
@@ -138,9 +146,9 @@ leaks() {
 }
 check_leaks() { [ "$(leaks)" = 0 ] || fail "$(leaks) packets left outside the tunnel ($1)"; }
 
-# Another program's rule at kite's priority (Tailscale-style) must survive every kite exit path.
-pc ip rule add pref 5300 lookup 52
-foreign_rule() { pc ip rule | grep -q "^5300:.*lookup 52"; }
+# Another program's rule at kite's priority must survive every kite exit path.
+pc ip rule add pref 32760 lookup 52
+foreign_rule() { pc ip rule | grep -q "^32760:.*lookup 52"; }
 
 phone "$BIN/relay-dev" "$RELAY" > "$BIN/relay.log" 2>&1 &
 pids+=($!)
@@ -182,6 +190,9 @@ done
 "${as_nobody[@]}" -c "exec $BIN/kite restore" 2>/dev/null && fail "kite restore ran while kite was up"
 pc ip rule | grep -q "not from all fwmark" || fail "kite restore removed live rules"
 echo "kite idle RSS: $(rss "$kite_pid")"
+# The rules come right before the main table's, and the default route has a gateway on kite0's /30.
+pc ip rule | grep -q "^32763:.*not from all fwmark 0x14b4 lookup 5300" || { pc ip rule >&2; fail "kite's rules are not at 32760 to 32763"; }
+pc ip route show table 5300 | grep -q "^default via 198.18.0.2 dev kite0" || { pc ip route show table 5300 >&2; fail "no default route through 198.18.0.2"; }
 
 echo "== TCP through the tunnel"
 pc curl -sS --max-time 20 https://1.1.1.1/cdn-cgi/trace | grep -q '^ip=' || fail "curl by address"
@@ -239,8 +250,14 @@ if pc ip link show kite0 2>/dev/null; then fail "kite0 survived SIGKILL"; fi
 pc ip rule | grep -q "lookup 5300" || fail "expected leftover rules after SIGKILL"
 pc curl -sS --max-time 15 -o /dev/null https://1.1.1.1/ || fail "direct path broken after SIGKILL"
 pc dig +short +time=5 +tries=1 @1.1.1.1 example.com A > /dev/null || fail "DNS broken after SIGKILL"
+# What a killed 0.1.0-rc.2 left: the same rules at 5300 to 5303.
+pc ip rule add pref 5300 ipproto udp dport 53 lookup 5300
+pc ip rule add pref 5301 ipproto tcp dport 53 lookup 5300
+pc ip rule add pref 5302 lookup main suppress_prefixlength 0
+pc ip rule add pref 5303 not fwmark 5300 lookup 5300
 "${as_nobody[@]}" -c "exec $BIN/kite restore" || fail "kite restore"
 if pc ip rule | grep -q "lookup 5300"; then fail "rules left after kite restore"; fi
+if pc ip rule | grep -q "^530[0-3]:"; then fail "rules of an earlier version left after kite restore"; fi
 foreign_rule || fail "kite restore removed another program's rule"
 
 echo "== kill switch: the link drops mid-download"
@@ -304,6 +321,104 @@ check_leaks "kill switch, kite killed"
 "${as_nobody[@]}" -c "exec $BIN/kite restore" || fail "kite restore"
 pc curl -sS --max-time 15 -o /dev/null https://1.1.1.1/ || fail "direct path broken after kite restore"
 foreign_rule || fail "kite restore removed another program's rule"
+
+echo "== a second VPN on top: WireGuard, set up by wg-quick"
+command -v wg-quick > /dev/null || fail "wg-quick is missing"
+srv_key=$(wg genkey)
+cli_key=$(wg genkey)
+# The server, on the Internet side.
+ip link add wg-srv type wireguard
+wg set wg-srv listen-port 51820 private-key <(echo "$srv_key") peer "$(echo "$cli_key" | wg pubkey)" allowed-ips 10.99.0.2/32
+ip addr add 10.99.0.1/24 dev wg-srv
+ip link set wg-srv up
+# A web server inside the VPN that says which address the request came from.
+python3 - <<'PY' &
+import http.server
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = self.client_address[0].encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *a):
+        pass
+http.server.ThreadingHTTPServer(("10.99.0.1", 8080), H).serve_forever()
+PY
+pids+=($!)
+for _ in $(seq 25); do curl -s -o /dev/null http://10.99.0.1:8080/ && break; sleep 0.2; done
+# wg-quick reads its configuration only from /etc/wireguard under Ubuntu's AppArmor profile; the
+# name is the interface's, and one of its own.
+install -d -m 700 /etc/wireguard
+cat > "$WG_CONF" <<CONF
+[Interface]
+PrivateKey = $cli_key
+Address = 10.99.0.2/32
+
+[Peer]
+PublicKey = $(echo "$srv_key" | wg pubkey)
+Endpoint = $HOST_IP:51820
+AllowedIPs = 0.0.0.0/0
+CONF
+chmod 600 "$WG_CONF"
+# Its kill switch, the way VPN apps do it with "allow LAN" on (the phone is on the LAN): nothing but
+# the VPN's own packets leaves except through kitewg0.
+vpn_kill_switch() {
+  pc nft -f - <<'NFT'
+table inet vpn2 {
+  chain out {
+    type filter hook output priority 0; policy accept;
+    oifname "lo" accept
+    meta mark 51820 accept
+    oifname "kitewg0" accept
+    ip daddr 10.200.0.0/24 accept
+    reject
+  }
+}
+NFT
+}
+vpn_get() { pc curl -sS --max-time "${1:-20}" http://10.99.0.1:8080/ 2>/dev/null; }
+start_kite --kill-switch
+pc wg-quick up "$WG_CONF" > "$BIN/wg.log" 2>&1 || { cat "$BIN/wg.log" >&2; fail "wg-quick up"; }
+pc iptables -Z OUTPUT
+pc ip6tables -Z OUTPUT
+phone iptables -Z
+# wg-quick's rules come before kite's; its own packets (mark 51820) fall through to kite's.
+wg_pref=$(pc ip rule | awk -F: '/lookup 51820/ {print $1; exit}')
+[ "$wg_pref" -lt 32760 ] || { pc ip rule >&2; fail "wg-quick's rules are not before kite's"; }
+pc ip route get "$HOST_IP" mark 51820 | grep -q "dev kite0" || fail "the VPN's own packets would not go through the tunnel"
+[ "$(vpn_get)" = 10.99.0.2 ] || fail "the pc's traffic does not leave with the VPN's address"
+[ "$(counter phone iptables OUTPUT 4)" -gt 0 ] || fail "the relay did not carry the VPN's packets"
+check_leaks "second VPN"
+vpn_kill_switch
+[ "$(vpn_get)" = 10.99.0.2 ] || fail "the VPN does not work with its kill switch on"
+echo "kite RSS with a second VPN on top: $(rss "$kite_pid")"
+# The VPN drops with its kill switch on: kite must not let anything past that block.
+pc ip link del kitewg0
+pc curl -sS --max-time 5 -o /dev/null https://1.1.1.1/ 2>/dev/null && fail "traffic got past the VPN's kill switch through kite"
+pc dig +short +time=3 +tries=1 @9.9.9.9 example.com A > /dev/null && fail "DNS got past the VPN's kill switch through kite"
+pc nft delete table inet vpn2
+pc curl -sS --max-time 20 -o /dev/null https://1.1.1.1/ || fail "the tunnel does not carry traffic again without the VPN"
+# wg-quick cannot take down what it no longer finds: its two rules and its own nftables table.
+pc ip rule del pref "$wg_pref"
+pc ip rule del pref "$((wg_pref - 1))"
+pc nft delete table ip wg-quick-kitewg0 2> /dev/null || true
+# kite dies while the VPN is up: with kite's kill switch the VPN's packets must not leave by
+# themselves.
+pc wg-quick up "$WG_CONF" > "$BIN/wg.log" 2>&1 || { cat "$BIN/wg.log" >&2; fail "wg-quick up again"; }
+[ "$(vpn_get)" = 10.99.0.2 ] || fail "the VPN does not come back"
+pc iptables -Z OUTPUT
+pc ip6tables -Z OUTPUT
+phone iptables -Z
+kill -9 "$kite_pid"
+wait "$kite_pid" 2>/dev/null || true
+kite_pid=
+[ -n "$(vpn_get 8)" ] && fail "the VPN went around the phone after kite was killed"
+check_leaks "kite killed under a second VPN"
+pc wg-quick down "$WG_CONF" > /dev/null 2>&1 || true
+"${as_nobody[@]}" -c "exec $BIN/kite restore" || fail "kite restore after the second VPN"
+ip link del wg-srv
+pc curl -sS --max-time 15 -o /dev/null https://1.1.1.1/ || fail "direct path broken after the second VPN"
 
 echo "== the daemon"
 # A second phone: relay-dev pairs the first computer it meets, and the first one was kite above.
