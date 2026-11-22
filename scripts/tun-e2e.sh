@@ -22,6 +22,7 @@ PHONE=kite-phone
 RELAY=10.200.0.1:7000
 HOST_IP=10.201.0.1
 UDP_ECHO=$HOST_IP:9999
+WG_CONF=/etc/wireguard/kitewg0.conf
 BIN=$(mktemp -d)
 ROOT=$(pwd)
 chmod 755 "$BIN"
@@ -41,6 +42,7 @@ cleanup() {
   ip netns del "$PC" 2>/dev/null
   ip netns del "$PHONE" 2>/dev/null
   ip link del wg-srv 2>/dev/null
+  rm -f "$WG_CONF"
   iptables -t nat -D POSTROUTING -s 10.201.0.0/24 -j MASQUERADE 2>/dev/null
   iptables -D FORWARD -s 10.201.0.0/24 -j ACCEPT 2>/dev/null
   iptables -D FORWARD -d 10.201.0.0/24 -j ACCEPT 2>/dev/null
@@ -345,8 +347,10 @@ http.server.ThreadingHTTPServer(("10.99.0.1", 8080), H).serve_forever()
 PY
 pids+=($!)
 for _ in $(seq 25); do curl -s -o /dev/null http://10.99.0.1:8080/ && break; sleep 0.2; done
-install -d -m 700 "$BIN/wg"
-cat > "$BIN/wg/wg0.conf" <<CONF
+# wg-quick reads its configuration only from /etc/wireguard under Ubuntu's AppArmor profile; the
+# name is the interface's, and one of its own.
+install -d -m 700 /etc/wireguard
+cat > "$WG_CONF" <<CONF
 [Interface]
 PrivateKey = $cli_key
 Address = 10.99.0.2/32
@@ -356,9 +360,9 @@ PublicKey = $(echo "$srv_key" | wg pubkey)
 Endpoint = $HOST_IP:51820
 AllowedIPs = 0.0.0.0/0
 CONF
-chmod 600 "$BIN/wg/wg0.conf"
+chmod 600 "$WG_CONF"
 # Its kill switch, the way VPN apps do it with "allow LAN" on (the phone is on the LAN): nothing but
-# the VPN's own packets leaves except through wg0.
+# the VPN's own packets leaves except through kitewg0.
 vpn_kill_switch() {
   pc nft -f - <<'NFT'
 table inet vpn2 {
@@ -366,7 +370,7 @@ table inet vpn2 {
     type filter hook output priority 0; policy accept;
     oifname "lo" accept
     meta mark 51820 accept
-    oifname "wg0" accept
+    oifname "kitewg0" accept
     ip daddr 10.200.0.0/24 accept
     reject
   }
@@ -375,7 +379,7 @@ NFT
 }
 vpn_get() { pc curl -sS --max-time "${1:-20}" http://10.99.0.1:8080/ 2>/dev/null; }
 start_kite --kill-switch
-pc wg-quick up "$BIN/wg/wg0.conf" > "$BIN/wg.log" 2>&1 || { cat "$BIN/wg.log" >&2; fail "wg-quick up"; }
+pc wg-quick up "$WG_CONF" > "$BIN/wg.log" 2>&1 || { cat "$BIN/wg.log" >&2; fail "wg-quick up"; }
 pc iptables -Z OUTPUT
 pc ip6tables -Z OUTPUT
 phone iptables -Z
@@ -390,7 +394,7 @@ vpn_kill_switch
 [ "$(vpn_get)" = 10.99.0.2 ] || fail "the VPN does not work with its kill switch on"
 echo "kite RSS with a second VPN on top: $(rss "$kite_pid")"
 # The VPN drops with its kill switch on: kite must not let anything past that block.
-pc ip link del wg0
+pc ip link del kitewg0
 pc curl -sS --max-time 5 -o /dev/null https://1.1.1.1/ 2>/dev/null && fail "traffic got past the VPN's kill switch through kite"
 pc dig +short +time=3 +tries=1 @9.9.9.9 example.com A > /dev/null && fail "DNS got past the VPN's kill switch through kite"
 pc nft delete table inet vpn2
@@ -398,10 +402,10 @@ pc curl -sS --max-time 20 -o /dev/null https://1.1.1.1/ || fail "the tunnel does
 # wg-quick cannot take down what it no longer finds: its two rules and its own nftables table.
 pc ip rule del pref "$wg_pref"
 pc ip rule del pref "$((wg_pref - 1))"
-pc nft delete table ip wg-quick-wg0 2> /dev/null || true
+pc nft delete table ip wg-quick-kitewg0 2> /dev/null || true
 # kite dies while the VPN is up: with kite's kill switch the VPN's packets must not leave by
 # themselves.
-pc wg-quick up "$BIN/wg/wg0.conf" > "$BIN/wg.log" 2>&1 || { cat "$BIN/wg.log" >&2; fail "wg-quick up again"; }
+pc wg-quick up "$WG_CONF" > "$BIN/wg.log" 2>&1 || { cat "$BIN/wg.log" >&2; fail "wg-quick up again"; }
 [ "$(vpn_get)" = 10.99.0.2 ] || fail "the VPN does not come back"
 pc iptables -Z OUTPUT
 pc ip6tables -Z OUTPUT
@@ -411,7 +415,7 @@ wait "$kite_pid" 2>/dev/null || true
 kite_pid=
 [ -n "$(vpn_get 8)" ] && fail "the VPN went around the phone after kite was killed"
 check_leaks "kite killed under a second VPN"
-pc wg-quick down "$BIN/wg/wg0.conf" > /dev/null 2>&1 || true
+pc wg-quick down "$WG_CONF" > /dev/null 2>&1 || true
 "${as_nobody[@]}" -c "exec $BIN/kite restore" || fail "kite restore after the second VPN"
 ip link del wg-srv
 pc curl -sS --max-time 15 -o /dev/null https://1.1.1.1/ || fail "direct path broken after the second VPN"
