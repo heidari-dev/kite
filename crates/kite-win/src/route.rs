@@ -8,8 +8,8 @@ use crate::check;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::ptr::null;
-use windows_sys::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
 use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
+use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_FILE_NOT_FOUND};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     ConvertInterfaceAliasToLuid, ConvertInterfaceIndexToLuid, CreateIpForwardEntry2,
     DeleteIpForwardEntry2, GetAdaptersAddresses, GetBestRoute2, GetIfEntry2,
@@ -119,18 +119,23 @@ pub fn best_to(dest: IpAddr) -> io::Result<Best> {
 
 /// IANA interface types that carry traffic off the computer: Ethernet (also USB tethering,
 /// Bluetooth and the virtual switches of Hyper-V and VMware), Wi-Fi and mobile broadband. A VPN's or
-/// a TUN proxy's adapter (Wintun, WireGuard, TAP-Windows, OpenVPN DCO) is `IF_TYPE_PROP_VIRTUAL`
-/// (53), a dialled one (IKEv2, SSTP, L2TP) `IF_TYPE_PPP` (23).
+/// a TUN proxy's adapter (Wintun, WireGuard, TAP-Windows 9, OpenVPN DCO) is `IF_TYPE_PROP_VIRTUAL`
+/// (53), a dialled one (IKEv2, SSTP, L2TP, also PPPoE) [`DIAL_UP`].
 pub const CARDS: [u32; 4] = [6, 71, 243, 244];
 
-/// Whether the interface is one of the [`CARDS`].
-pub fn is_card(luid: u64) -> io::Result<bool> {
+/// `IF_TYPE_PPP`: a dial-up connection, which is a VPN (IKEv2, SSTP, L2TP) or PPPoE.
+pub const DIAL_UP: u32 = 23;
+
+/// The IANA type of the interface, or None when it is gone.
+pub fn if_type(luid: u64) -> io::Result<Option<u32>> {
     // SAFETY: plain data; the call fills it for the LUID set here.
     let mut row: MIB_IF_ROW2 = unsafe { std::mem::zeroed() };
     row.InterfaceLuid = NET_LUID_LH { Value: luid };
     // SAFETY: `row` is writable and names the interface.
-    check(unsafe { GetIfEntry2(&mut row) })?;
-    Ok(CARDS.contains(&row.Type))
+    match unsafe { GetIfEntry2(&mut row) } {
+        ERROR_NOT_FOUND | ERROR_FILE_NOT_FOUND => Ok(None),
+        code => check(code).map(|()| Some(row.Type)),
+    }
 }
 
 /// Whether the interface has DNS servers, set by hand or by DHCP.
@@ -237,7 +242,8 @@ mod tests {
         // The interface the route names is a real one.
         assert!(best.luid != 0);
         // And it is no network card.
-        assert!(!is_card(best.luid).unwrap());
+        assert!(!CARDS.contains(&if_type(best.luid).unwrap().unwrap()));
+        assert_eq!(if_type(u64::MAX).unwrap(), None);
     }
 
     #[test]

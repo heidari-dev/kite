@@ -11,10 +11,11 @@
 //! - this program's own connection to the relay, by application and address;
 //! - DHCP and, for IPv6, neighbour discovery, so the link to the router or the phone stays up.
 //!
-//! The DNS guard blocks DNS (port 53) that leaves through a network card: Windows asks the DNS
-//! servers of every adapter, each through its own adapter, so without it a LAN or ISP resolver would
-//! see the names the computer looks up. DNS through any virtual adapter (the tunnel, a second VPN)
-//! is not touched. Its sublayer has the lowest weight.
+//! The DNS guard blocks DNS (UDP and TCP port 53) on every adapter but the loopback, the tunnel
+//! adapter, other virtual adapters (a second VPN) and, while it carries the default route, a dial-up
+//! VPN: Windows asks the DNS servers of every adapter, each through its own adapter, so without it
+//! a LAN or ISP resolver (a network card's, a PPPoE connection's) would see the names the computer
+//! looks up. Its sublayer has the lowest weight.
 //!
 //! Every permit is a soft one (no `FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT`), so a block of another
 //! program, a second VPN's kill switch say, still blocks what Kite permits; Kite only ever adds
@@ -29,7 +30,6 @@
 //! first packet of a flow. They keep working until they close, or until the routes of the tunnel
 //! catch them.
 
-use crate::route::CARDS;
 use crate::{check, wide};
 use std::ffi::c_void;
 use std::io;
@@ -220,23 +220,39 @@ fn specs(tunnel: u64, relay: Option<IpAddr>, discovery: bool) -> Vec<Spec> {
     out
 }
 
-/// The DNS guard: DNS out of a network card, over UDP or TCP, is blocked. Conditions on the same
+/// The DNS guard: a block for DNS on each layer, and permits for DNS on the loopback, the tunnel
+/// adapter `tunnel`, virtual adapters and the dial-up adapter `dial_up`. Conditions on the same
 /// field are alternatives, on different fields all must hold.
-fn dns_specs() -> Vec<Spec> {
-    let mut conds: Vec<_> = CARDS.into_iter().map(Cond::InterfaceType).collect();
-    conds.extend([
+fn dns_specs(tunnel: u64, dial_up: Option<u64>) -> Vec<Spec> {
+    let dns = [
         Cond::Protocol(UDP),
         Cond::Protocol(TCP),
         Cond::RemotePort(DNS_PORT),
-    ]);
-    [Layer::Connect4, Layer::Connect6]
-        .into_iter()
-        .map(|layer| Spec {
+    ];
+    let mut out = Vec::new();
+    for layer in [Layer::Connect4, Layer::Connect6] {
+        let mut ways = vec![
+            Cond::Loopback,
+            Cond::Interface(tunnel),
+            Cond::InterfaceType(VIRTUAL),
+        ];
+        ways.extend(dial_up.map(Cond::Interface));
+        out.push(Spec {
             layer,
             permit: false,
-            conds: conds.clone(),
-        })
-        .collect()
+            conds: dns.to_vec(),
+        });
+        for way in ways {
+            let mut conds = vec![way];
+            conds.extend(dns.clone());
+            out.push(Spec {
+                layer,
+                permit: true,
+                conds,
+            });
+        }
+    }
+    out
 }
 
 impl Set {
@@ -250,7 +266,11 @@ impl Set {
 
     /// Replaces what the set holds with `specs`, all at once.
     fn install(&self, specs: &[Spec]) -> io::Result<()> {
-        let program = AppId::of_current_exe()?;
+        let program = if specs.iter().any(|s| s.conds.contains(&Cond::Program)) {
+            Some(AppId::of_current_exe()?)
+        } else {
+            None
+        };
         let name = wide(self.name);
         Engine::open()
             .map_err(|e| io::Error::new(e.kind(), format!("opening the Windows firewall: {e}")))?
@@ -265,7 +285,7 @@ impl Set {
                 check(unsafe { FwpmSubLayerAdd0(engine, &sublayer, null_mut()) })?;
                 for (i, spec) in specs.iter().enumerate() {
                     let key = self.filter_key(i as u32);
-                    add_filter(engine, &name, self.sublayer(), key, spec, &program)?;
+                    add_filter(engine, &name, self.sublayer(), key, spec, program.as_ref())?;
                 }
                 Ok(())
             })
@@ -361,9 +381,11 @@ pub fn lift() -> io::Result<()> {
     KILL_SWITCH.remove()
 }
 
-/// Blocks DNS through the network cards, until [`unguard_dns`] runs.
-pub fn guard_dns() -> io::Result<()> {
-    DNS_GUARD.install(&dns_specs())
+/// Blocks DNS on every adapter but the loopback, the tunnel adapter with LUID `tunnel`, virtual
+/// adapters and the dial-up VPN `dial_up`, until [`unguard_dns`] runs. Calling it again replaces
+/// the filters all at once.
+pub fn guard_dns(tunnel: u64, dial_up: Option<u64>) -> io::Result<()> {
+    DNS_GUARD.install(&dns_specs(tunnel, dial_up))
 }
 
 /// Removes the DNS guard of this run or of one that ended.
@@ -408,7 +430,7 @@ fn word(v: u16) -> FWP_VALUE0 {
     w
 }
 
-fn condition(cond: &Cond, held: &mut Held, program: &AppId) -> FWPM_FILTER_CONDITION0 {
+fn condition(cond: &Cond, held: &mut Held, program: Option<&AppId>) -> FWPM_FILTER_CONDITION0 {
     // SAFETY: plain data; all zeroes is a valid value and the fields are set below.
     let mut c: FWPM_FILTER_CONDITION0 = unsafe { std::mem::zeroed() };
     c.matchType = FWP_MATCH_EQUAL;
@@ -434,7 +456,8 @@ fn condition(cond: &Cond, held: &mut Held, program: &AppId) -> FWPM_FILTER_CONDI
         Cond::Program => {
             c.fieldKey = FWPM_CONDITION_ALE_APP_ID;
             c.conditionValue.r#type = FWP_BYTE_BLOB_TYPE;
-            c.conditionValue.Anonymous.byteBlob = program.0;
+            // Without an identity the filter is refused when it is added.
+            c.conditionValue.Anonymous.byteBlob = program.map_or(null_mut(), |p| p.0);
         }
         Cond::Remote(IpAddr::V4(ip)) => {
             c.fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
@@ -483,7 +506,7 @@ fn add_filter(
     sublayer: GUID,
     key: GUID,
     spec: &Spec,
-    program: &AppId,
+    program: Option<&AppId>,
 ) -> io::Result<()> {
     let mut held = Held::default();
     let mut conds: Vec<_> = spec
@@ -521,6 +544,7 @@ fn add_filter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::route::CARDS;
     use std::net::Ipv6Addr;
 
     const LAYERS: [Layer; 4] = [Layer::Connect4, Layer::Connect6, Layer::Recv4, Layer::Recv6];
@@ -577,10 +601,8 @@ mod tests {
     #[test]
     fn conditions_carry_the_values_wfp_expects() {
         use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FWP_DATA_TYPE;
-        // Only the program condition reads this, and it is not used here.
-        let program = std::mem::ManuallyDrop::new(AppId(null_mut()));
         let mut held = Held::default();
-        let mut one = |cond: Cond| condition(&cond, &mut held, &program);
+        let mut one = |cond: Cond| condition(&cond, &mut held, None);
         let v4 = one(Cond::Remote("203.0.113.9".parse().unwrap()));
         assert_eq!(v4.conditionValue.r#type, FWP_UINT32 as FWP_DATA_TYPE);
         // SAFETY: the type says which member was set.
@@ -663,7 +685,7 @@ mod tests {
             n <= MAX_FILTERS as usize,
             "{n} filters, lift tries {MAX_FILTERS}"
         );
-        assert!(dns_specs().len() <= MAX_FILTERS as usize);
+        assert!(dns_specs(7, Some(9)).len() <= MAX_FILTERS as usize);
         let id = |g: GUID| (g.data1, g.data2, g.data3, g.data4);
         let mut keys = Vec::new();
         for set in [&KILL_SWITCH, &DNS_GUARD] {
@@ -691,24 +713,42 @@ mod tests {
     }
 
     #[test]
-    fn the_dns_guard_only_blocks_dns_out_of_network_cards() {
-        let all = dns_specs();
-        assert_eq!(all.len(), 2);
-        for (spec, layer) in all.iter().zip([Layer::Connect4, Layer::Connect6]) {
-            assert_eq!(spec.layer, layer);
-            assert!(!spec.permit);
-            for t in CARDS {
-                assert!(spec.conds.contains(&Cond::InterfaceType(t)));
+    fn the_dns_guard_blocks_dns_everywhere_but_the_tunnel_and_vpns() {
+        let dns = [
+            Cond::Protocol(UDP),
+            Cond::Protocol(TCP),
+            Cond::RemotePort(DNS_PORT),
+        ];
+        for dial_up in [None, Some(9)] {
+            let all = dns_specs(7, dial_up);
+            for layer in [Layer::Connect4, Layer::Connect6] {
+                let here: Vec<_> = all.iter().filter(|s| s.layer == layer).collect();
+                let blocks: Vec<_> = here.iter().filter(|s| !s.permit).collect();
+                assert_eq!(blocks.len(), 1);
+                // A block without the port would take the whole network away.
+                assert_eq!(blocks[0].conds, dns);
+                let ways: Vec<_> = here
+                    .iter()
+                    .filter(|s| s.permit)
+                    .map(|s| {
+                        // Every permit is for DNS only.
+                        assert_eq!(s.conds[1..], dns);
+                        s.conds[0].clone()
+                    })
+                    .collect();
+                let mut want = vec![
+                    Cond::Loopback,
+                    Cond::Interface(7),
+                    Cond::InterfaceType(VIRTUAL),
+                ];
+                want.extend(dial_up.map(Cond::Interface));
+                assert_eq!(ways, want);
             }
-            assert!(!spec.conds.contains(&Cond::InterfaceType(VIRTUAL)));
-            assert!(spec.conds.contains(&Cond::Protocol(UDP)));
-            assert!(spec.conds.contains(&Cond::Protocol(TCP)));
-            assert!(spec.conds.contains(&Cond::RemotePort(DNS_PORT)));
-            // A block with no condition would take the whole network away.
-            assert!(spec.conds.iter().all(|c| matches!(
-                c,
-                Cond::InterfaceType(_) | Cond::Protocol(_) | Cond::RemotePort(_)
-            )));
+            // No network card, and no other dial-up connection (PPPoE), is let through.
+            assert!(!all.iter().any(|s| s
+                .conds
+                .iter()
+                .any(|c| matches!(c, Cond::InterfaceType(t) if *t != VIRTUAL))));
         }
     }
 
