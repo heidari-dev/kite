@@ -243,22 +243,26 @@ sudo setcap cap_net_admin+ep ./kite     # once, or run kite as root
 What it changes on the system, and nothing else:
 
 - The TUN device `kite0` (198.18.0.1/30), created without persistence.
-- Four policy rules per address family, at priorities 5300 to 5303, and one routing table, 5300, that
-  holds only the default routes through `kite0`:
+- Four policy rules per address family, at priorities 32760 to 32763, and one routing table, 5300,
+  that holds only the default routes through `kite0` (IPv4 through 198.18.0.2):
 
   ```
-  5300  ipproto udp dport 53 -> table 5300
-  5301  ipproto tcp dport 53 -> table 5300
-  5302  table main, suppress_prefixlength 0
-  5303  not fwmark 5300 -> table 5300
+  32760  ipproto udp dport 53 -> table 5300
+  32761  ipproto tcp dport 53 -> table 5300
+  32762  table main, suppress_prefixlength 0
+  32763  not fwmark 5300 -> table 5300
   ```
 
   The socket to the relay carries firewall mark 5300, so it never enters its own tunnel. Specific
-  routes, such as your LAN, still win over the tunnel.
+  routes, such as your LAN, still win over the tunnel, and so do the rules of a VPN started on top
+  (see [A second VPN](architecture.md#a-second-vpn-on-the-computer)). Versions up to 0.1.0-rc.2
+  used priorities 5300 to 5303; `kite restore` removes those too.
 - If this host resolves through systemd-resolved (its stub in `/etc/resolv.conf`, or `resolve` in the
   `hosts:` line of `/etc/nsswitch.conf`), the link `kite0` gets the DNS server 1.1.1.1, the `~.`
-  routing domain and the default-route flag, through `resolvectl`. Without root, resolved asks
-  polkit; see [architecture.md](architecture.md) for a rule. Otherwise `/etc/resolv.conf` is not touched.
+  routing domain and the default-route flag, through `resolvectl`. While a VPN started on top carries
+  the default route and has DNS servers of its own, `kite0` loses the domain and the flag, so names
+  go to that VPN. Without root, resolved asks polkit; see [architecture.md](architecture.md) for a
+  rule. Otherwise `/etc/resolv.conf` is not touched.
 
 DNS queries go to the relay as DNS over TCP, other UDP through the relay's UDP gateway. AAAA answers
 are dropped, so clients use IPv4.

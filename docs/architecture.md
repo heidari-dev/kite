@@ -59,14 +59,16 @@ every handshake before the relay connects, so an IPv6 target the phone cannot re
 connected and then fail instead of falling back to IPv4. Routing follows wg-quick:
 
 ```
-pref 5300  ipproto udp dport 53 -> table 5300   every DNS query, even to a LAN resolver
-pref 5301  ipproto tcp dport 53 -> table 5300
-pref 5302  table main, suppress_prefixlength 0  LAN and other specific routes stay as they are
-pref 5303  not fwmark 5300 -> table 5300         everything else except the relay transport
+pref 32760  ipproto udp dport 53 -> table 5300   every DNS query, even to a LAN resolver
+pref 32761  ipproto tcp dport 53 -> table 5300
+pref 32762  table main, suppress_prefixlength 0  LAN and other specific routes stay as they are
+pref 32763  not fwmark 5300 -> table 5300         everything else except the relay transport
 ```
 
-Table 5300 holds only default routes through `kite0`, and the socket to the relay carries firewall
-mark 5300 so it never enters the tunnel it carries. `/etc/resolv.conf` is left alone. With
+The rules come last, right before the main table's (32766), so a VPN started on top puts its own
+before them (see [A second VPN](#a-second-vpn-on-the-computer)). Table 5300 holds only default
+routes through `kite0`, the IPv4 one through 198.18.0.2, and the socket to the relay carries
+firewall mark 5300 so it never enters the tunnel it carries. `/etc/resolv.conf` is left alone. With
 systemd-resolved, which sends each query out of the link its server belongs to, `kite0` gets its own
 DNS server and the `~.` routing domain.
 
@@ -145,6 +147,28 @@ whether Kite runs or not.
   loopback and passes; over WiFi it is a LAN address, so the VPN needs its "allow LAN" setting.
 - If Kite stops while a VPN runs on top, the VPN's connection to its server falls back to the
   network card, around the phone, unless Kite's kill switch is on and holds its block.
+
+### Linux
+
+- Kite's rules sit at 32760 to 32763, right before the main table's. A VPN's rules come first:
+  wg-quick and NetworkManager add theirs without a priority, which the kernel puts right before the
+  first rule after `local` (so a VPN started after Kite lands before it), sing-box uses 9000 and
+  Tailscale 5210 to 5270. The VPN's own packets carry its firewall mark, skip its rules, fall through
+  to Kite's and go into `kite0`. Up to 0.1.0-rc.2 Kite's rules sat at 5300 to 5303, before sing-box's.
+- Table 5300's IPv4 default route goes through 198.18.0.2, so OpenVPN, which looks up the route to
+  its server through the rules, adds its server's host route through `kite0` with a gateway.
+- With systemd-resolved, two links with the `~.` routing domain both get every query. While another
+  link carries the default route and has DNS servers of its own, Kite takes `~.` and the default
+  route flag off `kite0`, so names go to that VPN only, and puts them back within two seconds of the
+  VPN going.
+- Kite adds no firewall rules on Linux, so a VPN's nftables or iptables kill switch keeps blocking
+  whatever it blocks. Kite's kill switch, the blackhole route in table 5300, also catches a VPN's
+  own packets when Kite dies, so they do not go out by the network card.
+- Start the VPN after Kite: one started before has its rules after Kite's, and Kite takes its
+  traffic. sing-box finds its outbound interface in the main table, where Kite's routes are not:
+  set `default_interface` to `kite0`. Without systemd-resolved, a VPN's DNS server in
+  `/etc/resolv.conf` is caught by Kite's DNS rule (OpenVPN's, whose routes are in the main table),
+  so names fail; wg-quick's rules come first and are not affected.
 
 ## Transports
 
