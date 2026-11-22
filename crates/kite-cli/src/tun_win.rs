@@ -7,21 +7,24 @@
 //! server through it (see docs/architecture.md, "A second VPN"). What it changes, and `restore` takes
 //! all of it back:
 //!
-//! - The adapter `kite0` (198.18.0.1/30, interface metric 1, DNS 1.1.1.1). It goes away with the
+//! - The adapter `kite0` (198.18.0.1/30, interface metric 3, DNS 1.1.1.1). It goes away with the
 //!   process, or stays without routes until `restore`.
 //! - Default routes on that adapter, `0.0.0.0/0` through 198.18.0.2 (an address in its /30, so a
 //!   VPN that copies the default gateway gets one) and `::/0`, metric 0. With the interface metric of
-//!   1 they win over every network card (automatic metrics start at 5) and lose to a second VPN that
-//!   sets 0, as WireGuard does; LAN and other specific routes stay as they are. The network card's own
-//!   default route is not touched. If a network card still wins, the start fails rather than leak.
+//!   3 they win over every network card (automatic metrics start at 5) and lose to a second VPN that
+//!   sets less, as WireGuard (0) and Windows' IKEv2 (1) do; LAN and other specific routes stay as they
+//!   are. The network card's own default route is not touched. If a network card still wins, for
+//!   IPv4 or IPv6, the start fails rather than leak.
 //! - A host route for the relay when it is reached through the default route, with the next hop it
 //!   had before, so the socket to the phone does not enter its own tunnel. A phone on the LAN or
 //!   the phone's hotspot needs none. It is written to `tunnel.state` before it is added.
-//! - The DNS guard, `kite_win::firewall::guard_dns`: Windows asks the DNS servers of every adapter
-//!   at once, each through its own adapter, so DNS out of a network card is blocked and only the
+//! - The DNS guard, `kite_win::firewall::guard_dns`, up before the routes: Windows asks the DNS
+//!   servers of every adapter at once, each through its own adapter, so DNS is blocked on every
+//!   adapter but the tunnel's, other virtual ones (a second VPN) and the loopback, and only the
 //!   tunnel's server answers. While a second VPN with DNS servers of its own carries the default
 //!   route the adapter offers none, so names go to that VPN's servers alone; it gets 1.1.1.1 back
-//!   within two seconds when the VPN goes.
+//!   within two seconds when the VPN goes. A dial-up VPN (IKEv2, SSTP, L2TP) gets its DNS through
+//!   the guard while it carries the default route.
 //!
 //! With the kill switch (opt-in) Windows Filtering Platform filters also block every connection that
 //! does not go through the adapter (or another virtual adapter: a second VPN), to this program's
@@ -52,6 +55,9 @@ const MTU: u16 = 1500;
 const ADDR: Ipv4Addr = Ipv4Addr::new(198, 18, 0, 1);
 /// The relay serves udpgw on this reserved address (see docs/architecture.md).
 const UDPGW: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 7300);
+/// The adapter's interface metric: below every network card's automatic metric (5 and up), above
+/// what a VPN sets for itself (WireGuard 0, Windows' own IKEv2 connection 1), so the VPN wins.
+const METRIC: u16 = 3;
 /// The default route's next hop: the other address of the adapter's /30.
 const GATEWAY: Ipv4Addr = Ipv4Addr::new(198, 18, 0, 2);
 /// DNS queries go here, as DNS over TCP through the relay.
@@ -196,7 +202,7 @@ fn create() -> io::Result<tun::AsyncDevice> {
         .address(ADDR)
         .netmask(Ipv4Addr::new(255, 255, 255, 252))
         .mtu(MTU)
-        .metric(1)
+        .metric(METRIC)
         .up();
     // No DNS server yet: it is set after the DNS guard is up.
     cfg.platform_config(|p| {
@@ -333,6 +339,7 @@ async fn setup(luid: u64, relay: Option<IpAddr>, kill_switch: bool) -> io::Resul
     if kill_switch {
         firewall::engage(luid, relay, false)?;
     }
+    firewall::guard_dns(luid, None)?;
     // The relay's way out, before the tunnel's routes change it. A more specific route (a LAN)
     // keeps winning on its own; a default route, or the halves another VPN put over it, need a host
     // route beside them.
@@ -352,59 +359,119 @@ async fn setup(luid: u64, relay: Option<IpAddr>, kill_switch: bool) -> io::Resul
     if let Some(r) = &bypass {
         route::add(r, 1)?;
     }
-    let mut ipv6 = true;
     for r in tunnel_routes(luid) {
         match route::add(&r, 0) {
-            // No IPv6 on this adapter or this host is the usual reason; say so, so that a failure
-            // on a host that has IPv6 is not silent.
+            // No IPv6 on this adapter or this host is the usual reason; the check below fails the
+            // start if a network card still carries IPv6.
             Err(e) if r.dest.is_ipv6() => {
                 eprintln!("kite: IPv6 is not taken into the tunnel: {e}");
-                ipv6 = false;
             }
             r => r?,
         }
     }
-    for probe in PROBES.into_iter().filter(|p| ipv6 || p.is_ipv4()) {
-        // No route at all (no IPv6 on this host) is nothing to win against.
-        let Ok(best) = route::best_to(probe) else {
-            continue;
+    for probe in PROBES {
+        let best = match route::best_to(probe) {
+            Ok(best) => best,
+            // No IPv6 route at all: there is no IPv6 to leak.
+            Err(_) if probe.is_ipv6() => continue,
+            Err(e) => return Err(e),
         };
-        if best.luid != luid && route::is_card(best.luid)? {
-            return Err(io::Error::other(
-                "a network card's default route has a better metric than the tunnel's, so traffic \
-                 would not enter the tunnel; set that card's interface metric to automatic or above 1",
-            ));
+        if best.luid != luid && is_card(best.luid)? {
+            return Err(io::Error::other(format!(
+                "a network card's default route for {} has a better metric than the tunnel's, so \
+                 traffic would not enter the tunnel; set that card's interface metric to automatic \
+                 or above {METRIC}",
+                if probe.is_ipv4() { "IPv4" } else { "IPv6" }
+            )));
         }
     }
-    firewall::guard_dns()?;
     route::set_dns(GUID, &DNS.to_string())
 }
 
+/// Whether the interface is a network card; one that went away is not.
+fn is_card(luid: u64) -> io::Result<bool> {
+    Ok(route::if_type(luid)?.is_some_and(|t| route::CARDS.contains(&t)))
+}
+
+/// Who carries the default route, as far as DNS is concerned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Carrier {
+    /// The tunnel, a network card or something else: the tunnel's DNS server answers.
+    Tunnel,
+    /// A second VPN with DNS servers of its own, on a virtual adapter.
+    Vpn,
+    /// A dial-up VPN (IKEv2, SSTP, L2TP) with this LUID: its DNS passes the guard, and its own DNS
+    /// servers, if it has any, answer instead of the tunnel's.
+    DialUp(u64, bool),
+}
+
+impl Carrier {
+    /// What the adapter `best` that carries the default route is, with its IANA type `kind` and
+    /// whether it has DNS servers.
+    fn of(tunnel: u64, best: u64, kind: Option<u32>, has_dns: bool) -> Self {
+        match kind {
+            _ if best == tunnel => Self::Tunnel,
+            Some(route::DIAL_UP) => Self::DialUp(best, has_dns),
+            Some(t) if !route::CARDS.contains(&t) && has_dns => Self::Vpn,
+            _ => Self::Tunnel,
+        }
+    }
+
+    fn offers_dns(self) -> bool {
+        matches!(self, Self::Tunnel | Self::DialUp(_, false))
+    }
+
+    fn dial_up(self) -> Option<u64> {
+        match self {
+            Self::DialUp(luid, _) => Some(luid),
+            _ => None,
+        }
+    }
+}
+
 /// While the tunnel runs: the adapter offers no DNS server while a second VPN that has DNS servers
-/// of its own carries the default route, so that names go to that VPN's servers, not around it. A
-/// route that ends on a network card means no second VPN, and a failure to look leaves the setting
-/// as it is.
+/// of its own carries the default route, so that names go to that VPN's servers, not around it; a
+/// dial-up VPN's DNS passes the DNS guard while it carries the default route. A failure to look
+/// leaves the settings as they are, and is said once.
 async fn follow_dns(luid: u64) {
-    let mut offered = true;
+    let mut now = Carrier::Tunnel;
+    let mut said = false;
     loop {
         tokio::time::sleep(FOLLOW).await;
-        let Ok(best) = route::best_to(PROBES[0]) else {
-            continue;
-        };
-        let second_vpn = best.luid != luid
-            && route::is_card(best.luid).is_ok_and(|card| !card)
-            && route::has_dns_servers(best.luid).unwrap_or(false);
-        let offer = !second_vpn;
-        if offer != offered {
-            let servers = if offer {
-                DNS.to_string()
-            } else {
-                String::new()
-            };
-            match route::set_dns(GUID, &servers) {
-                Ok(()) => offered = offer,
-                Err(e) => eprintln!("kite: changing the tunnel's DNS server: {e}"),
+        let next = route::best_to(PROBES[0]).and_then(|best| {
+            let kind = route::if_type(best.luid)?;
+            let has_dns = best.luid != luid && route::has_dns_servers(best.luid)?;
+            Ok(Carrier::of(luid, best.luid, kind, has_dns))
+        });
+        let r = match next {
+            Ok(next) if next == now => continue,
+            Ok(next) => {
+                let mut r = Ok(());
+                if next.dial_up() != now.dial_up() {
+                    r = firewall::guard_dns(luid, next.dial_up());
+                }
+                if r.is_ok() && next.offers_dns() != now.offers_dns() {
+                    let servers = if next.offers_dns() {
+                        DNS.to_string()
+                    } else {
+                        String::new()
+                    };
+                    r = route::set_dns(GUID, &servers);
+                }
+                if r.is_ok() {
+                    now = next;
+                }
+                r
             }
+            Err(e) => Err(e),
+        };
+        match r {
+            Ok(()) => said = false,
+            Err(e) if !said => {
+                eprintln!("kite: following a second VPN's DNS: {e}");
+                said = true;
+            }
+            Err(_) => {}
         }
     }
 }
@@ -588,6 +655,27 @@ mod tests {
         ] {
             assert_eq!(State::parse(bad), None, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn dns_follows_the_adapter_that_carries_the_default_route() {
+        let (tunnel, other) = (7, 9);
+        let of = |kind, dns| Carrier::of(tunnel, other, Some(kind), dns);
+        assert_eq!(Carrier::of(tunnel, tunnel, Some(53), true), Carrier::Tunnel);
+        // A VPN's adapter with its own DNS servers takes DNS over; without them the tunnel keeps it.
+        assert_eq!(of(53, true), Carrier::Vpn);
+        assert_eq!(of(53, false), Carrier::Tunnel);
+        // A network card never does, whatever DNS servers it has.
+        for card in route::CARDS {
+            assert_eq!(of(card, true), Carrier::Tunnel);
+        }
+        assert_eq!(Carrier::of(tunnel, other, None, true), Carrier::Tunnel);
+        // A dial-up VPN gets its DNS through the guard, and answers if it has servers.
+        assert_eq!(of(23, true), Carrier::DialUp(other, true));
+        assert!(!of(23, true).offers_dns() && of(23, false).offers_dns());
+        assert_eq!(of(23, false).dial_up(), Some(other));
+        assert!(Carrier::Tunnel.offers_dns() && !Carrier::Vpn.offers_dns());
+        assert_eq!(Carrier::Vpn.dial_up(), None);
     }
 
     #[test]
