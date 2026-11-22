@@ -350,9 +350,11 @@ service) removes them and the computer is never left offline for good. Connectio
 already open when the block went up are not cut by it.
 
 On macOS the block is a set of pf rules in the anchor `com.apple/kite`, loaded with `pfctl -a
-com.apple/kite -f -`. They pass the loopback, the tunnel's `utun` device, TCP to the relay's address
-and port, DHCP and IPv6 link discovery, and refuse everything else going out (with a reset, so
-programs fail at once). The anchor sits under `com.apple` because the main ruleset macOS ships has
+com.apple/kite -f -`. It holds one rule, `anchor "block" out on ! lo0`, which sends what does not
+leave on the loopback to the blocks in `com.apple/kite/block`. Those refuse everything going out
+(with a reset, so programs fail at once) except through the tunnel's `utun` device, TCP to the
+relay's address and port, DHCP and IPv6 link discovery. There is no pass rule: what Kite does not
+block, the rest of pf decides, so another program's block, a VPN's kill switch, still holds. The anchor sits under `com.apple` because the main ruleset macOS ships has
 `anchor "com.apple/*"`, so Kite does not rewrite your main ruleset; if that line is missing, Kite
 refuses to start with the kill switch instead of running a block that does nothing. pf is enabled
 with `pfctl -E`, which takes a reference (kept in `tun.state`) instead of switching it on, and

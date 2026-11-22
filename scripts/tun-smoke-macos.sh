@@ -13,6 +13,11 @@
 # `kite restore`. It needs a working Internet connection for that, and pf must be as it was (off
 # or on) before and after.
 #
+# The tunnel must be the primary network service with the default route through 198.18.0.2, which
+# is what a second VPN looks at to find its way out, and the kill switch must hold no pass rule: a
+# block in another anchor (a second VPN's kill switch, stood in for by an anchor of the test) must
+# still stop traffic into the tunnel while the kill switch is on.
+#
 # Usage: sudo bash scripts/tun-smoke-macos.sh path/to/kite path/to/relay-dev
 # It changes this machine's routes, DNS settings and pf rules while it runs, and puts them back.
 set -euo pipefail
@@ -38,6 +43,7 @@ cleanup() {
   set +e
   for pid in $pids; do kill -9 "$pid" 2>/dev/null; done
   "$KITE" restore 2>/dev/null
+  pfctl -a com.apple/zzz-kite-test -F rules 2>/dev/null
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -64,20 +70,37 @@ dns_key() { scutil <<<'show State:/Network/Service/kite/DNS' | grep -q 'ServerAd
 resolver_listed() { scutil --dns | grep -q 'nameserver\[[0-9]*\] : 1\.1\.1\.1'; }
 resolves() { [ -n "$(dscacheutil -q host -a name example.com)" ]; }
 anchor_rules() { pfctl -a com.apple/kite -s rules 2>/dev/null; }
+block_rules() { pfctl -a com.apple/kite/block -s rules 2>/dev/null; }
+service_key() { scutil <<<'show State:/Network/Service/kite/IPv4' | grep -q 'Router'; }
+default_gateway() { route -n get default 2>/dev/null | awk '/gateway:/ { print $2 }'; }
+# The first interface of `scutil --nwi` for IPv4 is the primary one.
+primary_interface() { scutil --nwi | awk '/^IPv4 network interface information/ { on = 1; next } on && / : flags/ { print $1; exit }'; }
 pf_status() { pfctl -s info 2>/dev/null | awk '/^Status:/ { print $2 }'; }
 PF_BEFORE=$(pf_status)
 
 # The rules kite loads, for a sample IPv4 and IPv6 relay, must parse under this pfctl (the loopback
-# relay of this test never loads the relay line). Keep in step with rules() in tun_mac.rs.
-pfctl -n -f - >/dev/null 2>"$WORK/pf-syntax.log" <<'RULES' || { cat "$WORK/pf-syntax.log" >&2; echo "FAIL: pfctl does not parse the kill switch's rules" >&2; exit 1; }
-pass quick on lo0 all no state
-pass quick on utun9 all no state
-pass out quick proto tcp from any to 203.0.113.9 port 47810 no state
-pass out quick proto tcp from any to 2001:db8::9 port 47810 no state
-pass out quick proto udp from any port 68 to any port 67
-pass out quick inet6 proto udp from any port 546 to any port 547
-pass out quick inet6 proto icmp6 all icmp6-type { 130, 131, 132, 133, 134, 135, 136, 137, 143 }
-block return out quick all
+# relay of this test never loads the relay lines). Keep in step with blocks() in tun_mac.rs.
+pf_parses() { # rules on stdin
+  pfctl -n -f - >/dev/null 2>"$WORK/pf-syntax.log" || { cat "$WORK/pf-syntax.log" >&2; echo "FAIL: pfctl does not parse the kill switch's rules" >&2; exit 1; }
+}
+pf_parses <<'RULES'
+anchor "block" out on ! lo0 all
+RULES
+pf_parses <<'RULES'
+block return out quick on ! utun9 inet proto tcp from any to ! 203.0.113.9
+block return out quick on ! utun9 inet proto tcp from any to 203.0.113.9 port != 47810
+block return out quick on ! utun9 inet6 proto tcp all
+block return out quick on ! utun9 inet6 proto tcp from any to ! 2001:db8::9
+block return out quick on ! utun9 inet6 proto tcp from any to 2001:db8::9 port != 47810
+block return out quick on ! utun9 inet proto tcp all
+block return out quick on ! utun9 proto tcp all
+block return out quick on ! utun9 inet proto udp from any port != 68
+block return out quick on ! utun9 inet proto udp from any port 68 to any port != 67
+block return out quick on ! utun9 inet6 proto udp from any port != 546
+block return out quick on ! utun9 inet6 proto udp from any port 546 to any port != 547
+block return out quick on ! utun9 inet proto icmp all
+block return out quick on ! utun9 inet6 proto icmp6 all icmp6-type { 128, 129, 139, 140 }
+block return out quick on ! utun9 proto { 4, 41, 47, 50, 51, 103, 112, 115, 132 } all
 RULES
 
 # A connection and a DNS query that do not use the tunnel's routes, to servers outside this machine.
@@ -90,13 +113,17 @@ explain_leak() {
   dig +time=3 +tries=1 @8.8.8.8 example.com >&2 2>&1 || true
   echo "--- pf rules of the kill switch, with counters" >&2
   pfctl -a com.apple/kite -s rules -v >&2 2>&1 || true
+  pfctl -a com.apple/kite/block -s rules -v >&2 2>&1 || true
   echo "--- pf main ruleset" >&2
   pfctl -s rules >&2 2>&1 || true
   echo "--- routes to 8.8.8.8" >&2
   route -n get 8.8.8.8 >&2 2>&1 || true
 }
-# As if the device were gone: the routes of the tunnel off, the rest of the tunnel as it was.
+# As if the device were gone: the service and the routes of the tunnel off, the rest of the tunnel
+# as it was.
 drop_routes() {
+  scutil <<<'remove State:/Network/Service/kite/IPv4'
+  sleep 1
   for half in 0.0.0.0/1 128.0.0.0/1; do route -n delete -inet "$half" >/dev/null 2>&1 || true; done
   for half in ::/1 8000::/1; do route -n delete -inet6 "$half" >/dev/null 2>&1 || true; done
   sleep 1
@@ -120,15 +147,19 @@ is_up() {
     && dns_key && resolver_listed
 }
 is_clean() {
-  [ -z "$(tunnel_device)" ] && ! dns_key && ! resolver_listed \
+  [ -z "$(tunnel_device)" ] && ! dns_key && ! service_key && ! resolver_listed \
     && ! route_device 1.1.1.1 | grep -q '^utun' \
-    && [ -z "$(anchor_rules)" ] && [ "$(pf_status)" = "$PF_BEFORE" ] \
+    && [ -z "$(anchor_rules)" ] && [ -z "$(block_rules)" ] && [ "$(pf_status)" = "$PF_BEFORE" ] \
     && [ ! -s /var/db/kite/tun.state ]
 }
 
 assert_up() {
   wait_for "the tunnel" is_up
-  echo "tunnel is up: $(tunnel_device), routes, DNS resolver as expected"
+  # What a second VPN reads to find its way out (wg-quick and OpenVPN the default gateway, a Network
+  # Extension VPN the primary interface).
+  [ "$(default_gateway)" = 198.18.0.2 ] || { route -n get default >&2; fail "the default route goes through $(default_gateway), not 198.18.0.2"; }
+  [ "$(primary_interface)" = "$(tunnel_device)" ] || { scutil --nwi >&2; fail "the primary interface is $(primary_interface), not the tunnel"; }
+  echo "tunnel is up: $(tunnel_device), primary with the default route, DNS resolver as expected"
   # The handshake is answered inside the tunnel; the relay then refuses the target and closes it.
   # Outside the tunnel this address would answer for real, or time out (28).
   local code=0
@@ -196,6 +227,15 @@ assert_clean "after disconnect"
 kite connect --tcp "$RELAY" --tun --kill-switch
 assert_up
 kite_has 'kill switch: on' || fail "status does not show the kill switch"
+# Another program's block of traffic into the tunnel still stops it: the kill switch passes
+# nothing. Without the block the handshake is answered inside the tunnel (curl 52 or 56).
+dev=$(tunnel_device)
+pfctl -a com.apple/zzz-kite-test -f - <<<"block return out quick on $dev proto tcp from any to 1.1.1.1 port 80"   || fail "loading the test anchor failed"
+code=0
+curl -sS -o /dev/null --connect-timeout 5 -m 10 http://1.1.1.1/ 2>/dev/null || code=$?
+pfctl -a com.apple/zzz-kite-test -F rules || fail "flushing the test anchor failed"
+[ "$code" = 7 ] || fail "another anchor's block did not hold with the kill switch on (curl exit $code)"
+echo "kill switch: another program's block still holds"
 # The link to the relay was dialled before the rules went up; it must survive them.
 sleep 3
 kite_has 'state: connected' || fail "the tunnel dropped when the kill switch went up"
@@ -203,7 +243,9 @@ kill -9 "$relay"
 wait "$relay" 2>/dev/null || true
 reconnecting() { kite_has 'state: reconnecting'; }
 wait_for "the tunnel to notice the lost relay" reconnecting
-anchor_rules | grep -q 'block return out quick all' || fail "the kill switch's rules are not in pf"
+anchor_rules | grep -q 'anchor "block"' || fail "the kill switch's rules are not in pf"
+block_rules | grep -q 'block return out quick on ! utun' || fail "the kill switch's blocks are not in pf"
+if { anchor_rules; block_rules; } | grep -q '^pass'; then fail "the kill switch has a pass rule"; fi
 drop_routes
 assert_blocked "kill switch on, relay gone"
 echo "kill switch: nothing gets out while the relay is gone"
@@ -221,7 +263,7 @@ if [ "$PF_BEFORE" != Enabled ]; then pfctl -e >/dev/null 2>&1 || true; fi
 kite connect --tcp "$RELAY" --tun --kill-switch
 assert_up
 kite disconnect
-gone() { [ -z "$(tunnel_device)" ] && [ -z "$(anchor_rules)" ]; }
+gone() { [ -z "$(tunnel_device)" ] && [ -z "$(anchor_rules)" ] && [ -z "$(block_rules)" ]; }
 wait_for "the tunnel to be removed" gone
 [ "$(pf_status)" = Enabled ] || fail "kite switched off a firewall that was on"
 if [ "$PF_BEFORE" != Enabled ]; then pfctl -d >/dev/null 2>&1 || true; fi
