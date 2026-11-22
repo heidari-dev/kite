@@ -111,8 +111,12 @@ sc start Kite
 - It says you are not allowed to use the service: you are not in the group `kite` (see above).
 - Names do not resolve on the local network while connected (a router's own name, say): the tunnel
   sends every lookup to the phone. Disconnect to get them back.
-- After a crash of the service the DNS rule can stay for a moment; the service removes it when it
-  starts again, or run `kite restore` as an administrator.
+- After a crash of the service names may not resolve for a moment; the service removes what it
+  left when it starts again, or run `kite restore` as an administrator.
+- A VPN on the computer on top of Full mode: start it after Kite is connected. See the
+  [architecture](architecture.md#a-second-vpn-on-the-computer) for which VPNs find Kite by
+  themselves; v2ray or Xray clients in TUN mode (sing-box) need their outbound interface set to
+  `kite0`.
 
 ## Remove
 

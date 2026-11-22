@@ -79,7 +79,7 @@ name does not resolve. Disconnect to get them back. Addresses still work.
 ## My internet is broken after Kite crashed
 
 Run `kite restore` (with `sudo` on Linux and macOS, in an administrator terminal on Windows). It
-removes leftover routing rules and the DNS rule. Connecting again in Full mode clears them too.
+removes leftover routing rules and DNS settings. Connecting again in Full mode clears them too.
 
 ## iPhone
 

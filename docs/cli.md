@@ -286,24 +286,30 @@ What it changes on the system, and nothing else:
 
 - The Wintun adapter `kite0` (198.18.0.1/30, interface metric 1, DNS server 1.1.1.1), which goes away
   with the process.
-- Four routes on that adapter: `0.0.0.0/1`, `128.0.0.0/1`, `::/1` and `8000::/1`. Together they take
-  everything that has no more specific route, so the local network and the other adapters' own
-  subnets keep working and the real default route is not touched.
+- Default routes on that adapter: `0.0.0.0/0` through 198.18.0.2 and `::/0`, metric 0. With the
+  interface metric of 1 they win over every network card, and lose to a VPN started on top that sets
+  metric 0 (see [A second VPN](architecture.md#a-second-vpn-on-the-computer)). The local network and
+  the other adapters' own subnets keep working, and the network card's default route is not
+  touched. If a network card's default route still wins, Full mode does not start.
 - A host route for the relay's address when the system reaches it through the default route (a
   `--tcp` address on the Internet), with the next hop it had, so the connection to the phone does
   not enter its own tunnel. A phone on the same WiFi or on its hotspot needs none. USB needs none:
   adb is on the loopback address.
-- A catch-all DNS rule (NRPT, comment `kite`) that sends every name lookup to 1.1.1.1, which the
-  tunnel carries to the phone as DNS over TCP. Windows asks the DNS servers of all its adapters at
-  once; without the rule the local resolver would see the names and could answer first. Names that
-  only the local network knows (a router's `.lan` name) stop resolving while the tunnel is up.
-- `tun.lock` and `tun.state` in `%ProgramData%\Kite`: the first keeps two kites from setting up at
-  once, the second remembers the relay's host route.
+- The DNS guard: Windows Filtering Platform filters (`Kite DNS guard`) that block DNS out of a
+  network card (Ethernet, Wi-Fi, mobile broadband). Windows asks the DNS servers of all its adapters
+  at once; with the guard only `kite0`'s 1.1.1.1 answers, and the tunnel carries it to the phone as
+  DNS over TCP. Names that only the local network knows (a router's `.lan` name) stop resolving
+  while the tunnel is up. While a second VPN with its own DNS servers carries the default route,
+  `kite0` offers no DNS server, so names go to that VPN.
+- `tun.lock` and `tunnel.state` in `%ProgramData%\Kite`: the first keeps two kites from setting up
+  at once, the second remembers the relay's host route.
 
 How it is undone: a normal stop (Ctrl+C, `kite disconnect`, the link lost, an error) removes the
-routes, the DNS rule and the state file. If kite was killed, the adapter goes away with the process
-and takes its routes with it; the DNS rule and the host route stay until the next TUN start or
-`kite restore`. Nothing else is touched.
+routes, the DNS guard and the state file. If kite was killed, the adapter goes away with the process
+and takes its routes with it; the DNS guard and the host route stay until the next TUN start or
+`kite restore` (names do not resolve meanwhile). Nothing else is touched. Versions up to 0.1.0-rc.2
+added a catch-all DNS rule (NRPT, comment `kite`) instead of the guard; the next start or
+`kite restore` removes one they left.
 
 Without `--kill-switch`, when the link to the phone is lost the tunnel ends and normal routing
 returns. With it, see [Kill switch](#kill-switch).
@@ -326,8 +332,9 @@ given, and off in the desktop app until the user turns it on.
 On Windows the block is a set of Windows Filtering Platform filters, not a route. Kite adds them
 before it adds its routes and removes them after it removes the routes. They block every new
 connection and every new inbound flow, IPv4 and IPv6, except loopback, anything on the adapter
-`kite0`, this program's own connection to the relay (by program and address), DHCP, and IPv6
-neighbour discovery, so the link to the router or the phone stays up and DNS cannot go out of the
+`kite0` or another virtual adapter (a VPN started on top, whose own connection to its server must
+then go through `kite0`), this program's own connection to the relay (by program and address), DHCP,
+and IPv6 neighbour discovery, so the link to the router or the phone stays up and DNS cannot go out of the
 physical adapter either. Windows Firewall needs to be running (the Base Filtering Engine service,
 which it always is by default). The filters belong to no session, so they outlive the Kite process:
 after a crash (or a service that was killed) or an error of the tunnel traffic stays blocked until
@@ -409,8 +416,8 @@ running. On Windows only the service answers, not a `--foreground` tunnel. On ma
 Removes what a TUN mode kite that was killed left behind. Needs `CAP_NET_ADMIN` on Linux, root on macOS, an
 administrator on Windows. It fails while a TUN mode kite is running. On Linux it only deletes rules
 that exactly match the ones kite adds, so rules from other programs stay. On Windows it deletes the
-routes on the adapter `kite0`, the host route in `tun.state`, the DNS rule with the comment
-`kite` and the kill switch's filters. On macOS it removes the host route, the DNS resolver, the
+routes on the adapter `kite0`, the host route in `tunnel.state`, the DNS guard, the kill switch's
+filters and the DNS rule an earlier version left. On macOS it removes the host route, the DNS resolver, the
 kill switch's pf rules and the pf reference.
 
 ## kite allow
