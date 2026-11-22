@@ -1,22 +1,30 @@
 //! Policy routing for TUN mode, in the style of wg-quick:
 //!
 //! ```text
-//! pref 5300  ipproto udp dport 53 -> table 5300   every DNS query, even to a LAN resolver
-//! pref 5301  ipproto tcp dport 53 -> table 5300
-//! pref 5302  table main, suppress_prefixlength 0  LAN and other specific routes stay as they are
-//! pref 5303  not fwmark 5300 -> table 5300         everything else except the relay transport
+//! pref 32760  ipproto udp dport 53 -> table 5300   every DNS query, even to a LAN resolver
+//! pref 32761  ipproto tcp dport 53 -> table 5300
+//! pref 32762  table main, suppress_prefixlength 0  LAN and other specific routes stay as they are
+//! pref 32763  not fwmark 5300 -> table 5300         everything else except the relay transport
 //! ```
 //!
-//! Table 5300 only holds default routes through the TUN device, and the kernel deletes those with
-//! the device when kite exits in any way, a crash or SIGKILL included. The rules left behind then
-//! point at an empty table and fall through to the main table, so the network keeps working until
-//! `restore` deletes them.
+//! The rules come last, right before the main table's (32766): a VPN started on top of the tunnel
+//! puts its own rules before them (wg-quick right before the first rule after `local`, sing-box at
+//! 9000, Tailscale at 5210 to 5270), so its tunnel wins and its own connection to its server, marked
+//! to skip its rules, falls through to these and into the tunnel. Up to 0.1.0-rc.2 they were at
+//! 5300 to 5303, where they won over such a VPN; `restore` still deletes those.
+//!
+//! Table 5300 only holds default routes through the TUN device, the IPv4 one through 198.18.0.2 (the
+//! other address of the device's /30, so a VPN that copies the default gateway for its server's host
+//! route gets one), and the kernel deletes those with the device when kite exits in any way, a crash
+//! or SIGKILL included. The rules left behind then point at an empty table and fall through to the
+//! main table, so the network keeps working until `restore` deletes them.
 //!
 //! With the kill switch the table also holds a blackhole default route with a worse metric. It
 //! outlives the device, so after a crash everything but the relay transport and the local network
 //! stays blocked until `restore` (or the next run) deletes it.
 
-use netlink_packet_route::route::{RouteMessage, RouteType};
+use futures_util::TryStreamExt;
+use netlink_packet_route::route::{RouteAttribute, RouteMessage, RouteType};
 use netlink_packet_route::rule::{
     RuleAction, RuleAttribute, RuleFlags, RuleMessage, RulePortRange,
 };
@@ -25,9 +33,14 @@ use rtnetlink::{Handle, RouteMessageBuilder};
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-/// Routing table of the tunnel, also the firewall mark of the relay transport socket. The rules use
-/// priorities 5300 to 5303, after Tailscale's (5210 to 5270).
+/// Routing table of the tunnel, also the firewall mark of the relay transport socket.
 pub const TABLE: u32 = 5300;
+/// Priority of the first rule; the others follow it.
+const PREF: u32 = 32760;
+/// Where the rules were up to 0.1.0-rc.2.
+const LEGACY_PREF: u32 = 5300;
+/// The default route's gateway.
+const GATEWAY: Ipv4Addr = Ipv4Addr::new(198, 18, 0, 2);
 const MAIN: u32 = 254;
 const FAMILIES: [AddressFamily; 2] = [AddressFamily::Inet, AddressFamily::Inet6];
 
@@ -83,6 +96,7 @@ pub async fn setup(link: u32, kill_switch: bool) -> io::Result<()> {
         let route = match family {
             AddressFamily::Inet => RouteMessageBuilder::<Ipv4Addr>::new()
                 .output_interface(link)
+                .gateway(GATEWAY)
                 .table_id(TABLE)
                 .build(),
             _ => RouteMessageBuilder::<Ipv6Addr>::new()
@@ -104,7 +118,7 @@ pub async fn setup(link: u32, kill_switch: bool) -> io::Result<()> {
                 .await
                 .map_err(nl)?;
         }
-        for rule in rules(family) {
+        for rule in rules(family, PREF) {
             let mut req = h.rule().add();
             *req.message_mut() = rule;
             req.execute().await.map_err(nl)?;
@@ -114,7 +128,8 @@ pub async fn setup(link: u32, kill_switch: bool) -> io::Result<()> {
 }
 
 /// Deletes the rules and blackhole routes `setup` added, including ones left by a run that did not
-/// exit cleanly. Each is matched in full, so rules of other software at the same priorities stay.
+/// exit cleanly or by an earlier version. Each is matched in full, so rules of other software at the
+/// same priorities stay.
 pub async fn restore() -> io::Result<()> {
     let h = handle()?;
     for family in FAMILIES {
@@ -123,7 +138,10 @@ pub async fn restore() -> io::Result<()> {
             Err(e) if e.raw_os_error() == Some(3) || no_ipv6(family, &e) => {}
             r => r?,
         }
-        for rule in rules(family) {
+        for rule in rules(family, PREF)
+            .into_iter()
+            .chain(rules(family, LEGACY_PREF))
+        {
             // One copy is expected; the bound is a guard.
             for _ in 0..8 {
                 match h.rule().del(rule.clone()).execute().await.map_err(nl) {
@@ -137,7 +155,23 @@ pub async fn restore() -> io::Result<()> {
     Ok(())
 }
 
-fn rules(family: AddressFamily) -> [RuleMessage; 4] {
+/// The interface that a packet to `dest` from an unmarked socket leaves by now, through every rule.
+pub async fn device_to(dest: Ipv4Addr) -> io::Result<Option<u32>> {
+    let h = handle()?;
+    let msg = RouteMessageBuilder::<Ipv4Addr>::new()
+        .destination_prefix(dest, 32)
+        .build();
+    let mut answers = h.route().get(msg).execute();
+    match answers.try_next().await.map_err(nl)? {
+        Some(route) => Ok(route.attributes.iter().find_map(|a| match a {
+            RouteAttribute::Oif(index) => Some(*index),
+            _ => None,
+        })),
+        None => Ok(None),
+    }
+}
+
+fn rules(family: AddressFamily, pref: u32) -> [RuleMessage; 4] {
     let rule = |pref: u32, table: u32, matches: &[RuleAttribute]| {
         let mut rule = RuleMessage::default();
         rule.header.family = family;
@@ -147,20 +181,20 @@ fn rules(family: AddressFamily) -> [RuleMessage; 4] {
         rule
     };
     let port_53 = RuleAttribute::DestinationPortRange(RulePortRange { start: 53, end: 53 });
-    let mut rest = rule(TABLE + 3, TABLE, &[RuleAttribute::FwMark(TABLE)]);
+    let mut rest = rule(pref + 3, TABLE, &[RuleAttribute::FwMark(TABLE)]);
     rest.header.flags = RuleFlags::Invert;
     [
         rule(
-            TABLE,
+            pref,
             TABLE,
             &[RuleAttribute::IpProtocol(IpProtocol::Udp), port_53.clone()],
         ),
         rule(
-            TABLE + 1,
+            pref + 1,
             TABLE,
             &[RuleAttribute::IpProtocol(IpProtocol::Tcp), port_53],
         ),
-        rule(TABLE + 2, MAIN, &[RuleAttribute::SuppressPrefixLen(0)]),
+        rule(pref + 2, MAIN, &[RuleAttribute::SuppressPrefixLen(0)]),
         rest,
     ]
 }
@@ -191,7 +225,7 @@ mod tests {
 
     #[test]
     fn rules_send_dns_and_unmarked_traffic_to_the_tunnel_table() {
-        let [udp, tcp, main, rest] = rules(AddressFamily::Inet6);
+        let [udp, tcp, main, rest] = rules(AddressFamily::Inet6, PREF);
         for r in [&udp, &tcp, &main, &rest] {
             assert_eq!(r.header.family, AddressFamily::Inet6);
             assert_eq!(r.header.action, RuleAction::ToTable);
@@ -219,6 +253,8 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(prefs, [TABLE, TABLE + 1, TABLE + 2, TABLE + 3]);
+        assert_eq!(prefs, [PREF, PREF + 1, PREF + 2, PREF + 3]);
+        // Before the main table's rule, which looks up everything.
+        const { assert!(PREF + 3 < 32766) };
     }
 }
