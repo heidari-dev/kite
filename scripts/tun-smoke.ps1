@@ -93,10 +93,12 @@ function Assert-Filters([bool]$KillSwitch) {
     $filters = Kite-Filters
     $hard = @($filters | Where-Object { $_.SelectNodes('flags/item') | Where-Object { $_.InnerText -eq 'FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT' } })
     if ($hard.Count -ne 0) { Fail "Kite added $($hard.Count) hard permits, which override other programs' blocks" }
-    $guard = @($filters | Where-Object { $_.displayData.name -eq 'Kite DNS guard' })
-    if ($guard.Count -ne 2) { Fail "the DNS guard has $($guard.Count) filters, not 2" }
-    if (@($guard | Where-Object { $_.action.type -ne 'FWP_ACTION_BLOCK' }).Count -ne 0) { Fail 'the DNS guard permits something' }
-    $kill = @($filters | Where-Object { $_.displayData.name -eq 'Kite kill switch' })
+    $named = { param($Name) @($filters | Where-Object { $_.SelectSingleNode('displayData/name').InnerText -eq $Name }) }
+    $guard = @(& $named 'Kite DNS guard')
+    # Per IP version: one block for DNS, and permits for the loopback, kite0 and virtual adapters.
+    $blocks = @($guard | Where-Object { $_.SelectSingleNode('action/type').InnerText -eq 'FWP_ACTION_BLOCK' })
+    if ($guard.Count -ne 8 -or $blocks.Count -ne 2) { Fail "the DNS guard has $($guard.Count) filters and $($blocks.Count) blocks, not 8 and 2" }
+    $kill = @(& $named 'Kite kill switch')
     if ($KillSwitch -ne ($kill.Count -gt 0)) { Fail "kill switch filters: $($kill.Count)" }
 }
 function Assert-Clean([string]$When) {

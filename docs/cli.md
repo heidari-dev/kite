@@ -284,23 +284,25 @@ only.
 
 What it changes on the system, and nothing else:
 
-- The Wintun adapter `kite0` (198.18.0.1/30, interface metric 1, DNS server 1.1.1.1), which goes away
+- The Wintun adapter `kite0` (198.18.0.1/30, interface metric 3, DNS server 1.1.1.1), which goes away
   with the process.
 - Default routes on that adapter: `0.0.0.0/0` through 198.18.0.2 and `::/0`, metric 0. With the
-  interface metric of 1 they win over every network card, and lose to a VPN started on top that sets
-  metric 0 (see [A second VPN](architecture.md#a-second-vpn-on-the-computer)). The local network and
+  interface metric of 3 they win over every network card, and lose to a VPN started on top that sets
+  a lower one (see [A second VPN](architecture.md#a-second-vpn-on-the-computer)). The local network and
   the other adapters' own subnets keep working, and the network card's default route is not
-  touched. If a network card's default route still wins, Full mode does not start.
+  touched. If a network card's default route still wins, for IPv4 or IPv6, Full mode does not
+  start.
 - A host route for the relay's address when the system reaches it through the default route (a
   `--tcp` address on the Internet), with the next hop it had, so the connection to the phone does
   not enter its own tunnel. A phone on the same WiFi or on its hotspot needs none. USB needs none:
   adb is on the loopback address.
-- The DNS guard: Windows Filtering Platform filters (`Kite DNS guard`) that block DNS out of a
-  network card (Ethernet, Wi-Fi, mobile broadband). Windows asks the DNS servers of all its adapters
-  at once; with the guard only `kite0`'s 1.1.1.1 answers, and the tunnel carries it to the phone as
-  DNS over TCP. Names that only the local network knows (a router's `.lan` name) stop resolving
-  while the tunnel is up. While a second VPN with its own DNS servers carries the default route,
-  `kite0` offers no DNS server, so names go to that VPN.
+- The DNS guard: Windows Filtering Platform filters (`Kite DNS guard`) that block DNS on every
+  adapter but the loopback, `kite0` and other virtual adapters (a VPN's). Windows asks the DNS
+  servers of all its adapters at once; with the guard only `kite0`'s 1.1.1.1 answers, and the
+  tunnel carries it to the phone as DNS over TCP. Names that only the local network knows (a
+  router's `.lan` name) stop resolving while the tunnel is up. While a second VPN with its own DNS
+  servers carries the default route, `kite0` offers no DNS server, so names go to that VPN; a
+  dial-up VPN (IKEv2) gets its DNS through the guard while it carries the default route.
 - `tun.lock` and `tunnel.state` in `%ProgramData%\Kite`: the first keeps two kites from setting up
   at once, the second remembers the relay's host route.
 
