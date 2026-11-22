@@ -13,8 +13,10 @@
 //!   router 198.18.0.2 and `OverridePrimary`, as VPNs publish theirs: configd makes it the primary
 //!   service and points the default route at it, and a VPN that looks for the primary interface or
 //!   the default gateway finds the tunnel. A VPN that publishes its own service later takes over.
-//!   If the default route does not follow, the routes `0.0.0.0/1` and `128.0.0.0/1` on the device
-//!   take everything instead, as up to 0.1.0-rc.2.
+//!   Until it does (up to three seconds), the routes `0.0.0.0/1` and `128.0.0.0/1` on the device
+//!   and a resolver that matches every name hold traffic and names; if it does not, they stay, as
+//!   up to 0.1.0-rc.2. After a crash the service stays until the daemon starts again or `restore`,
+//!   and the computer has no working default route meanwhile.
 //! - Two routes on the device, `::/1` and `8000::/1`, which take all IPv6 that has no more specific
 //!   route (the device has no IPv6 address to be a primary service with).
 //! - A host route for the relay when it is reached through the default route, through the gateway
@@ -70,9 +72,6 @@ const UDPGW: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)
 const DNS: IpAddr = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
 const DNS_KEY: &str = "State:/Network/Service/kite/DNS";
 const IPV4_KEY: &str = "State:/Network/Service/kite/IPv4";
-/// An address whose route tells where the default route goes now (a documentation range, never
-/// sent anywhere).
-const PROBE: &str = "203.0.113.1";
 /// How long configd gets to point the default route at the device.
 const PRIMARY_WAIT: Duration = Duration::from_secs(3);
 /// Where the lock and the state live: the daemon's directory, for root only.
@@ -325,18 +324,6 @@ async fn setup(name: &str, relay: Option<SocketAddr>, kill_switch: bool) -> io::
     if let Some(b) = &state.bypass {
         route(&b.args("add")).await?;
     }
-    scutil(&service(name)).await?;
-    scutil(&dns(true)).await?;
-    if !became_primary(name).await? {
-        eprintln!(
-            "kite: the system did not make the tunnel its primary service; a VPN started on top \
-             may not find it"
-        );
-        for half in HALVES_V4 {
-            route(&["-n", "add", "-inet", half, "-interface", name]).await?;
-        }
-        scutil(&dns(false)).await?;
-    }
     for half in HALVES_V6 {
         // No IPv6 on this host is the usual reason; say so, so that a failure on a host that has
         // IPv6 is not silent.
@@ -345,6 +332,25 @@ async fn setup(name: &str, relay: Option<SocketAddr>, kill_switch: bool) -> io::
             break;
         }
     }
+    // The halves and a resolver for every name hold the traffic and the names while configd makes
+    // the service primary; once the default route goes through the device they are not needed.
+    for half in HALVES_V4 {
+        route(&["-n", "add", "-inet", half, "-interface", name]).await?;
+    }
+    scutil(&dns(false)).await?;
+    scutil(&service(name)).await?;
+    if became_primary(name).await? {
+        scutil(&dns(true)).await?;
+        for half in HALVES_V4 {
+            route(&["-n", "delete", "-inet", half, "-interface", name]).await?;
+        }
+    } else {
+        eprintln!(
+            "kite: the system did not make the tunnel its primary service; a VPN started on top \
+             may not find it"
+        );
+        scutil(&format!("remove {IPV4_KEY}\n")).await?;
+    }
     flush_dns().await;
     Ok(())
 }
@@ -352,7 +358,8 @@ async fn setup(name: &str, relay: Option<SocketAddr>, kill_switch: bool) -> io::
 /// The scutil script that publishes the device as a network service that overrides the primary one.
 fn service(utun: &str) -> String {
     format!(
-        "d.init\nd.add Addresses * {ADDR}\nd.add DestAddresses * {PEER}\nd.add Router {PEER}\n\
+        "d.init\nd.add Addresses * {ADDR}\nd.add DestAddresses * {PEER}\n\
+         d.add SubnetMasks * 255.255.255.255\nd.add Router {PEER}\n\
          d.add InterfaceName {utun}\nd.add OverridePrimary # 1\nset {IPV4_KEY}\n"
     )
 }
@@ -372,7 +379,7 @@ fn dns(primary: bool) -> String {
 async fn became_primary(utun: &str) -> io::Result<bool> {
     let deadline = tokio::time::Instant::now() + PRIMARY_WAIT;
     loop {
-        let out = exec(ROUTE, &["-n", "get", PROBE], "").await?;
+        let out = exec(ROUTE, &["-n", "get", "default"], "").await?;
         if route_interface(&String::from_utf8_lossy(&out.stdout)) == Some(utun) {
             return Ok(true);
         }

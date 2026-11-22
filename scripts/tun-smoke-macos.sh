@@ -43,6 +43,7 @@ cleanup() {
   set +e
   for pid in $pids; do kill -9 "$pid" 2>/dev/null; done
   "$KITE" restore 2>/dev/null
+  pfctl -a com.apple/zzz-kite-test -F rules 2>/dev/null
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -229,10 +230,10 @@ kite_has 'kill switch: on' || fail "status does not show the kill switch"
 # Another program's block of traffic into the tunnel still stops it: the kill switch passes
 # nothing. Without the block the handshake is answered inside the tunnel (curl 52 or 56).
 dev=$(tunnel_device)
-pfctl -a com.apple/zzz-kite-test -f - <<<"block return out quick on $dev proto tcp from any to 1.1.1.1 port 80" 2>/dev/null
+pfctl -a com.apple/zzz-kite-test -f - <<<"block return out quick on $dev proto tcp from any to 1.1.1.1 port 80"   || fail "loading the test anchor failed"
 code=0
 curl -sS -o /dev/null --connect-timeout 5 -m 10 http://1.1.1.1/ 2>/dev/null || code=$?
-pfctl -a com.apple/zzz-kite-test -F rules 2>/dev/null
+pfctl -a com.apple/zzz-kite-test -F rules || fail "flushing the test anchor failed"
 [ "$code" = 7 ] || fail "another anchor's block did not hold with the kill switch on (curl exit $code)"
 echo "kill switch: another program's block still holds"
 # The link to the relay was dialled before the rules went up; it must survive them.
