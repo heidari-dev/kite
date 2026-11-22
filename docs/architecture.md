@@ -158,9 +158,11 @@ whether Kite runs or not.
 - Table 5300's IPv4 default route goes through 198.18.0.2, so OpenVPN, which looks up the route to
   its server through the rules, adds its server's host route through `kite0` with a gateway.
 - With systemd-resolved, two links with the `~.` routing domain both get every query. While another
-  link carries the default route and has DNS servers of its own, Kite takes `~.` and the default
-  route flag off `kite0`, so names go to that VPN only, and puts them back within two seconds of the
-  VPN going.
+  link carries the default route and takes every name itself (DNS servers and `~.`, as wg-quick
+  sets them), Kite takes `~.` and the default route flag off `kite0`, so names go to that VPN only.
+  Kite looks every two seconds, and every quarter second while the VPN is up: when the VPN goes,
+  names can reach the network card's resolver for that long, until `kite0` has `~.` back. A VPN
+  without `~.` leaves `kite0` as it is, so names go through the phone rather than to the LAN.
 - Kite adds no firewall rules on Linux, so a VPN's nftables or iptables kill switch keeps blocking
   whatever it blocks. Kite's kill switch, the blackhole route in table 5300, also catches a VPN's
   own packets when Kite dies, so they do not go out by the network card.

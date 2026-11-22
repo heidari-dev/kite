@@ -221,6 +221,7 @@ Besides the abstract socket, the relay's only listener is the optional WiFi one 
 - No quota per paired computer: a paired computer can use all of the phone's data.
 - Proxy mode and TUN mode listen on 127.0.0.1, so any local user can send traffic through the phone
   while kite runs.
+- On Linux with systemd-resolved, when a second VPN that took every name goes, names can reach the network card's resolver for up to a quarter of a second, until Kite gives `kite0` its `~.` routing domain back; a VPN with its own kill switch blocks them.
 - On Linux a VPN started before Kite has its routing rules after Kite's, so Kite takes its traffic: start it after Kite. sing-box finds its outbound interface in the main table and binds to the network card unless `default_interface` is `kite0`. Without systemd-resolved a VPN's DNS server in `/etc/resolv.conf` that the main table routes (OpenVPN's) is caught by Kite's DNS rule and fails.
 - In TUN mode, names under a search domain that a LAN link supplies to systemd-resolved still go to
   that link's resolver, and so do link-local IPv6 resolvers.

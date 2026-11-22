@@ -22,8 +22,10 @@ const DNS: IpAddr = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
 /// An address whose route tells which link carries the default route now (a documentation range,
 /// never sent anywhere).
 const PROBE: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 1);
-/// How often kite0's DNS settings follow a second VPN coming and going.
+/// How often kite0's DNS settings follow a second VPN coming; and going, while it is up: when it
+/// goes, names may reach the network card's link until kite0 takes them back.
 const FOLLOW: Duration = Duration::from_secs(2);
+const FOLLOW_BACK: Duration = Duration::from_millis(250);
 const RESOLVECTL: &str = "/usr/bin/resolvectl";
 
 /// Lets the kill switch pass a lookup of the phone and a dial to `relay`. Nothing to do here: the
@@ -193,11 +195,12 @@ async fn resolved_in_use() -> io::Result<bool> {
 /// root, resolved asks polkit (see docs/architecture.md).
 async fn resolved(link: &str, on: bool) -> io::Result<()> {
     let dns = DNS.to_string();
+    // The domain first: until it is back, resolved may send names to the network card's link.
     let steps: &[[&str; 3]] = if on {
         &[
-            ["dns", link, dns.as_str()],
             ["domain", link, "~."],
             ["default-route", link, "true"],
+            ["dns", link, dns.as_str()],
         ]
     } else {
         // An empty string clears the list.
@@ -207,7 +210,7 @@ async fn resolved(link: &str, on: bool) -> io::Result<()> {
         let out = resolvectl(args).await?;
         if !out.status.success() {
             return Err(io::Error::other(format!(
-                "systemd-resolved refused DNS settings for {link} (run as root or add the polkit                  rule from docs/architecture.md): {}",
+                "systemd-resolved refused DNS settings for {link} (run as root or add the polkit \n                 rule from docs/architecture.md): {}",
                 String::from_utf8_lossy(&out.stderr).trim()
             )));
         }
@@ -240,21 +243,31 @@ async fn follow_dns(link: u32) {
     let mut vpn_link = None;
     let mut said = false;
     loop {
-        tokio::time::sleep(FOLLOW).await;
+        tokio::time::sleep(if ours { FOLLOW } else { FOLLOW_BACK }).await;
         let r = async {
-            let dev = route::device_to(PROBE).await?;
-            let vpn = match dev {
-                Some(d) if d == link => false,
-                Some(d) if vpn_link == Some(d) => true,
-                Some(d) => takes_every_name(d).await?,
-                None => false,
+            // A failure to look counts as no VPN: kite0 takes DNS back rather than leave it.
+            let looked = async {
+                let dev = route::device_to(PROBE).await?;
+                let vpn = match dev {
+                    Some(d) if d == link => false,
+                    Some(d) if vpn_link == Some(d) => true,
+                    Some(d) => takes_every_name(d).await?,
+                    None => false,
+                };
+                io::Result::Ok(dev.filter(|_| vpn))
+            }
+            .await;
+            let (found, failed) = match looked {
+                Ok(found) => (found, None),
+                Err(e) => (None, Some(e)),
             };
-            vpn_link = dev.filter(|_| vpn);
+            vpn_link = found;
+            let vpn = found.is_some();
             if vpn == ours {
                 resolved(NAME, !vpn).await?;
                 ours = !vpn;
             }
-            io::Result::Ok(())
+            failed.map_or(Ok(()), Err)
         }
         .await;
         match r {

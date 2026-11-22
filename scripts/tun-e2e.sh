@@ -344,6 +344,7 @@ class H(http.server.BaseHTTPRequestHandler):
 http.server.ThreadingHTTPServer(("10.99.0.1", 8080), H).serve_forever()
 PY
 pids+=($!)
+for _ in $(seq 25); do curl -s -o /dev/null http://10.99.0.1:8080/ && break; sleep 0.2; done
 install -d -m 700 "$BIN/wg"
 cat > "$BIN/wg/wg0.conf" <<CONF
 [Interface]
@@ -379,7 +380,8 @@ pc iptables -Z OUTPUT
 pc ip6tables -Z OUTPUT
 phone iptables -Z
 # wg-quick's rules come before kite's; its own packets (mark 51820) fall through to kite's.
-[ "$(pc ip rule | awk -F: '/lookup 51820/ {print $1; exit}')" -lt 32760 ] || { pc ip rule >&2; fail "wg-quick's rules are not before kite's"; }
+wg_pref=$(pc ip rule | awk -F: '/lookup 51820/ {print $1; exit}')
+[ "$wg_pref" -lt 32760 ] || { pc ip rule >&2; fail "wg-quick's rules are not before kite's"; }
 pc ip route get "$HOST_IP" mark 51820 | grep -q "dev kite0" || fail "the VPN's own packets would not go through the tunnel"
 [ "$(vpn_get)" = 10.99.0.2 ] || fail "the pc's traffic does not leave with the VPN's address"
 [ "$(counter phone iptables OUTPUT 4)" -gt 0 ] || fail "the relay did not carry the VPN's packets"
@@ -393,9 +395,12 @@ pc curl -sS --max-time 5 -o /dev/null https://1.1.1.1/ 2>/dev/null && fail "traf
 pc dig +short +time=3 +tries=1 @9.9.9.9 example.com A > /dev/null && fail "DNS got past the VPN's kill switch through kite"
 pc nft delete table inet vpn2
 pc curl -sS --max-time 20 -o /dev/null https://1.1.1.1/ || fail "the tunnel does not carry traffic again without the VPN"
+# wg-quick cannot take down what it no longer finds: its two rules and its own nftables table.
+pc ip rule del pref "$wg_pref"
+pc ip rule del pref "$((wg_pref - 1))"
+pc nft delete table ip wg-quick-wg0 2> /dev/null || true
 # kite dies while the VPN is up: with kite's kill switch the VPN's packets must not leave by
 # themselves.
-pc wg-quick down "$BIN/wg/wg0.conf" > /dev/null 2>&1 || true
 pc wg-quick up "$BIN/wg/wg0.conf" > "$BIN/wg.log" 2>&1 || { cat "$BIN/wg.log" >&2; fail "wg-quick up again"; }
 [ "$(vpn_get)" = 10.99.0.2 ] || fail "the VPN does not come back"
 pc iptables -Z OUTPUT
