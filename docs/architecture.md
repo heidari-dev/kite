@@ -172,6 +172,24 @@ whether Kite runs or not.
   `/etc/resolv.conf` is caught by Kite's DNS rule (OpenVPN's, whose routes are in the main table),
   so names fail; wg-quick's rules come first and are not affected.
 
+### macOS
+
+- The tunnel is published as a network service, `State:/Network/Service/kite/IPv4` with the router
+  198.18.0.2 and `OverridePrimary`, the way a VPN publishes its own. configd makes it the primary
+  service and points the default route at it, so wg-quick and OpenVPN (which read the default
+  gateway) and Network Extension VPNs (which bind their own connection to the primary interface)
+  leave through the tunnel. Their own routes (`0.0.0.0/1` and `128.0.0.0/1`, or their service)
+  then win for everything else. Up to 0.1.0-rc.2 Kite used those same halves, so a VPN could not
+  add its own. If configd does not follow within three seconds, Kite falls back to the halves.
+- DNS is the service's own (1.1.1.1), the resolver of the primary service, which a VPN that becomes
+  primary replaces with its own. Up to 0.1.0-rc.2 it was a resolver that matched every name.
+- IPv6 stays on `::/1` and `8000::/1`: the device has no IPv6 address to be a primary service with.
+- The pf kill switch is blocks only. A `pass quick` in Kite's anchor would end pf's evaluation
+  before another program's anchor could block, so a VPN's kill switch would not hold for traffic
+  into Kite's tunnel. The anchor `com.apple/kite` holds `anchor "block" out on ! lo0`, and each
+  block in `com.apple/kite/block` leaves out the tunnel device and what the link to the phone needs.
+  A VPN's own `utun` device is blocked too, so with a VPN on top use its kill switch, not Kite's.
+
 ## Transports
 
 The session does not care what carries it, as long as it is one reliable byte stream. `kite-link`

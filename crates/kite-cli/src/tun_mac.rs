@@ -2,18 +2,27 @@
 //! A utun device feeds tun2proxy, which turns its packets into connections to the local proxy
 //! from proxy mode, as on Linux and Windows. It needs root.
 //!
-//! What it changes, and `restore` takes all of it back:
+//! The device is set up as the computer's primary network service, the way a VPN's is, so that a
+//! second VPN started on top of it treats it as the way out and sends its own connection to its
+//! server through it (see docs/architecture.md, "A second VPN"). What it changes, and `restore`
+//! takes all of it back:
 //!
 //! - The device `utunN` (the system picks N; 198.18.0.1 to 198.18.0.2). It goes away with the
 //!   process, and the kernel removes its routes with it.
-//! - Four routes on that device, `0.0.0.0/1`, `128.0.0.0/1`, `::/1` and `8000::/1`: together they
-//!   take everything that has no more specific route, so the LAN stays as it is and the real
-//!   default route is not touched.
+//! - A network service in the system configuration, `State:/Network/Service/kite/IPv4` with the
+//!   router 198.18.0.2 and `OverridePrimary`, as VPNs publish theirs: configd makes it the primary
+//!   service and points the default route at it, and a VPN that looks for the primary interface or
+//!   the default gateway finds the tunnel. A VPN that publishes its own service later takes over.
+//!   If the default route does not follow, the routes `0.0.0.0/1` and `128.0.0.0/1` on the device
+//!   take everything instead, as up to 0.1.0-rc.2.
+//! - Two routes on the device, `::/1` and `8000::/1`, which take all IPv6 that has no more specific
+//!   route (the device has no IPv6 address to be a primary service with).
 //! - A host route for the relay when it is reached through the default route, through the gateway
 //!   (or interface) it had before, so the socket to the phone does not enter its own tunnel. A
 //!   phone on the LAN needs none. It is written to `tun.state` before it is added.
-//! - A DNS resolver in the system configuration (`State:/Network/Service/kite/DNS`) that matches
-//!   every name and sends it to 1.1.1.1, which the tunnel carries to the phone.
+//! - The service's DNS (`State:/Network/Service/kite/DNS`), 1.1.1.1, which the tunnel carries to the
+//!   phone: the primary service's resolver answers every name. Under the fallback it is a resolver
+//!   that matches every name.
 //!
 //! With the kill switch (opt-in) pf also blocks every packet that does not go out through the
 //! device, to the relay (its address and port) or on the loopback, plus DHCP and IPv6 link
@@ -23,6 +32,10 @@
 //!   because the main ruleset macOS ships has `anchor "com.apple/*"`, so Kite never rewrites the
 //!   user's main ruleset; it checks that line is there and refuses to start without it, rather than
 //!   run a block that does nothing.
+//! - They are blocks only, never a pass: a `pass quick` in Kite's anchor would end pf's evaluation
+//!   before another program's anchor, a second VPN's kill switch, could block. The anchor holds one
+//!   rule, `anchor "block" out on ! lo0`, and the blocks in `com.apple/kite/block` each leave out the
+//!   device and what the tunnel needs, so whatever they do not block is left to the rest of pf.
 //! - pf is enabled with `pfctl -E`, which counts a reference (a token, kept in `tun.state`) instead
 //!   of switching it on; `pfctl -X` gives it back, so a firewall the user had on stays on and one
 //!   that was off goes off again.
@@ -56,6 +69,12 @@ const UDPGW: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)
 /// DNS queries go here, as DNS over TCP through the relay.
 const DNS: IpAddr = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
 const DNS_KEY: &str = "State:/Network/Service/kite/DNS";
+const IPV4_KEY: &str = "State:/Network/Service/kite/IPv4";
+/// An address whose route tells where the default route goes now (a documentation range, never
+/// sent anywhere).
+const PROBE: &str = "203.0.113.1";
+/// How long configd gets to point the default route at the device.
+const PRIMARY_WAIT: Duration = Duration::from_secs(3);
 /// Where the lock and the state live: the daemon's directory, for root only.
 const STATE_DIR: &str = "/var/db/kite";
 const ROUTE: &str = "/sbin/route";
@@ -64,6 +83,8 @@ const DSCACHEUTIL: &str = "/usr/bin/dscacheutil";
 const PKILL: &str = "/usr/bin/pkill";
 const PFCTL: &str = "/sbin/pfctl";
 const ANCHOR: &str = "com.apple/kite";
+/// Where the blocks are; the anchor above only sends what does not leave on the loopback here.
+const BLOCK_ANCHOR: &str = "com.apple/kite/block";
 /// Longest wait for one command.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the tunnel's tasks get to finish once the tunnel is told to end. Past it they are
@@ -71,7 +92,8 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 /// otherwise not end.
 const TEARDOWN: Duration = Duration::from_secs(4);
 
-/// The routes that take all traffic into the tunnel: each half of the address space.
+/// The routes that take all traffic into the tunnel when the device is not the primary service:
+/// each half of the address space.
 const HALVES_V4: [&str; 2] = ["0.0.0.0/1", "128.0.0.0/1"];
 const HALVES_V6: [&str; 2] = ["::/1", "8000::/1"];
 
@@ -298,13 +320,22 @@ async fn setup(name: &str, relay: Option<SocketAddr>, kill_switch: bool) -> io::
         if let Some(old) = old {
             pf_release(old).await;
         }
-        pf_load(&rules(name, relay)).await?;
+        pf_load(&blocks(name, relay)).await?;
     }
     if let Some(b) = &state.bypass {
         route(&b.args("add")).await?;
     }
-    for half in HALVES_V4 {
-        route(&["-n", "add", "-inet", half, "-interface", name]).await?;
+    scutil(&service(name)).await?;
+    scutil(&dns(true)).await?;
+    if !became_primary(name).await? {
+        eprintln!(
+            "kite: the system did not make the tunnel its primary service; a VPN started on top \
+             may not find it"
+        );
+        for half in HALVES_V4 {
+            route(&["-n", "add", "-inet", half, "-interface", name]).await?;
+        }
+        scutil(&dns(false)).await?;
     }
     for half in HALVES_V6 {
         // No IPv6 on this host is the usual reason; say so, so that a failure on a host that has
@@ -314,12 +345,49 @@ async fn setup(name: &str, relay: Option<SocketAddr>, kill_switch: bool) -> io::
             break;
         }
     }
-    let script = format!(
-        "d.init\nd.add ServerAddresses * {DNS}\nd.add SupplementalMatchDomains * \"\"\nset {DNS_KEY}\n"
-    );
-    scutil(&script).await?;
     flush_dns().await;
     Ok(())
+}
+
+/// The scutil script that publishes the device as a network service that overrides the primary one.
+fn service(utun: &str) -> String {
+    format!(
+        "d.init\nd.add Addresses * {ADDR}\nd.add DestAddresses * {PEER}\nd.add Router {PEER}\n\
+         d.add InterfaceName {utun}\nd.add OverridePrimary # 1\nset {IPV4_KEY}\n"
+    )
+}
+
+/// The scutil script for the service's DNS: as the primary service's, or, `primary` false, as a
+/// resolver that matches every name.
+fn dns(primary: bool) -> String {
+    let every_name = if primary {
+        ""
+    } else {
+        "d.add SupplementalMatchDomains * \"\"\n"
+    };
+    format!("d.init\nd.add ServerAddresses * {DNS}\n{every_name}set {DNS_KEY}\n")
+}
+
+/// Waits for configd to point the default route at the device.
+async fn became_primary(utun: &str) -> io::Result<bool> {
+    let deadline = tokio::time::Instant::now() + PRIMARY_WAIT;
+    loop {
+        let out = exec(ROUTE, &["-n", "get", PROBE], "").await?;
+        if route_interface(&String::from_utf8_lossy(&out.stdout)) == Some(utun) {
+            return Ok(true);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// The `interface:` line of `route get`.
+fn route_interface(text: &str) -> Option<&str> {
+    text.lines()
+        .find_map(|l| l.trim().strip_prefix("interface:"))
+        .map(str::trim)
 }
 
 /// Everything TUN mode adds that outlives the device, taken away; what is not there is skipped, so
@@ -342,7 +410,7 @@ async fn undo(lift: bool) -> io::Result<()> {
         }
         Err(e) => note(Err(e)),
     }
-    note(scutil(&format!("remove {DNS_KEY}\n")).await);
+    note(scutil(&format!("remove {IPV4_KEY}\nremove {DNS_KEY}\n")).await);
     flush_dns().await;
     if lift {
         // Flushing also works when the rules are not there; the token is given back either way.
@@ -365,27 +433,43 @@ async fn undo(lift: bool) -> io::Result<()> {
     first
 }
 
-/// The rules of the block. Everything that is not on the loopback, on the tunnel device or to the
-/// relay is refused (with a reset, so programs fail at once), except DHCP and IPv6 link discovery,
-/// which keep the link to the router or the phone up.
-fn rules(utun: &str, relay: Option<SocketAddr>) -> String {
-    // Stateless, so the link to the relay that was dialled before the rules existed (it has no pf
-    // state) keeps working.
-    let mut r = format!("pass quick on lo0 all no state\npass quick on {utun} all no state\n");
-    // A relay on the loopback is passed above.
-    if let Some(a) = relay.filter(|a| !a.ip().is_loopback()) {
-        r += &format!(
-            "pass out quick proto tcp from any to {} port {} no state\n",
-            a.ip(),
-            a.port()
-        );
+/// The blocks of the kill switch, for the anchor `com.apple/kite/block`, which only sees what does
+/// not leave on the loopback. Each block leaves out the device, and together they leave out TCP to
+/// the relay (its address and port), DHCP and IPv6 link discovery, which keep the link to the router
+/// or the phone up. Everything else going out is refused, with a reset or an unreachable so that
+/// programs fail at once. Blocks only: what they do not block, other rules in pf still decide.
+fn blocks(utun: &str, relay: Option<SocketAddr>) -> String {
+    let out = format!("block return out quick on ! {utun}");
+    let mut r = String::new();
+    match relay.filter(|a| !a.ip().is_loopback()) {
+        Some(a) => {
+            let (ip, port) = (a.ip(), a.port());
+            let (own, other) = if ip.is_ipv4() {
+                ("inet", "inet6")
+            } else {
+                ("inet6", "inet")
+            };
+            r += &format!("{out} {own} proto tcp from any to ! {ip}\n");
+            r += &format!("{out} {own} proto tcp from any to {ip} port != {port}\n");
+            r += &format!("{out} {other} proto tcp all\n");
+        }
+        // A relay on the loopback is not filtered here.
+        None => r += &format!("{out} proto tcp all\n"),
     }
-    r += "pass out quick proto udp from any port 68 to any port 67\n\
-          pass out quick inet6 proto udp from any port 546 to any port 547\n\
-          pass out quick inet6 proto icmp6 all icmp6-type { 130, 131, 132, 133, 134, 135, 136, 137, 143 }\n\
-          block return out quick all\n";
+    r += &format!(
+        "{out} inet proto udp from any port != 68\n\
+         {out} inet proto udp from any port 68 to any port != 67\n\
+         {out} inet6 proto udp from any port != 546\n\
+         {out} inet6 proto udp from any port 546 to any port != 547\n\
+         {out} inet proto icmp all\n\
+         {out} inet6 proto icmp6 all icmp6-type {{ 128, 129, 139, 140 }}\n\
+         {out} proto {{ 4, 41, 47, 50, 51, 103, 112, 115, 132 }} all\n"
+    );
     r
 }
+
+/// The rule of the anchor `com.apple/kite`: what does not leave on the loopback goes on to the blocks.
+const SEND_TO_BLOCKS: &str = "anchor \"block\" out on ! lo0 all\n";
 
 /// Takes a reference on pf being enabled; the token gives it back.
 async fn pf_enable() -> io::Result<u64> {
@@ -428,14 +512,17 @@ async fn pf_release(pf: Pf) {
     }
 }
 
-/// Loads the block, and checks that the main ruleset evaluates the anchor it is in.
-async fn pf_load(rules: &str) -> io::Result<()> {
-    let out = exec(PFCTL, &["-a", ANCHOR, "-f", "-"], rules).await?;
-    if !out.status.success() {
-        return Err(io::Error::other(format!(
-            "loading the kill switch into pf failed: {}",
-            said(&out)
-        )));
+/// Loads the blocks, then the rule that sends packets to them, and checks that the main ruleset
+/// evaluates the anchor it is in.
+async fn pf_load(blocks: &str) -> io::Result<()> {
+    for (anchor, rules) in [(BLOCK_ANCHOR, blocks), (ANCHOR, SEND_TO_BLOCKS)] {
+        let out = exec(PFCTL, &["-a", anchor, "-f", "-"], rules).await?;
+        if !out.status.success() {
+            return Err(io::Error::other(format!(
+                "loading the kill switch into pf failed: {}",
+                said(&out)
+            )));
+        }
     }
     let main = exec(PFCTL, &["-s", "rules"], "").await?;
     if !String::from_utf8_lossy(&main.stdout)
@@ -450,16 +537,18 @@ async fn pf_load(rules: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Takes the kill switch out of pf: first the rule that sends packets to the blocks, then the blocks.
 async fn pf_flush() -> io::Result<()> {
-    let out = exec(PFCTL, &["-a", ANCHOR, "-F", "rules"], "").await?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!(
-            "removing the kill switch from pf failed: {}",
-            said(&out)
-        )))
+    for anchor in [ANCHOR, BLOCK_ANCHOR] {
+        let out = exec(PFCTL, &["-a", anchor, "-F", "rules"], "").await?;
+        if !out.status.success() {
+            return Err(io::Error::other(format!(
+                "removing the kill switch from pf failed: {}",
+                said(&out)
+            )));
+        }
     }
+    Ok(())
 }
 
 /// The host route that keeps the relay out of the tunnel.
@@ -794,29 +883,60 @@ mod tests {
     }
 
     #[test]
-    fn the_block_passes_what_the_tunnel_needs_and_refuses_the_rest() {
+    fn the_kill_switch_only_blocks_and_leaves_out_the_tunnel() {
         let relay: SocketAddr = "203.0.113.9:47810".parse().unwrap();
-        let text = rules("utun4", Some(relay));
+        let text = blocks("utun4", Some(relay));
+        // A pass would end pf's evaluation before another program's anchor could block.
+        for line in text.lines().chain(SEND_TO_BLOCKS.lines()) {
+            assert!(!line.contains("pass"), "{line}");
+        }
+        assert!(text
+            .lines()
+            .all(|l| l.starts_with("block return out quick on ! utun4 ")));
         let lines: Vec<_> = text.lines().collect();
-        assert_eq!(lines.first(), Some(&"pass quick on lo0 all no state"));
-        assert!(lines.contains(&"pass quick on utun4 all no state"));
-        assert!(
-            lines.contains(&"pass out quick proto tcp from any to 203.0.113.9 port 47810 no state")
-        );
-        // `quick` makes the first match final, so the block must be last.
-        assert_eq!(lines.last(), Some(&"block return out quick all"));
-        assert_eq!(lines.iter().filter(|l| l.starts_with("block")).count(), 1);
+        assert!(lines.contains(
+            &"block return out quick on ! utun4 inet proto tcp from any to ! 203.0.113.9"
+        ));
+        assert!(lines.contains(
+            &"block return out quick on ! utun4 inet proto tcp from any to 203.0.113.9 port != 47810"
+        ));
+        // TCP of the other family has no relay to go to.
+        assert!(lines.contains(&"block return out quick on ! utun4 inet6 proto tcp all"));
+        assert!(SEND_TO_BLOCKS.contains("on ! lo0"));
         let v6: SocketAddr = "[2001:db8::9]:47810".parse().unwrap();
-        assert!(rules("utun4", Some(v6))
-            .contains("pass out quick proto tcp from any to 2001:db8::9 port 47810 no state\n"));
+        let text = blocks("utun4", Some(v6));
+        assert!(text.contains("inet6 proto tcp from any to ! 2001:db8::9\n"));
+        assert!(text.contains("on ! utun4 inet proto tcp all\n"));
     }
 
     #[test]
-    fn no_relay_rule_without_a_relay_or_for_loopback() {
+    fn no_relay_exception_without_a_relay_or_for_loopback() {
         let loopback: SocketAddr = "127.0.0.1:7000".parse().unwrap();
         for relay in [None, Some(loopback)] {
-            assert!(!rules("utun4", relay).contains("proto tcp"));
+            let text = blocks("utun4", relay);
+            assert!(text.contains("on ! utun4 proto tcp all\n"));
+            assert!(!text.contains("port != 7000"));
         }
+    }
+
+    #[test]
+    fn the_service_overrides_the_primary_one_with_the_peer_as_router() {
+        let s = service("utun4");
+        for want in [
+            "d.add Router 198.18.0.2",
+            "d.add InterfaceName utun4",
+            "d.add OverridePrimary # 1",
+            "set State:/Network/Service/kite/IPv4",
+        ] {
+            assert!(s.contains(want), "{want}");
+        }
+        assert!(!dns(true).contains("SupplementalMatchDomains"));
+        assert!(dns(false).contains("SupplementalMatchDomains * \"\""));
+        assert_eq!(
+            route_interface("   route to: 203.0.113.1\n  interface: utun4\n"),
+            Some("utun4")
+        );
+        assert_eq!(route_interface("route: writing to routing socket"), None);
     }
 
     #[test]

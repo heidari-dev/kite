@@ -82,26 +82,34 @@ When the daemon starts it first runs `kite restore`, so what a killed run left b
 the relay. Run by hand with `--foreground` it needs `sudo`. It changes, and nothing else:
 
 - The device `utunN` (the system picks N; 198.18.0.1 to 198.18.0.2). It goes away with the process.
-- Four routes on that device: `0.0.0.0/1`, `128.0.0.0/1`, `::/1` and `8000::/1`. They take everything
-  that has no more specific route, so the local network keeps working and the default route is not
-  touched.
+- A network service for that device in the system configuration
+  (`State:/Network/Service/kite/IPv4`, router 198.18.0.2, `OverridePrimary`), as a VPN publishes
+  one: it becomes the primary service and the default route goes through it, so the local network
+  keeps working and a VPN started on top finds the tunnel as its way out. If the system does not
+  follow, the routes `0.0.0.0/1` and `128.0.0.0/1` on the device take everything instead.
+- Two routes on that device, `::/1` and `8000::/1`, which take all IPv6 that has no more specific
+  route.
 - A host route for the relay's address when the system reaches it through the default route (a
   `--tcp` address on the Internet), through the gateway it had, so the connection to the phone does
   not enter its own tunnel. A phone on the same WiFi or on its hotspot, or USB, needs none.
-- A DNS resolver in the system configuration, `State:/Network/Service/kite/DNS`, that matches every
-  name and sends it to 1.1.1.1, which the tunnel carries to the phone as DNS over TCP. Names that
-  only the local network knows stop resolving while the tunnel is up.
+- The service's DNS server, `State:/Network/Service/kite/DNS`, 1.1.1.1, which the tunnel carries to
+  the phone as DNS over TCP: the primary service's server answers every name, until a VPN on top
+  becomes primary with its own. Names that only the local network knows stop resolving while the
+  tunnel is up.
 - `tun.lock` and `tun.state` in `/var/db/kite`.
 
-A normal stop removes the host route, the DNS resolver and the state file. If kite was killed, the
-device and its routes go away with the process; the DNS resolver and the host route stay until the
-daemon starts again or `sudo kite restore`. `kite` runs `route`, `scutil`, `dscacheutil`, `pkill` and `pfctl`
+A normal stop removes the host route, the service, its DNS server and the state file. If kite was
+killed, the device and its routes go away with the process; the service, its DNS server and the host
+route stay until the daemon starts again or `sudo kite restore`. `kite` runs `route`, `scutil`, `dscacheutil`, `pkill` and `pfctl`
 by full path with an empty environment.
 
 With the kill switch (`--kill-switch`, or the switch in the app; off until you turn it on) pf also
 blocks everything that does not go through the tunnel device, to the relay or on the loopback, and
-a lost phone is redialled until it answers or you disconnect. The rules are in the pf anchor
-`com.apple/kite` (so the default `/etc/pf.conf` must still have its `anchor "com.apple/*"` line),
+a lost phone is redialled until it answers or you disconnect. The rules are blocks only, so another
+program's pf block (a VPN's kill switch) still holds; a VPN on top has its own `utun` device, which
+Kite's kill switch blocks, so use the VPN's kill switch instead of Kite's then. The rules are in the
+pf anchors `com.apple/kite` and `com.apple/kite/block` (so the default `/etc/pf.conf` must still have
+its `anchor "com.apple/*"` line),
 and pf is enabled by reference, so Kite never turns off a firewall you had on. The block survives a
 crash of Kite, and launchd starting the daemon again does not lift it: Disconnect, `sudo kite
 restore` or a restart of the Mac gives you your normal connection back. `kite` runs `pfctl` by full
