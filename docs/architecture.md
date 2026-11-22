@@ -89,6 +89,63 @@ resolved (`set-dns-servers`, `set-domains`, `set-default-route`) and nothing els
 name the link, so the rule covers any link, and the daemon only touches its own. Without it TUN mode
 stops with an error instead of running with DNS that could leak.
 
+## A second VPN on the computer
+
+Where the phone's VPN gives only a way out, a second VPN or proxy on the computer can run over Kite
+for a clean address: Kite carries the second VPN's own connection to its server through the phone's
+VPN, and the second VPN carries everything else. For that the second VPN's connection to its server
+must take Kite's TUN device, and the second VPN's tunnel must win over Kite's for everything else.
+
+VPN clients do not all follow the routing table for their own connection. They pick an uplink and
+pin to it:
+
+| Client | How it picks its way out |
+|--------|--------------------------|
+| WireGuard for Windows (wireguard-nt) | The routing table, its own adapter left out. Adds the AllowedIPs as routes (`0.0.0.0/0` as one route), interface metric 0. Its kill switch blocks everything outside its adapter, and DNS to any server but its own. |
+| OpenVPN | A host route to its server through the gateway of the route the server is reached by, then `0.0.0.0/1` and `128.0.0.0/1` (or `0.0.0.0/0`) through its adapter. `block-outside-dns` blocks DNS outside its adapter. |
+| sing-box (v2rayN and other v2ray/Xray clients in TUN mode) | The `0.0.0.0/0` route with the lowest metric, but it skips virtual adapters (`IF_TYPE_PROP_VIRTUAL`), and it binds its own sockets to the adapter it found. Kite's Wintun adapter is virtual, so it is never picked: set the outbound interface to `kite0` by hand. |
+| Windows IKEv2, SSTP, L2TP | The routing table; Windows raises the other adapters' metrics while the VPN is up. |
+| System proxy (v2ray/Xray, Psiphon) | No adapter: the proxy's own connections follow the routing table, so they enter Kite like any other. |
+
+So Kite presents its TUN device the way a network card with the best metric looks: a real default
+route, a gateway, and the lowest metric of all network cards, but not lower than a VPN's. A VPN that
+reads the routing table for its server then goes through Kite, and its own default route (metric 0,
+or the more specific halves) wins for everything else. Kite never punches through another program's
+firewall: it adds blocks and soft permits only, so a second VPN's kill switch blocks what it blocks
+whether Kite runs or not.
+
+### Windows
+
+- `0.0.0.0/0` through `198.18.0.2` (the other address of `kite0`'s /30) and `::/0`, route metric 0,
+  interface metric 3. Automatic metrics of network cards start at 5, so Kite wins over them;
+  WireGuard sets 0 and Windows' own IKEv2 connection 1, so they win over Kite. If a network card
+  still wins, for IPv4 or IPv6, Kite refuses to start rather than leak.
+  Up to 0.1.0-rc.2 Kite used the four halves (`0.0.0.0/1` and so on) instead, which won over a VPN's
+  single default route by being more specific: traffic went around the VPN into Kite, and a
+  WireGuard kill switch then blocked all of it.
+- DNS: Windows asks the DNS servers of every adapter at once, each through its own adapter. The DNS
+  guard, Windows Filtering Platform filters in a sublayer of the lowest weight, goes up before the
+  routes and blocks DNS (UDP and TCP port 53) on every adapter but the loopback, `kite0` and other
+  virtual adapters (`IF_TYPE_PROP_VIRTUAL`: Wintun, WireGuard, TAP-Windows 9, OpenVPN DCO, the kind
+  a VPN makes), and `kite0` offers 1.1.1.1. So a network card's resolver (Ethernet, Wi-Fi, mobile
+  broadband, USB tethering, Hyper-V and VMware switches) and a PPPoE connection's never see a name.
+  Up to 0.1.0-rc.2 a catch-all NRPT rule sent every name to 1.1.1.1 instead, which also took DNS
+  away from a second VPN; its kill switch then blocked it.
+- While a second VPN with DNS servers of its own carries the default route, `kite0` offers no DNS
+  server, so names go only to that VPN's servers and not around it through the phone. Kite looks
+  every two seconds and gives 1.1.1.1 back when the VPN goes. A dial-up VPN (IKEv2, SSTP, L2TP) is
+  a PPP adapter, the same type as PPPoE, so the guard lets its DNS through only while it carries the
+  default route.
+- The kill switch also permits virtual adapters (Wintun, WireGuard, TAP-Windows, OpenVPN DCO), so a
+  VPN on top of the tunnel works with it on; the VPN's own connection to its server still has to go
+  through `kite0` or the relay, since everything else on the network cards stays blocked. Dial-up
+  VPNs (IKEv2, SSTP, L2TP) look like PPPoE to Windows and stay blocked: use them with Kite's kill
+  switch off.
+- A VPN's own kill switch also covers Kite's connection to the phone. Over USB that is on the
+  loopback and passes; over WiFi it is a LAN address, so the VPN needs its "allow LAN" setting.
+- If Kite stops while a VPN runs on top, the VPN's connection to its server falls back to the
+  network card, around the phone, unless Kite's kill switch is on and holds its block.
+
 ## Transports
 
 The session does not care what carries it, as long as it is one reliable byte stream. `kite-link`

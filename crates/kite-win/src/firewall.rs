@@ -1,13 +1,25 @@
-//! The kill switch: Windows Filtering Platform filters that block everything the tunnel does not
-//! carry.
+//! Windows Filtering Platform filters of TUN mode, in two sets with a sublayer each.
 //!
-//! One sublayer (`Kite kill switch`, the highest weight) holds, on the ALE connect and receive
-//! layers for IPv4 and IPv6, a block filter for everything and permit filters on top of it for:
+//! The kill switch blocks everything the tunnel does not carry. Its sublayer (`Kite kill switch`,
+//! the highest weight) holds, on the ALE connect and receive layers for IPv4 and IPv6, a block
+//! filter for everything and permit filters on top of it for:
 //!
 //! - loopback, where the proxy that feeds the tunnel listens;
-//! - the tunnel adapter itself;
+//! - the tunnel adapter itself, and any other virtual adapter: a second VPN started on top of the
+//!   tunnel hands its packets to its own adapter, and its own connection to its server then goes
+//!   through the tunnel (or is blocked here, if it tries the network card);
 //! - this program's own connection to the relay, by application and address;
 //! - DHCP and, for IPv6, neighbour discovery, so the link to the router or the phone stays up.
+//!
+//! The DNS guard blocks DNS (UDP and TCP port 53) on every adapter but the loopback, the tunnel
+//! adapter, other virtual adapters (a second VPN) and, while it carries the default route, a dial-up
+//! VPN: Windows asks the DNS servers of every adapter, each through its own adapter, so without it
+//! a LAN or ISP resolver (a network card's, a PPPoE connection's) would see the names the computer
+//! looks up. Its sublayer has the lowest weight.
+//!
+//! Every permit is a soft one (no `FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT`), so a block of another
+//! program, a second VPN's kill switch say, still blocks what Kite permits; Kite only ever adds
+//! blocks to what others decide.
 //!
 //! The filters belong to no session and are not persistent: they stay when this process ends, a
 //! crash included, so the block holds until [`lift`] deletes it (`kite disconnect`, `kite restore`,
@@ -29,29 +41,51 @@ use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::{
     FwpmEngineClose0, FwpmEngineOpen0, FwpmFilterAdd0, FwpmFilterDeleteByKey0, FwpmFreeMemory0,
     FwpmGetAppIdFromFileName0, FwpmSubLayerAdd0, FwpmSubLayerDeleteByKey0, FwpmTransactionAbort0,
     FwpmTransactionBegin0, FwpmTransactionCommit0, FWPM_CONDITION_ALE_APP_ID, FWPM_CONDITION_FLAGS,
-    FWPM_CONDITION_IP_LOCAL_INTERFACE, FWPM_CONDITION_IP_LOCAL_PORT, FWPM_CONDITION_IP_PROTOCOL,
-    FWPM_CONDITION_IP_REMOTE_ADDRESS, FWPM_CONDITION_IP_REMOTE_PORT, FWPM_FILTER0,
-    FWPM_FILTER_CONDITION0, FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWPM_LAYER_ALE_AUTH_CONNECT_V6,
-    FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4, FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6, FWPM_SESSION0,
-    FWPM_SUBLAYER0, FWP_ACTION_BLOCK, FWP_ACTION_PERMIT, FWP_BYTE_ARRAY16, FWP_BYTE_ARRAY16_TYPE,
-    FWP_BYTE_BLOB, FWP_BYTE_BLOB_TYPE, FWP_CONDITION_FLAG_IS_LOOPBACK, FWP_MATCH_EQUAL,
-    FWP_MATCH_FLAGS_ALL_SET, FWP_MATCH_RANGE, FWP_RANGE0, FWP_RANGE_TYPE, FWP_UINT16, FWP_UINT32,
-    FWP_UINT64, FWP_UINT8, FWP_VALUE0,
+    FWPM_CONDITION_INTERFACE_TYPE, FWPM_CONDITION_IP_LOCAL_INTERFACE, FWPM_CONDITION_IP_LOCAL_PORT,
+    FWPM_CONDITION_IP_PROTOCOL, FWPM_CONDITION_IP_REMOTE_ADDRESS, FWPM_CONDITION_IP_REMOTE_PORT,
+    FWPM_FILTER0, FWPM_FILTER_CONDITION0, FWPM_LAYER_ALE_AUTH_CONNECT_V4,
+    FWPM_LAYER_ALE_AUTH_CONNECT_V6, FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
+    FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6, FWPM_SESSION0, FWPM_SUBLAYER0, FWP_ACTION_BLOCK,
+    FWP_ACTION_PERMIT, FWP_BYTE_ARRAY16, FWP_BYTE_ARRAY16_TYPE, FWP_BYTE_BLOB, FWP_BYTE_BLOB_TYPE,
+    FWP_CONDITION_FLAG_IS_LOOPBACK, FWP_MATCH_EQUAL, FWP_MATCH_FLAGS_ALL_SET, FWP_MATCH_RANGE,
+    FWP_RANGE0, FWP_RANGE_TYPE, FWP_UINT16, FWP_UINT32, FWP_UINT64, FWP_UINT8, FWP_VALUE0,
 };
 use windows_sys::Win32::System::Rpc::RPC_C_AUTHN_DEFAULT;
 
 /// `RPC_S_SERVER_UNAVAILABLE`, `EPT_S_NOT_REGISTERED`: the filtering engine is not running.
 const ENGINE_DOWN: [i32; 2] = [1722, 1753];
 
-/// The sublayer and, with the index in the low bytes, the filters. Fixed so that [`lift`] finds
-/// what a run left.
-const FILTER_BASE: u128 = 0x6b69_7465_0000_4000_8000_6b69_6c6c_0000;
-const SUBLAYER: GUID = GUID::from_u128(FILTER_BASE | 0xffff);
-/// More than [`specs`] ever returns; [`lift`] tries this many keys.
-const MAX_FILTERS: u32 = 64;
-const NAME: &str = "Kite kill switch";
+/// A set of filters in a sublayer of its own, put up and taken down in one transaction.
+struct Set {
+    /// The sublayer is `base | 0xffff`, the filters `base | index`. Fixed so that a later run finds
+    /// what an earlier one left.
+    base: u128,
+    name: &'static str,
+    weight: u16,
+}
 
+const KILL_SWITCH: Set = Set {
+    base: 0x6b69_7465_0000_4000_8000_6b69_6c6c_0000,
+    name: "Kite kill switch",
+    weight: u16::MAX,
+};
+
+const DNS_GUARD: Set = Set {
+    base: 0x6b69_7465_0000_4000_8000_646e_7300_0000,
+    name: "Kite DNS guard",
+    // Last: a program that permits its own DNS with a hard permit is not overridden.
+    weight: 1,
+};
+
+/// More than [`specs`] ever returns; removing a set tries this many keys.
+const MAX_FILTERS: u32 = 64;
+
+const TCP: u8 = 6;
 const UDP: u8 = 17;
+const DNS_PORT: u16 = 53;
+/// `IF_TYPE_PROP_VIRTUAL`: the kind of adapter a VPN or a TUN proxy makes (Wintun, WireGuard,
+/// TAP-Windows, OpenVPN DCO).
+const VIRTUAL: u32 = 53;
 const MDNS_PORT: u16 = 5353;
 const ICMPV6: u8 = 58;
 /// ICMPv6 that keeps an IPv6 link up: multicast listener discovery (130 to 132, 143) and neighbour
@@ -83,6 +117,8 @@ enum Cond {
     Loopback,
     /// Traffic on the adapter with this LUID.
     Interface(u64),
+    /// Traffic on an adapter of this IANA type. Several of these in one filter mean any of them.
+    InterfaceType(u32),
     /// This executable.
     Program,
     Remote(IpAddr),
@@ -120,6 +156,7 @@ fn specs(tunnel: u64, relay: Option<IpAddr>, discovery: bool) -> Vec<Spec> {
             add(layer, false, vec![]);
             add(layer, true, vec![Cond::Loopback]);
             add(layer, true, vec![Cond::Interface(tunnel)]);
+            add(layer, true, vec![Cond::InterfaceType(VIRTUAL)]);
         }
         if let Some(ip) = relay.filter(|ip| ip.is_ipv6() == v6 && !ip.is_loopback()) {
             add(connect, true, vec![Cond::Program, Cond::Remote(ip)]);
@@ -183,8 +220,104 @@ fn specs(tunnel: u64, relay: Option<IpAddr>, discovery: bool) -> Vec<Spec> {
     out
 }
 
-fn filter_key(index: u32) -> GUID {
-    GUID::from_u128(FILTER_BASE | u128::from(index))
+/// The DNS guard: a block for DNS on each layer, and permits for DNS on the loopback, the tunnel
+/// adapter `tunnel`, virtual adapters and the dial-up adapter `dial_up`. Conditions on the same
+/// field are alternatives, on different fields all must hold.
+fn dns_specs(tunnel: u64, dial_up: Option<u64>) -> Vec<Spec> {
+    let dns = [
+        Cond::Protocol(UDP),
+        Cond::Protocol(TCP),
+        Cond::RemotePort(DNS_PORT),
+    ];
+    let mut out = Vec::new();
+    for layer in [Layer::Connect4, Layer::Connect6] {
+        let mut ways = vec![
+            Cond::Loopback,
+            Cond::Interface(tunnel),
+            Cond::InterfaceType(VIRTUAL),
+        ];
+        ways.extend(dial_up.map(Cond::Interface));
+        out.push(Spec {
+            layer,
+            permit: false,
+            conds: dns.to_vec(),
+        });
+        for way in ways {
+            let mut conds = vec![way];
+            conds.extend(dns.clone());
+            out.push(Spec {
+                layer,
+                permit: true,
+                conds,
+            });
+        }
+    }
+    out
+}
+
+impl Set {
+    fn sublayer(&self) -> GUID {
+        GUID::from_u128(self.base | 0xffff)
+    }
+
+    fn filter_key(&self, index: u32) -> GUID {
+        GUID::from_u128(self.base | u128::from(index))
+    }
+
+    /// Replaces what the set holds with `specs`, all at once.
+    fn install(&self, specs: &[Spec]) -> io::Result<()> {
+        let program = if specs.iter().any(|s| s.conds.contains(&Cond::Program)) {
+            Some(AppId::of_current_exe()?)
+        } else {
+            None
+        };
+        let name = wide(self.name);
+        Engine::open()
+            .map_err(|e| io::Error::new(e.kind(), format!("opening the Windows firewall: {e}")))?
+            .transaction(|engine| {
+                self.delete_all(engine)?;
+                // SAFETY: plain data; all zeroes is the documented default.
+                let mut sublayer: FWPM_SUBLAYER0 = unsafe { std::mem::zeroed() };
+                sublayer.subLayerKey = self.sublayer();
+                sublayer.displayData.name = name.as_ptr().cast_mut();
+                sublayer.weight = self.weight;
+                // SAFETY: a valid engine and sublayer; `name` outlives the call.
+                check(unsafe { FwpmSubLayerAdd0(engine, &sublayer, null_mut()) })?;
+                for (i, spec) in specs.iter().enumerate() {
+                    let key = self.filter_key(i as u32);
+                    add_filter(engine, &name, self.sublayer(), key, spec, program.as_ref())?;
+                }
+                Ok(())
+            })
+    }
+
+    /// Removes the set; there is nothing to do when it is not there, or when the filtering engine is
+    /// not running.
+    fn remove(&self) -> io::Result<()> {
+        match Engine::open() {
+            Err(e) if e.raw_os_error().is_some_and(|c| ENGINE_DOWN.contains(&c)) => Ok(()),
+            Err(e) => Err(e),
+            Ok(engine) => engine.transaction(|h| self.delete_all(h)),
+        }
+    }
+
+    /// Deletes the filters and then the sublayer; what is not there is skipped.
+    fn delete_all(&self, engine: HANDLE) -> io::Result<()> {
+        for i in 0..MAX_FILTERS {
+            let key = self.filter_key(i);
+            // SAFETY: a valid engine and key.
+            match unsafe { FwpmFilterDeleteByKey0(engine, &key) } {
+                0 => {}
+                code if code == FWP_E_FILTER_NOT_FOUND as u32 => {}
+                code => return check(code),
+            }
+        }
+        // SAFETY: a valid engine and key.
+        match unsafe { FwpmSubLayerDeleteByKey0(engine, &self.sublayer()) } {
+            code if code == FWP_E_SUBLAYER_NOT_FOUND as u32 => Ok(()),
+            code => check(code),
+        }
+    }
 }
 
 /// An open connection to the filtering engine, closed on drop.
@@ -240,52 +373,24 @@ impl Drop for Engine {
 /// with another relay address never opens a gap. With `discovery` the program may also ask the
 /// network for the phone with mDNS.
 pub fn engage(tunnel: u64, relay: Option<IpAddr>, discovery: bool) -> io::Result<()> {
-    let program = AppId::of_current_exe()?;
-    let name = wide(NAME);
-    Engine::open()
-        .map_err(|e| io::Error::new(e.kind(), format!("opening the Windows firewall: {e}")))?
-        .transaction(|engine| {
-            delete_all(engine)?;
-            // SAFETY: plain data; all zeroes is the documented default.
-            let mut sublayer: FWPM_SUBLAYER0 = unsafe { std::mem::zeroed() };
-            sublayer.subLayerKey = SUBLAYER;
-            sublayer.displayData.name = name.as_ptr().cast_mut();
-            sublayer.weight = u16::MAX;
-            // SAFETY: a valid engine and sublayer; `name` outlives the call.
-            check(unsafe { FwpmSubLayerAdd0(engine, &sublayer, null_mut()) })?;
-            for (i, spec) in specs(tunnel, relay, discovery).iter().enumerate() {
-                add_filter(engine, &name, filter_key(i as u32), spec, &program)?;
-            }
-            Ok(())
-        })
+    KILL_SWITCH.install(&specs(tunnel, relay, discovery))
 }
 
-/// Removes the filters of this run or of one that ended; there is nothing to do when there are
-/// none, or when the filtering engine is not running.
+/// Removes the kill switch of this run or of one that ended.
 pub fn lift() -> io::Result<()> {
-    match Engine::open() {
-        Err(e) if e.raw_os_error().is_some_and(|c| ENGINE_DOWN.contains(&c)) => Ok(()),
-        Err(e) => Err(e),
-        Ok(engine) => engine.transaction(delete_all),
-    }
+    KILL_SWITCH.remove()
 }
 
-/// Deletes the filters and then the sublayer; what is not there is skipped.
-fn delete_all(engine: HANDLE) -> io::Result<()> {
-    for i in 0..MAX_FILTERS {
-        let key = filter_key(i);
-        // SAFETY: a valid engine and key.
-        match unsafe { FwpmFilterDeleteByKey0(engine, &key) } {
-            0 => {}
-            code if code == FWP_E_FILTER_NOT_FOUND as u32 => {}
-            code => return check(code),
-        }
-    }
-    // SAFETY: a valid engine and key.
-    match unsafe { FwpmSubLayerDeleteByKey0(engine, &SUBLAYER) } {
-        code if code == FWP_E_SUBLAYER_NOT_FOUND as u32 => Ok(()),
-        code => check(code),
-    }
+/// Blocks DNS on every adapter but the loopback, the tunnel adapter with LUID `tunnel`, virtual
+/// adapters and the dial-up VPN `dial_up`, until [`unguard_dns`] runs. Calling it again replaces
+/// the filters all at once.
+pub fn guard_dns(tunnel: u64, dial_up: Option<u64>) -> io::Result<()> {
+    DNS_GUARD.install(&dns_specs(tunnel, dial_up))
+}
+
+/// Removes the DNS guard of this run or of one that ended.
+pub fn unguard_dns() -> io::Result<()> {
+    DNS_GUARD.remove()
 }
 
 /// The application identity WFP matches a program by, for this executable.
@@ -325,7 +430,7 @@ fn word(v: u16) -> FWP_VALUE0 {
     w
 }
 
-fn condition(cond: &Cond, held: &mut Held, program: &AppId) -> FWPM_FILTER_CONDITION0 {
+fn condition(cond: &Cond, held: &mut Held, program: Option<&AppId>) -> FWPM_FILTER_CONDITION0 {
     // SAFETY: plain data; all zeroes is a valid value and the fields are set below.
     let mut c: FWPM_FILTER_CONDITION0 = unsafe { std::mem::zeroed() };
     c.matchType = FWP_MATCH_EQUAL;
@@ -337,6 +442,11 @@ fn condition(cond: &Cond, held: &mut Held, program: &AppId) -> FWPM_FILTER_CONDI
             c.conditionValue.r#type = FWP_UINT32;
             c.conditionValue.Anonymous.uint32 = FWP_CONDITION_FLAG_IS_LOOPBACK;
         }
+        Cond::InterfaceType(t) => {
+            c.fieldKey = FWPM_CONDITION_INTERFACE_TYPE;
+            c.conditionValue.r#type = FWP_UINT32;
+            c.conditionValue.Anonymous.uint32 = *t;
+        }
         Cond::Interface(luid) => {
             c.fieldKey = FWPM_CONDITION_IP_LOCAL_INTERFACE;
             held.luid = *luid;
@@ -346,7 +456,8 @@ fn condition(cond: &Cond, held: &mut Held, program: &AppId) -> FWPM_FILTER_CONDI
         Cond::Program => {
             c.fieldKey = FWPM_CONDITION_ALE_APP_ID;
             c.conditionValue.r#type = FWP_BYTE_BLOB_TYPE;
-            c.conditionValue.Anonymous.byteBlob = program.0;
+            // Without an identity the filter is refused when it is added.
+            c.conditionValue.Anonymous.byteBlob = program.map_or(null_mut(), |p| p.0);
         }
         Cond::Remote(IpAddr::V4(ip)) => {
             c.fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
@@ -392,9 +503,10 @@ fn condition(cond: &Cond, held: &mut Held, program: &AppId) -> FWPM_FILTER_CONDI
 fn add_filter(
     engine: HANDLE,
     name: &[u16],
+    sublayer: GUID,
     key: GUID,
     spec: &Spec,
-    program: &AppId,
+    program: Option<&AppId>,
 ) -> io::Result<()> {
     let mut held = Held::default();
     let mut conds: Vec<_> = spec
@@ -407,7 +519,7 @@ fn add_filter(
     filter.filterKey = key;
     filter.displayData.name = name.as_ptr().cast_mut();
     filter.layerKey = spec.layer.key();
-    filter.subLayerKey = SUBLAYER;
+    filter.subLayerKey = sublayer;
     // Weight ranges 0 to 15: a permit (12) is tried before the block (0) in the same sublayer.
     filter.weight.r#type = FWP_UINT8;
     filter.weight.Anonymous.uint8 = if spec.permit { 12 } else { 0 };
@@ -417,6 +529,8 @@ fn add_filter(
     } else {
         conds.as_mut_ptr()
     };
+    // `filter.flags` stays 0: no permit here is a hard one that would override another program's
+    // block (see the module documentation).
     filter.action.r#type = if spec.permit {
         FWP_ACTION_PERMIT
     } else {
@@ -430,6 +544,7 @@ fn add_filter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::route::CARDS;
     use std::net::Ipv6Addr;
 
     const LAYERS: [Layer; 4] = [Layer::Connect4, Layer::Connect6, Layer::Recv4, Layer::Recv6];
@@ -486,10 +601,8 @@ mod tests {
     #[test]
     fn conditions_carry_the_values_wfp_expects() {
         use windows_sys::Win32::NetworkManagement::WindowsFilteringPlatform::FWP_DATA_TYPE;
-        // Only the program condition reads this, and it is not used here.
-        let program = std::mem::ManuallyDrop::new(AppId(null_mut()));
         let mut held = Held::default();
-        let mut one = |cond: Cond| condition(&cond, &mut held, &program);
+        let mut one = |cond: Cond| condition(&cond, &mut held, None);
         let v4 = one(Cond::Remote("203.0.113.9".parse().unwrap()));
         assert_eq!(v4.conditionValue.r#type, FWP_UINT32 as FWP_DATA_TYPE);
         // SAFETY: the type says which member was set.
@@ -572,12 +685,71 @@ mod tests {
             n <= MAX_FILTERS as usize,
             "{n} filters, lift tries {MAX_FILTERS}"
         );
+        assert!(dns_specs(7, Some(9)).len() <= MAX_FILTERS as usize);
         let id = |g: GUID| (g.data1, g.data2, g.data3, g.data4);
-        let mut keys: Vec<_> = (0..MAX_FILTERS).map(|i| id(filter_key(i))).collect();
-        keys.push(id(SUBLAYER));
+        let mut keys = Vec::new();
+        for set in [&KILL_SWITCH, &DNS_GUARD] {
+            keys.extend((0..MAX_FILTERS).map(|i| id(set.filter_key(i))));
+            keys.push(id(set.sublayer()));
+        }
         keys.sort_unstable();
         keys.dedup();
-        assert_eq!(keys.len(), MAX_FILTERS as usize + 1);
+        assert_eq!(keys.len(), 2 * (MAX_FILTERS as usize + 1));
+    }
+
+    #[test]
+    fn a_second_vpn_on_a_virtual_adapter_passes_the_kill_switch() {
+        let all = specs(7, None, false);
+        for layer in LAYERS {
+            assert!(all.iter().any(|s| s.layer == layer
+                && s.permit
+                && s.conds == [Cond::InterfaceType(VIRTUAL)]));
+        }
+        // No network card is let through by its type.
+        assert!(!all.iter().any(|s| s
+            .conds
+            .iter()
+            .any(|c| matches!(c, Cond::InterfaceType(t) if CARDS.contains(t)))));
+    }
+
+    #[test]
+    fn the_dns_guard_blocks_dns_everywhere_but_the_tunnel_and_vpns() {
+        let dns = [
+            Cond::Protocol(UDP),
+            Cond::Protocol(TCP),
+            Cond::RemotePort(DNS_PORT),
+        ];
+        for dial_up in [None, Some(9)] {
+            let all = dns_specs(7, dial_up);
+            for layer in [Layer::Connect4, Layer::Connect6] {
+                let here: Vec<_> = all.iter().filter(|s| s.layer == layer).collect();
+                let blocks: Vec<_> = here.iter().filter(|s| !s.permit).collect();
+                assert_eq!(blocks.len(), 1);
+                // A block without the port would take the whole network away.
+                assert_eq!(blocks[0].conds, dns);
+                let ways: Vec<_> = here
+                    .iter()
+                    .filter(|s| s.permit)
+                    .map(|s| {
+                        // Every permit is for DNS only.
+                        assert_eq!(s.conds[1..], dns);
+                        s.conds[0].clone()
+                    })
+                    .collect();
+                let mut want = vec![
+                    Cond::Loopback,
+                    Cond::Interface(7),
+                    Cond::InterfaceType(VIRTUAL),
+                ];
+                want.extend(dial_up.map(Cond::Interface));
+                assert_eq!(ways, want);
+            }
+            // No network card, and no other dial-up connection (PPPoE), is let through.
+            assert!(!all.iter().any(|s| s
+                .conds
+                .iter()
+                .any(|c| matches!(c, Cond::InterfaceType(t) if *t != VIRTUAL))));
+        }
     }
 
     #[test]

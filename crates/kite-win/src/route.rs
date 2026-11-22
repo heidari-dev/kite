@@ -9,12 +9,18 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::ptr::null;
 use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
+use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_FILE_NOT_FOUND};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     ConvertInterfaceAliasToLuid, ConvertInterfaceIndexToLuid, CreateIpForwardEntry2,
-    DeleteIpForwardEntry2, GetBestRoute2, InitializeIpForwardEntry, MIB_IPFORWARD_ROW2,
+    DeleteIpForwardEntry2, GetAdaptersAddresses, GetBestRoute2, GetIfEntry2,
+    InitializeIpForwardEntry, SetInterfaceDnsSettings, DNS_INTERFACE_SETTINGS,
+    DNS_INTERFACE_SETTINGS_VERSION1, DNS_SETTING_NAMESERVER, GAA_FLAG_SKIP_ANYCAST,
+    GAA_FLAG_SKIP_FRIENDLY_NAME, GAA_FLAG_SKIP_MULTICAST, GAA_FLAG_SKIP_UNICAST,
+    IP_ADAPTER_ADDRESSES_LH, MIB_IF_ROW2, MIB_IPFORWARD_ROW2,
 };
 use windows_sys::Win32::NetworkManagement::Ndis::NET_LUID_LH;
 use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, SOCKADDR_INET};
+use windows_sys::Win32::Networking::WinSock::{AF_UNSPEC, SOCKADDR_IN6, SOCKET_ADDRESS};
 
 /// `MIB_IPPROTO_NETMGMT`: a route set by a program, as `route add` does.
 const NETMGMT: i32 = 3;
@@ -111,6 +117,99 @@ pub fn best_to(dest: IpAddr) -> io::Result<Best> {
     })
 }
 
+/// IANA interface types that carry traffic off the computer: Ethernet (also USB tethering,
+/// Bluetooth and the virtual switches of Hyper-V and VMware), Wi-Fi and mobile broadband. A VPN's or
+/// a TUN proxy's adapter (Wintun, WireGuard, TAP-Windows 9, OpenVPN DCO) is `IF_TYPE_PROP_VIRTUAL`
+/// (53), a dialled one (IKEv2, SSTP, L2TP, also PPPoE) [`DIAL_UP`].
+pub const CARDS: [u32; 4] = [6, 71, 243, 244];
+
+/// `IF_TYPE_PPP`: a dial-up connection, which is a VPN (IKEv2, SSTP, L2TP) or PPPoE.
+pub const DIAL_UP: u32 = 23;
+
+/// The IANA type of the interface, or None when it is gone.
+pub fn if_type(luid: u64) -> io::Result<Option<u32>> {
+    // SAFETY: plain data; the call fills it for the LUID set here.
+    let mut row: MIB_IF_ROW2 = unsafe { std::mem::zeroed() };
+    row.InterfaceLuid = NET_LUID_LH { Value: luid };
+    // SAFETY: `row` is writable and names the interface.
+    match unsafe { GetIfEntry2(&mut row) } {
+        ERROR_NOT_FOUND | ERROR_FILE_NOT_FOUND => Ok(None),
+        code => check(code).map(|()| Some(row.Type)),
+    }
+}
+
+/// Whether the interface has DNS servers, set by hand or by DHCP.
+pub fn has_dns_servers(luid: u64) -> io::Result<bool> {
+    let flags = GAA_FLAG_SKIP_UNICAST
+        | GAA_FLAG_SKIP_ANYCAST
+        | GAA_FLAG_SKIP_MULTICAST
+        | GAA_FLAG_SKIP_FRIENDLY_NAME;
+    // u64s, so the list the system writes in it is aligned.
+    let mut buf = vec![0u64; 2048];
+    loop {
+        let mut size = u32::try_from(buf.len() * 8).map_err(io::Error::other)?;
+        let first = buf.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+        // SAFETY: `first` points to `size` writable, aligned bytes.
+        match unsafe { GetAdaptersAddresses(u32::from(AF_UNSPEC), flags, null(), first, &mut size) }
+        {
+            ERROR_BUFFER_OVERFLOW if size as usize <= 1 << 20 => {
+                buf = vec![0u64; (size as usize).div_ceil(8)];
+            }
+            code => {
+                check(code)?;
+                let mut at = first.cast_const();
+                while !at.is_null() {
+                    // SAFETY: the system filled a list of entries in `buf`, which is still alive;
+                    // each `Next` is null or the next entry.
+                    let entry = unsafe { &*at };
+                    // SAFETY: see `best_to`.
+                    if unsafe { entry.Luid.Value } == luid {
+                        let mut server = entry.FirstDnsServerAddress.cast_const();
+                        while !server.is_null() {
+                            // SAFETY: as above, for the entry's list of servers.
+                            let s = unsafe { &*server };
+                            if !placeholder(&s.Address) {
+                                return Ok(true);
+                            }
+                            server = s.Next;
+                        }
+                        return Ok(false);
+                    }
+                    at = entry.Next;
+                }
+                return Ok(false);
+            }
+        }
+    }
+}
+
+/// Windows lists `fec0:0:0:ffff::1` to `::3`, long deprecated, on an interface that has no DNS
+/// server but IPv6.
+fn placeholder(a: &SOCKET_ADDRESS) -> bool {
+    if a.lpSockaddr.is_null() || (a.iSockaddrLength as usize) < size_of::<SOCKADDR_IN6>() {
+        return false;
+    }
+    // SAFETY: the system points it to an address of `iSockaddrLength` bytes, checked above to hold
+    // a SOCKADDR_IN6, whose family is read first.
+    let v6 = unsafe { &*a.lpSockaddr.cast::<SOCKADDR_IN6>() };
+    // SAFETY: the union holds the 16 bytes of the address either way.
+    v6.sin6_family == AF_INET6
+        && unsafe { v6.sin6_addr.u.Byte }[..8] == [0xfe, 0xc0, 0, 0, 0, 0, 0xff, 0xff]
+}
+
+/// Sets the IPv4 DNS servers of the adapter with `guid` (comma separated; empty for none).
+pub fn set_dns(guid: u128, servers: &str) -> io::Result<()> {
+    let mut servers = crate::wide(servers);
+    let settings = DNS_INTERFACE_SETTINGS {
+        Version: DNS_INTERFACE_SETTINGS_VERSION1,
+        Flags: u64::from(DNS_SETTING_NAMESERVER),
+        NameServer: servers.as_mut_ptr(),
+        ..Default::default()
+    };
+    // SAFETY: `settings` and the string it points to live until the call returns.
+    check(unsafe { SetInterfaceDnsSettings(windows_sys::core::GUID::from_u128(guid), &settings) })
+}
+
 /// The LUID of the interface with index `index`.
 pub fn luid_of_index(index: u32) -> io::Result<u64> {
     let mut luid = NET_LUID_LH { Value: 0 };
@@ -142,6 +241,9 @@ mod tests {
         assert!(best.prefix >= 8, "{best:?}");
         // The interface the route names is a real one.
         assert!(best.luid != 0);
+        // And it is no network card.
+        assert!(!CARDS.contains(&if_type(best.luid).unwrap().unwrap()));
+        assert_eq!(if_type(u64::MAX).unwrap(), None);
     }
 
     #[test]
@@ -154,6 +256,14 @@ mod tests {
         ] {
             assert_eq!(ip_of(&inet(ip)).unwrap(), ip);
         }
+    }
+
+    #[test]
+    fn the_dns_servers_of_an_interface_are_found() {
+        // Loopback has none; an interface that is not there has none either.
+        let lo = best_to(Ipv4Addr::LOCALHOST.into()).unwrap().luid;
+        assert!(!has_dns_servers(lo).unwrap());
+        assert!(!has_dns_servers(u64::MAX).unwrap());
     }
 
     #[test]
