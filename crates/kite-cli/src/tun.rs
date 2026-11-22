@@ -228,22 +228,28 @@ async fn resolvectl(args: &[&str]) -> io::Result<std::process::Output> {
 }
 
 /// While the tunnel runs on a host that resolves through systemd-resolved: while another link (a
-/// second VPN) carries the default route and has DNS servers of its own, kite0 leaves DNS to it,
-/// so resolved does not also send every name around it through the phone; kite0 takes DNS back when
-/// the VPN goes. A failure to look leaves the settings as they are, and is said once.
+/// second VPN) carries the default route and takes every name itself (DNS servers and the `~.`
+/// routing domain), kite0 leaves DNS to it, so resolved does not also send every name around it
+/// through the phone; kite0 takes DNS back when the VPN goes. A link without `~.` would share the
+/// names with the network card's link once kite0 stepped aside, so kite0 keeps DNS then. resolved
+/// is asked only while the link that carries the default route is new or not a VPN yet. A failure
+/// to look leaves the settings as they are, and is said once.
 async fn follow_dns(link: u32) {
     let mut ours = true;
+    // The link that carries the default route and was found to be a VPN.
+    let mut vpn_link = None;
     let mut said = false;
     loop {
         tokio::time::sleep(FOLLOW).await;
         let r = async {
-            let vpn = match route::device_to(PROBE).await? {
-                Some(dev) if dev != link => {
-                    let out = resolvectl(&["dns", &dev.to_string()]).await?;
-                    out.status.success() && has_servers(&String::from_utf8_lossy(&out.stdout))
-                }
-                _ => false,
+            let dev = route::device_to(PROBE).await?;
+            let vpn = match dev {
+                Some(d) if d == link => false,
+                Some(d) if vpn_link == Some(d) => true,
+                Some(d) => takes_every_name(d).await?,
+                None => false,
             };
+            vpn_link = dev.filter(|_| vpn);
             if vpn == ours {
                 resolved(NAME, !vpn).await?;
                 ours = !vpn;
@@ -262,12 +268,31 @@ async fn follow_dns(link: u32) {
     }
 }
 
-/// Reads `resolvectl dns LINK`: `Link 5 (wg0): 10.64.0.1 fd00::1`, nothing after the colon when the
-/// link has no server.
-fn has_servers(text: &str) -> bool {
+/// Whether resolved sends every name to the link with index `dev` alone: it has DNS servers and the
+/// `~.` routing domain.
+async fn takes_every_name(dev: u32) -> io::Result<bool> {
+    let dev = dev.to_string();
+    let servers = resolvectl(&["dns", &dev]).await?;
+    if !servers.status.success()
+        || !after_link(&String::from_utf8_lossy(&servers.stdout))
+            .next()
+            .is_some()
+    {
+        return Ok(false);
+    }
+    let domains = resolvectl(&["domain", &dev]).await?;
+    Ok(domains.status.success()
+        && after_link(&String::from_utf8_lossy(&domains.stdout)).any(|d| d == "~."))
+}
+
+/// The words after the link in what `resolvectl dns LINK` or `resolvectl domain LINK` prints:
+/// `Link 5 (wg0): 10.64.0.1 fd00::1`, `Link 5 (wg0): ~.`, nothing after the colon when there are
+/// none.
+fn after_link(text: &str) -> impl Iterator<Item = &str> {
     text.lines()
         .find_map(|l| l.split_once("):"))
-        .is_some_and(|(_, servers)| !servers.trim().is_empty())
+        .map_or("", |(_, rest)| rest)
+        .split_whitespace()
 }
 
 /// Whether name lookups go through systemd-resolved: its stub is the nameserver, or nss-resolve
@@ -287,23 +312,22 @@ fn uses_resolved(resolv_conf: &str, nsswitch: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_servers, uses_resolved};
+    use super::{after_link, uses_resolved};
 
     #[test]
-    fn reads_the_dns_servers_of_a_link() {
-        assert!(has_servers(
-            "Link 5 (wg0): 10.64.0.1 fd00::1
-"
-        ));
-        assert!(!has_servers(
-            "Link 5 (wg0):
-"
-        ));
-        assert!(!has_servers(
-            "Link 5 (wg0):   
-"
-        ));
-        assert!(!has_servers(""));
+    fn reads_the_dns_settings_of_a_link() {
+        let words = |text| after_link(text).collect::<Vec<_>>();
+        assert_eq!(
+            words("Link 5 (wg0): 10.64.0.1 fd00::1\n"),
+            ["10.64.0.1", "fd00::1"]
+        );
+        assert_eq!(
+            words("Link 5 (wg0): ~. corp.example\n"),
+            ["~.", "corp.example"]
+        );
+        assert!(words("Link 5 (wg0):\n").is_empty());
+        assert!(words("Link 5 (wg0):   \n").is_empty());
+        assert!(words("").is_empty());
     }
 
     #[test]
