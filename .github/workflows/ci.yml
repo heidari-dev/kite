@@ -176,11 +176,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: cargo build --release --locked -p kite-cli
+      - run: cargo build --release --locked -p kite-cli --bin kite --example fake-vpn
       - run: cargo build --release --locked -p kite-relay --example relay-dev
       - run: scripts\fetch-wintun.ps1 target\release
       - name: TUN mode smoke test
-        run: scripts\tun-smoke.ps1 target\release\kite.exe target\release\examples\relay-dev.exe
+        run: scripts\tun-smoke.ps1 target\release\kite.exe target\release\examples\relay-dev.exe -FakeVpn target\release\examples\fake-vpn.exe
 
   # The runner has passwordless sudo, so a utun device can be made and the routes and DNS settings
   # can change. The macOS-only code is linted here, since the Linux and Windows jobs do not build it.
