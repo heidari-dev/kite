@@ -19,6 +19,12 @@ const UDPGW: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)
 /// DNS queries to private resolvers (a LAN router, the systemd-resolved stub) are sent here,
 /// as DNS over TCP through the relay.
 const DNS: IpAddr = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+/// An address whose route tells which link carries the default route now (a documentation range,
+/// never sent anywhere).
+const PROBE: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 1);
+/// How often kite0's DNS settings follow a second VPN coming and going.
+const FOLLOW: Duration = Duration::from_secs(2);
+const RESOLVECTL: &str = "/usr/bin/resolvectl";
 
 /// Lets the kill switch pass a lookup of the phone and a dial to `relay`. Nothing to do here: the
 /// sockets carry the firewall mark that keeps them out of the tunnel and its blackhole.
@@ -107,8 +113,16 @@ where
 {
     // Polled from the start, so a signal during setup still ends in a clean restore.
     tokio::pin!(shutdown);
+    let mut uses_resolved = false;
     tokio::select! {
-        r = async { route::setup(link, kill_switch).await?; resolved(NAME).await } => r?,
+        r = async {
+            route::setup(link, kill_switch).await?;
+            uses_resolved = resolved_in_use().await?;
+            if uses_resolved {
+                resolved(NAME, true).await?;
+            }
+            io::Result::Ok(())
+        } => r?,
         () = &mut shutdown => {
             *stopped = true;
             return Ok(());
@@ -128,7 +142,7 @@ where
         .ipv6_enabled(false);
 
     let token = CancellationToken::new();
-    let (proxied, tunneled, ()) = tokio::join!(
+    let (proxied, tunneled, (), ()) = tokio::join!(
         async {
             let r = serve_link(token.clone()).await;
             token.cancel();
@@ -148,15 +162,20 @@ where
                 () = token.cancelled() => {}
             }
         },
+        async {
+            if uses_resolved {
+                tokio::select! {
+                    () = follow_dns(link) => {}
+                    () = token.cancelled() => {}
+                }
+            }
+        },
     );
     proxied.and(tunneled.map(drop).map_err(io::Error::from))
 }
 
-/// systemd-resolved sends each query out of the link that supplied the server (IP_UNICAST_IF), which
-/// routing rules cannot redirect. When this host resolves through it, give the tunnel link a server
-/// and the "~." routing domain so resolved sends every query there. It drops these settings with
-/// the link. Without root, resolved asks polkit (see docs/architecture.md).
-async fn resolved(link: &str) -> io::Result<()> {
+/// Whether this host resolves through systemd-resolved.
+async fn resolved_in_use() -> io::Result<bool> {
     let resolv_conf = match tokio::fs::read_to_string("/etc/resolv.conf").await {
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
         r => r?,
@@ -164,33 +183,91 @@ async fn resolved(link: &str) -> io::Result<()> {
     let nsswitch = tokio::fs::read_to_string("/etc/nsswitch.conf")
         .await
         .unwrap_or_default();
-    if !uses_resolved(&resolv_conf, &nsswitch) {
-        return Ok(());
-    }
+    Ok(uses_resolved(&resolv_conf, &nsswitch))
+}
+
+/// systemd-resolved sends each query out of the link that supplied the server (IP_UNICAST_IF), which
+/// routing rules cannot redirect. With `on`, give the tunnel link a server and the "~." routing
+/// domain so resolved sends every query there; without, take the domain and the default route flag
+/// away again, so that resolved sends nothing there. It drops these settings with the link. Without
+/// root, resolved asks polkit (see docs/architecture.md).
+async fn resolved(link: &str, on: bool) -> io::Result<()> {
     let dns = DNS.to_string();
-    for args in [
-        ["dns", link, dns.as_str()],
-        ["domain", link, "~."],
-        ["default-route", link, "true"],
-    ] {
-        let run = tokio::process::Command::new("/usr/bin/resolvectl")
-            .args(args)
-            .env_clear()
-            .stdin(Stdio::null())
-            .kill_on_drop(true)
-            .output();
-        let out = tokio::time::timeout(Duration::from_secs(5), run)
-            .await
-            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "resolvectl did not answer"))??;
+    let steps: &[[&str; 3]] = if on {
+        &[
+            ["dns", link, dns.as_str()],
+            ["domain", link, "~."],
+            ["default-route", link, "true"],
+        ]
+    } else {
+        // An empty string clears the list.
+        &[["domain", link, ""], ["default-route", link, "false"]]
+    };
+    for args in steps {
+        let out = resolvectl(args).await?;
         if !out.status.success() {
             return Err(io::Error::other(format!(
-                "systemd-resolved refused DNS settings for {link} (run as root or add the polkit \
-                 rule from docs/architecture.md): {}",
+                "systemd-resolved refused DNS settings for {link} (run as root or add the polkit                  rule from docs/architecture.md): {}",
                 String::from_utf8_lossy(&out.stderr).trim()
             )));
         }
     }
     Ok(())
+}
+
+async fn resolvectl(args: &[&str]) -> io::Result<std::process::Output> {
+    let run = tokio::process::Command::new(RESOLVECTL)
+        .args(args)
+        .env_clear()
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    tokio::time::timeout(Duration::from_secs(5), run)
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "resolvectl did not answer"))?
+}
+
+/// While the tunnel runs on a host that resolves through systemd-resolved: while another link (a
+/// second VPN) carries the default route and has DNS servers of its own, kite0 leaves DNS to it,
+/// so resolved does not also send every name around it through the phone; kite0 takes DNS back when
+/// the VPN goes. A failure to look leaves the settings as they are, and is said once.
+async fn follow_dns(link: u32) {
+    let mut ours = true;
+    let mut said = false;
+    loop {
+        tokio::time::sleep(FOLLOW).await;
+        let r = async {
+            let vpn = match route::device_to(PROBE).await? {
+                Some(dev) if dev != link => {
+                    let out = resolvectl(&["dns", &dev.to_string()]).await?;
+                    out.status.success() && has_servers(&String::from_utf8_lossy(&out.stdout))
+                }
+                _ => false,
+            };
+            if vpn == ours {
+                resolved(NAME, !vpn).await?;
+                ours = !vpn;
+            }
+            io::Result::Ok(())
+        }
+        .await;
+        match r {
+            Ok(()) => said = false,
+            Err(e) if !said => {
+                eprintln!("kite: following a second VPN's DNS: {e}");
+                said = true;
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+/// Reads `resolvectl dns LINK`: `Link 5 (wg0): 10.64.0.1 fd00::1`, nothing after the colon when the
+/// link has no server.
+fn has_servers(text: &str) -> bool {
+    text.lines()
+        .find_map(|l| l.split_once("):"))
+        .is_some_and(|(_, servers)| !servers.trim().is_empty())
 }
 
 /// Whether name lookups go through systemd-resolved: its stub is the nameserver, or nss-resolve
@@ -210,7 +287,24 @@ fn uses_resolved(resolv_conf: &str, nsswitch: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::uses_resolved;
+    use super::{has_servers, uses_resolved};
+
+    #[test]
+    fn reads_the_dns_servers_of_a_link() {
+        assert!(has_servers(
+            "Link 5 (wg0): 10.64.0.1 fd00::1
+"
+        ));
+        assert!(!has_servers(
+            "Link 5 (wg0):
+"
+        ));
+        assert!(!has_servers(
+            "Link 5 (wg0):   
+"
+        ));
+        assert!(!has_servers(""));
+    }
 
     #[test]
     fn detects_systemd_resolved() {
