@@ -2,27 +2,38 @@
 //! A Wintun adapter feeds tun2proxy, which turns its packets into connections to the local proxy
 //! from proxy mode, as on Linux.
 //!
-//! What it changes, and `restore` takes all of it back:
+//! The adapter is set up the way a network card with the best metric would be, so that a second VPN
+//! started on top of it treats it as the computer's way out and sends its own connection to its
+//! server through it (see docs/architecture.md, "A second VPN"). What it changes, and `restore` takes
+//! all of it back:
 //!
 //! - The adapter `kite0` (198.18.0.1/30, interface metric 1, DNS 1.1.1.1). It goes away with the
 //!   process, or stays without routes until `restore`.
-//! - Four routes on that adapter, `0.0.0.0/1`, `128.0.0.0/1`, `::/1` and `8000::/1`: together they
-//!   take everything that has no more specific route, so the LAN and the other adapters' own
-//!   subnets stay as they are and the real default route is not touched.
+//! - Default routes on that adapter, `0.0.0.0/0` through 198.18.0.2 (an address in its /30, so a
+//!   VPN that copies the default gateway gets one) and `::/0`, metric 0. With the interface metric of
+//!   1 they win over every network card (automatic metrics start at 5) and lose to a second VPN that
+//!   sets 0, as WireGuard does; LAN and other specific routes stay as they are. The network card's own
+//!   default route is not touched. If a network card still wins, the start fails rather than leak.
 //! - A host route for the relay when it is reached through the default route, with the next hop it
 //!   had before, so the socket to the phone does not enter its own tunnel. A phone on the LAN or
-//!   the phone's hotspot needs none. It is written to `tun.state` before it is added.
-//! - A catch-all DNS rule (NRPT, comment `kite`) that sends every name lookup to 1.1.1.1, which
-//!   the tunnel carries to the phone. Without it Windows asks the DNS servers of all adapters at
-//!   once and the answer from the local one wins the race.
+//!   the phone's hotspot needs none. It is written to `tunnel.state` before it is added.
+//! - The DNS guard, `kite_win::firewall::guard_dns`: Windows asks the DNS servers of every adapter
+//!   at once, each through its own adapter, so DNS out of a network card is blocked and only the
+//!   tunnel's server answers. While a second VPN with DNS servers of its own carries the default
+//!   route the adapter offers none, so names go to that VPN's servers alone; it gets 1.1.1.1 back
+//!   within two seconds when the VPN goes.
 //!
 //! With the kill switch (opt-in) Windows Filtering Platform filters also block every connection that
-//! does not go through the adapter, to this program's relay or on the loopback, see
-//! `kite_win::firewall`. They go up before the routes do and come off after them, and while the phone
-//! is away and the session redials they stay. They belong to no session, so they outlive this
-//! process: after a crash or an error of the tunnel traffic stays blocked until `restore`, the next
-//! connect or a reboot. Without the kill switch a crash leaves the adapter's routes in place only
-//! while the adapter exists, and the DNS rule until the next start or `restore`.
+//! does not go through the adapter (or another virtual adapter: a second VPN), to this program's
+//! relay or on the loopback, see `kite_win::firewall`. They go up before the routes do and come off
+//! after them, and while the phone is away and the session redials they stay. They belong to no
+//! session, so they outlive this process: after a crash or an error of the tunnel traffic stays
+//! blocked until `restore`, the next connect or a reboot. Without the kill switch a crash leaves the
+//! adapter's routes in place only while the adapter exists, and the DNS guard until the next start
+//! or `restore`.
+//!
+//! Every filter Kite adds only blocks or softly permits, so a second VPN's kill switch keeps
+//! blocking whatever it blocks, whether Kite runs or not.
 
 use kite_win::firewall;
 use kite_win::route::{self, Route};
@@ -41,12 +52,26 @@ const MTU: u16 = 1500;
 const ADDR: Ipv4Addr = Ipv4Addr::new(198, 18, 0, 1);
 /// The relay serves udpgw on this reserved address (see docs/architecture.md).
 const UDPGW: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 7300);
+/// The default route's next hop: the other address of the adapter's /30.
+const GATEWAY: Ipv4Addr = Ipv4Addr::new(198, 18, 0, 2);
 /// DNS queries go here, as DNS over TCP through the relay.
 const DNS: IpAddr = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
 /// The adapter's identity, fixed so Windows keeps one network profile for it across runs.
 const GUID: u128 = 0x6b69_7465_0000_4000_8000_0a11_2233_4455;
-/// The comment that marks the DNS rule as ours.
+/// The comment of the catch-all DNS rule that versions up to 0.1.0-rc.2 added.
 const RULE: &str = "kite";
+/// What `undo` needs to know: the host route for the relay.
+const STATE: &str = "tunnel.state";
+/// The state versions up to 0.1.0-rc.2 wrote; it also means their DNS rule may still be there.
+const LEGACY_STATE: &str = "tun.state";
+/// Addresses whose route tells which adapter carries the default route now (documentation ranges,
+/// never sent anywhere).
+const PROBES: [IpAddr; 2] = [
+    IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)),
+    IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
+];
+/// How often the adapter's DNS server follows a second VPN coming and going.
+const FOLLOW: Duration = Duration::from_secs(2);
 /// Longest wait for PowerShell.
 const POWERSHELL_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long the tunnel's tasks get to finish once the tunnel is told to end. Past it they are
@@ -55,7 +80,17 @@ const POWERSHELL_TIMEOUT: Duration = Duration::from_secs(15);
 const TEARDOWN: Duration = Duration::from_secs(4);
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// The routes that take all traffic into the tunnel: each half of the address space.
+/// The default routes, IPv4 through the gateway and IPv6 on the link.
+const DEFAULTS: [(IpAddr, IpAddr); 2] = [
+    (IpAddr::V4(Ipv4Addr::UNSPECIFIED), IpAddr::V4(GATEWAY)),
+    (
+        IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+        IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+    ),
+];
+
+/// The routes versions up to 0.1.0-rc.2 used, each half of the address space; `undo` still deletes
+/// them.
 const HALVES: [(IpAddr, u8); 4] = [
     (IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 1),
     (IpAddr::V4(Ipv4Addr::new(128, 0, 0, 0)), 1),
@@ -163,10 +198,10 @@ fn create() -> io::Result<tun::AsyncDevice> {
         .mtu(MTU)
         .metric(1)
         .up();
+    // No DNS server yet: it is set after the DNS guard is up.
     cfg.platform_config(|p| {
         p.wintun_file(dll.as_os_str());
         p.device_guid(GUID);
-        p.dns_servers(&[DNS]);
     });
     tun::create_as_async(&cfg).map_err(|e| io::Error::other(format!("creating {NAME}: {e}")))
 }
@@ -185,10 +220,11 @@ where
 {
     let index =
         u32::try_from(device.tun_index().map_err(io::Error::other)?).map_err(io::Error::other)?;
+    let luid = route::luid_of_index(index)?;
     // Polled from the start, so a signal during setup still ends in a clean restore.
     tokio::pin!(shutdown);
     tokio::select! {
-        r = setup(index, relay, kill_switch) => {
+        r = setup(luid, relay, kill_switch) => {
             if let Err(e) = r {
                 // A failed start, not a lost tunnel: it restores as usual.
                 let _ = undo(true).await;
@@ -212,7 +248,7 @@ where
 
     let token = CancellationToken::new();
     let work = async {
-        let (proxied, tunneled, ()) = tokio::join!(
+        let (proxied, tunneled, (), ()) = tokio::join!(
             async {
                 let r = serve_link(token.clone()).await;
                 token.cancel();
@@ -229,6 +265,12 @@ where
                     stopped.set(true);
                     token.cancel();
                 }
+                    () = token.cancelled() => {}
+                }
+            },
+            async {
+                tokio::select! {
+                    () = follow_dns(luid) => {}
                     () = token.cancelled() => {}
                 }
             },
@@ -262,8 +304,18 @@ where
     result.and(cleaned)
 }
 
-/// The routes of the tunnel on the adapter with `luid`.
+/// The default routes of the tunnel on the adapter with `luid`.
 fn tunnel_routes(luid: u64) -> impl Iterator<Item = Route> {
+    DEFAULTS.into_iter().map(move |(dest, next_hop)| Route {
+        luid,
+        dest,
+        prefix: 0,
+        next_hop,
+    })
+}
+
+/// The routes of versions up to 0.1.0-rc.2, on-link.
+fn legacy_routes(luid: u64) -> impl Iterator<Item = Route> {
     HALVES.into_iter().map(move |(dest, prefix)| Route {
         luid,
         dest,
@@ -276,14 +328,14 @@ fn tunnel_routes(luid: u64) -> impl Iterator<Item = Route> {
     })
 }
 
-async fn setup(index: u32, relay: Option<IpAddr>, kill_switch: bool) -> io::Result<()> {
-    let luid = route::luid_of_index(index)?;
+async fn setup(luid: u64, relay: Option<IpAddr>, kill_switch: bool) -> io::Result<()> {
     // Before the routes change, so nothing leaks between the two.
     if kill_switch {
         firewall::engage(luid, relay, false)?;
     }
-    // The relay's way out, before the tunnel's routes change it. A more specific route than the
-    // halves (a LAN) keeps winning on its own; only the default route needs a host route beside it.
+    // The relay's way out, before the tunnel's routes change it. A more specific route (a LAN)
+    // keeps winning on its own; a default route, or the halves another VPN put over it, need a host
+    // route beside them.
     let bypass = match relay.filter(|ip| !ip.is_loopback()) {
         Some(ip) => {
             let best = route::best_to(ip)?;
@@ -296,24 +348,65 @@ async fn setup(index: u32, relay: Option<IpAddr>, kill_switch: bool) -> io::Resu
         }
         None => None,
     };
-    State { bypass }.save()?;
+    State { bypass }.save(STATE)?;
     if let Some(r) = &bypass {
         route::add(r, 1)?;
     }
+    let mut ipv6 = true;
     for r in tunnel_routes(luid) {
         match route::add(&r, 0) {
             // No IPv6 on this adapter or this host is the usual reason; say so, so that a failure
             // on a host that has IPv6 is not silent.
             Err(e) if r.dest.is_ipv6() => {
                 eprintln!("kite: IPv6 is not taken into the tunnel: {e}");
+                ipv6 = false;
             }
             r => r?,
         }
     }
-    powershell(&format!(
-        "Add-DnsClientNrptRule -Namespace '.' -NameServers '{DNS}' -Comment '{RULE}'"
-    ))
-    .await
+    for probe in PROBES.into_iter().filter(|p| ipv6 || p.is_ipv4()) {
+        // No route at all (no IPv6 on this host) is nothing to win against.
+        let Ok(best) = route::best_to(probe) else {
+            continue;
+        };
+        if best.luid != luid && route::is_card(best.luid)? {
+            return Err(io::Error::other(
+                "a network card's default route has a better metric than the tunnel's, so traffic \
+                 would not enter the tunnel; set that card's interface metric to automatic or above 1",
+            ));
+        }
+    }
+    firewall::guard_dns()?;
+    route::set_dns(GUID, &DNS.to_string())
+}
+
+/// While the tunnel runs: the adapter offers no DNS server while a second VPN that has DNS servers
+/// of its own carries the default route, so that names go to that VPN's servers, not around it. A
+/// route that ends on a network card means no second VPN, and a failure to look leaves the setting
+/// as it is.
+async fn follow_dns(luid: u64) {
+    let mut offered = true;
+    loop {
+        tokio::time::sleep(FOLLOW).await;
+        let Ok(best) = route::best_to(PROBES[0]) else {
+            continue;
+        };
+        let second_vpn = best.luid != luid
+            && route::is_card(best.luid).is_ok_and(|card| !card)
+            && route::has_dns_servers(best.luid).unwrap_or(false);
+        let offer = !second_vpn;
+        if offer != offered {
+            let servers = if offer {
+                DNS.to_string()
+            } else {
+                String::new()
+            };
+            match route::set_dns(GUID, &servers) {
+                Ok(()) => offered = offer,
+                Err(e) => eprintln!("kite: changing the tunnel's DNS server: {e}"),
+            }
+        }
+    }
 }
 
 /// Everything TUN mode adds, taken away; what is not there is skipped, so this runs again and
@@ -327,20 +420,24 @@ async fn undo(lift: bool) -> io::Result<()> {
         }
     };
     match route::luid_of_alias(NAME) {
-        Ok(Some(luid)) => tunnel_routes(luid).for_each(|r| note(route::delete(&r))),
+        Ok(Some(luid)) => tunnel_routes(luid)
+            .chain(legacy_routes(luid))
+            .for_each(|r| note(route::delete(&r))),
         Ok(None) => {}
         Err(e) => note(Err(e)),
     }
-    match State::load() {
-        Ok(State { bypass: Some(r) }) => note(route::delete(&r)),
-        Ok(_) => {}
-        Err(e) => note(Err(e)),
+    for name in [STATE, LEGACY_STATE] {
+        match State::load(name) {
+            Ok(State { bypass: Some(r) }) => note(route::delete(&r)),
+            Ok(_) => {}
+            Err(e) => note(Err(e)),
+        }
     }
-    // The DNS rule is added only after tun.state is written, and tun.state goes only once the rule
-    // is gone: without the file there is no rule, and no reason to start PowerShell. If the file
-    // cannot be checked, look anyway.
-    let state = dir().and_then(|d| d.join("tun.state").try_exists());
-    if state.unwrap_or(true) {
+    // Only an earlier version adds the catch-all DNS rule, after it writes its state, and its state
+    // goes only once the rule is gone: without the file there is no rule, and no reason to start
+    // PowerShell. If the file cannot be checked, look anyway.
+    let legacy = dir().and_then(|d| d.join(LEGACY_STATE).try_exists());
+    if legacy.unwrap_or(true) {
         note(
             powershell(&format!(
                 "Get-DnsClientNrptRule | Where-Object {{ $_.Comment -eq '{RULE}' }} | \
@@ -349,11 +446,15 @@ async fn undo(lift: bool) -> io::Result<()> {
             .await,
         );
     }
+    note(firewall::unguard_dns());
     if lift {
         note(firewall::lift());
     }
     if first.is_ok() {
-        let _ = std::fs::remove_file(dir()?.join("tun.state"));
+        let dir = dir()?;
+        for name in [STATE, LEGACY_STATE] {
+            let _ = std::fs::remove_file(dir.join(name));
+        }
     }
     first
 }
@@ -401,15 +502,15 @@ impl State {
         })
     }
 
-    fn save(&self) -> io::Result<()> {
-        std::fs::write(dir()?.join("tun.state"), self.text())
+    fn save(&self, name: &str) -> io::Result<()> {
+        std::fs::write(dir()?.join(name), self.text())
     }
 
     /// A missing file is no state; a damaged one is an error, not a guess.
-    fn load() -> io::Result<Self> {
-        match std::fs::read_to_string(dir()?.join("tun.state")) {
+    fn load(name: &str) -> io::Result<Self> {
+        match std::fs::read_to_string(dir()?.join(name)) {
             Ok(text) => Self::parse(&text)
-                .ok_or_else(|| io::Error::other("tun.state is damaged; remove it")),
+                .ok_or_else(|| io::Error::other(format!("{name} is damaged; remove it"))),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e),
         }
@@ -490,11 +591,22 @@ mod tests {
     }
 
     #[test]
-    fn the_halves_cover_each_family_without_a_default_route() {
+    fn the_tunnel_is_the_default_route_of_each_family() {
         let routes: Vec<_> = tunnel_routes(7).collect();
-        assert_eq!(routes.len(), 4);
-        assert!(routes.iter().all(|r| r.prefix == 1 && r.luid == 7));
-        assert_eq!(routes.iter().filter(|r| r.dest.is_ipv4()).count(), 2);
-        assert!(routes.iter().all(|r| r.next_hop.is_unspecified()));
+        assert_eq!(routes.len(), 2);
+        assert!(routes
+            .iter()
+            .all(|r| r.prefix == 0 && r.luid == 7 && r.dest.is_unspecified()));
+        // A VPN that copies the default gateway for its server's host route needs an address, and
+        // one that is on the adapter's /30.
+        let v4 = routes.iter().find(|r| r.dest.is_ipv4()).unwrap();
+        assert_eq!(v4.next_hop, IpAddr::V4(GATEWAY));
+        assert_eq!(GATEWAY.octets()[..3], ADDR.octets()[..3]);
+        assert_eq!(GATEWAY.octets()[3] & !3, ADDR.octets()[3] & !3);
+        assert_ne!(GATEWAY, ADDR);
+        let v6 = routes.iter().find(|r| r.dest.is_ipv6()).unwrap();
+        assert!(v6.next_hop.is_unspecified() && v6.next_hop.is_ipv6());
+        // The routes of earlier versions are still known, for `undo`.
+        assert!(legacy_routes(7).all(|r| r.prefix == 1));
     }
 }
